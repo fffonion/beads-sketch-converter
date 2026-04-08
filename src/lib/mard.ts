@@ -7,7 +7,7 @@ const GRID_SEPARATOR_COLOR = "#C9C4BC";
 const BOARD_FRAME_COLOR = "#111111";
 const CANVAS_BACKGROUND = "#F7F4EE";
 const OMITTED_BACKGROUND_HEX = "#FFFFFF";
-const MAX_DETECTION_EDGE = 1024;
+const MAX_DETECTION_EDGE = 768;
 const BRAND_NAME = "拼豆豆";
 
 type Segment = [number, number];
@@ -954,6 +954,9 @@ function detectChartLikePixelArtPrepared(
   image: RasterImage,
   fileName?: string,
 ): Omit<ChartImportDetection, "logical"> | null {
+  if (!mayContainLegendChart(image, fileName)) {
+    return null;
+  }
   const prepared = prepareDetectionRaster(image);
   const detection = detectChartLikePixelArt(prepared.raster, fileName);
   if (!detection) {
@@ -969,8 +972,24 @@ function detectChartLikePixelArtPrepared(
 }
 
 function shouldDefaultToPindouModePrepared(image: RasterImage, fileName: string) {
+  if (!mayContainLegendChart(image, fileName)) {
+    return false;
+  }
   const prepared = prepareDetectionRaster(image);
   return shouldDefaultToPindouMode(prepared.raster, fileName);
+}
+
+function mayContainLegendChart(image: RasterImage, fileName?: string) {
+  if (looksLikeExportedChartFileName(fileName ?? "")) {
+    return true;
+  }
+  if (image.width < 120 || image.height < 180) {
+    return false;
+  }
+
+  const legendProbeTop = Math.max(0, Math.floor(image.height * 0.68));
+  const legendProbe = cropRaster(image, [0, legendProbeTop, image.width, image.height]);
+  return countLegendSwatches(legendProbe) >= 2 || scoreChartLegend(legendProbe) >= 0.18;
 }
 
 function detectPixelArt(image: RasterImage): DetectionResult | null {
@@ -1289,6 +1308,9 @@ function detectLooseContentBox(image: RasterImage): CropBox | null {
 
 function detectBestLegendBoardCandidate(boardRegion: RasterImage) {
   const axisLabelBoard = detectLegendBoardFromAxisLabelsCandidate(boardRegion);
+  if (axisLabelBoard && isConfidentAxisLabelLegendBoard(boardRegion, axisLabelBoard)) {
+    return axisLabelBoard;
+  }
   const looseContentBox = detectLooseContentBox(boardRegion);
   const coreBoardBox = detectLegendBoardCoreCrop(boardRegion);
   const innerBoardBox = detectLegendBoardInnerCrop(boardRegion);
@@ -1312,6 +1334,25 @@ function detectBestLegendBoardCandidate(boardRegion: RasterImage) {
     return allCandidates[0];
   }
   return null;
+}
+
+function isConfidentAxisLabelLegendBoard(
+  boardRegion: RasterImage,
+  candidate: ChartImportDetection & { score: number },
+) {
+  const cropWidth = candidate.cropBox[2] - candidate.cropBox[0];
+  const cropHeight = candidate.cropBox[3] - candidate.cropBox[1];
+  const areaRatio = (cropWidth * cropHeight) / Math.max(1, boardRegion.width * boardRegion.height);
+  const cellWidth = cropWidth / Math.max(1, candidate.gridWidth);
+  const cellHeight = cropHeight / Math.max(1, candidate.gridHeight);
+  const cellAspect = Math.max(cellWidth, cellHeight) / Math.max(1e-6, Math.min(cellWidth, cellHeight));
+  return (
+    candidate.mode.includes("axis-label") &&
+    areaRatio >= 0.42 &&
+    cellWidth >= 6 &&
+    cellHeight >= 6 &&
+    cellAspect <= 1.35
+  );
 }
 
 function detectLegendBoardFromAxisLabelsCandidate(
