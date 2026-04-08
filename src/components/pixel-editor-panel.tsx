@@ -1065,6 +1065,14 @@ function EditorStage({
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
   const [stageViewport, setStageViewport] = useState({ width: 0, height: 0 });
   const pinchStateRef = useRef<{ distance: number; zoom: number } | null>(null);
+  const touchPanStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+    moved: boolean;
+    cellIndex: number | null;
+  } | null>(null);
   const panStateRef = useRef<{
     pointerId: number;
     pointerType: string;
@@ -1176,12 +1184,32 @@ function EditorStage({
       return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
     }
 
+    function clearTouchPan() {
+      touchPanStateRef.current = null;
+      setIsPanning(false);
+    }
+
     function handleTouchStart(event: TouchEvent) {
-      if (event.touches.length < 2) {
+      if (event.touches.length === 1) {
         pinchStateRef.current = null;
+        if (!canPanStage || (stageMode === "edit" && !panToolActive)) {
+          clearTouchPan();
+          return;
+        }
+
+        const touch = event.touches[0];
+        touchPanStateRef.current = {
+          startX: touch.clientX,
+          startY: touch.clientY,
+          startScrollLeft: element.scrollLeft,
+          startScrollTop: element.scrollTop,
+          moved: false,
+          cellIndex: getCellIndexFromTarget(event.target),
+        };
         return;
       }
 
+      clearTouchPan();
       panStateRef.current = null;
       setIsPanning(false);
       const distance = getTouchDistance(event.touches);
@@ -1195,6 +1223,26 @@ function EditorStage({
     }
 
     function handleTouchMove(event: TouchEvent) {
+      if (event.touches.length === 1 && touchPanStateRef.current) {
+        const touch = event.touches[0];
+        const state = touchPanStateRef.current;
+        const deltaX = touch.clientX - state.startX;
+        const deltaY = touch.clientY - state.startY;
+        if (!state.moved && Math.hypot(deltaX, deltaY) < 4) {
+          return;
+        }
+
+        if (!state.moved) {
+          state.moved = true;
+          setIsPanning(true);
+        }
+
+        event.preventDefault();
+        element.scrollLeft = state.startScrollLeft - deltaX;
+        element.scrollTop = state.startScrollTop - deltaY;
+        return;
+      }
+
       if (event.touches.length < 2 || !pinchStateRef.current) {
         return;
       }
@@ -1214,6 +1262,25 @@ function EditorStage({
     }
 
     function handleTouchEnd(event: TouchEvent) {
+      const touchPanState = touchPanStateRef.current;
+      if (touchPanState && event.touches.length === 0) {
+        if (
+          stageMode === "pindou" &&
+          !touchPanState.moved &&
+          touchPanState.cellIndex !== null &&
+          suppressTapUntilRef.current <= performance.now()
+        ) {
+          const cell = cells[touchPanState.cellIndex] ?? null;
+          onFocusLabelChange?.(cell?.label && cell.label === focusedLabel ? null : cell?.label ?? null);
+        }
+
+        if (touchPanState.moved) {
+          suppressTapUntilRef.current = performance.now() + 180;
+        }
+
+        clearTouchPan();
+      }
+
       if (event.touches.length < 2) {
         pinchStateRef.current = null;
       }
@@ -1228,8 +1295,9 @@ function EditorStage({
       element.removeEventListener("touchmove", handleTouchMove);
       element.removeEventListener("touchend", handleTouchEnd);
       element.removeEventListener("touchcancel", handleTouchEnd);
-      };
-  }, [stageMode, pindouZoom, onPindouZoomChange, editZoom, onEditZoomChange]);
+      clearTouchPan();
+    };
+  }, [stageMode, canPanStage, panToolActive, pindouZoom, onPindouZoomChange, editZoom, onEditZoomChange, cells, focusedLabel, onFocusLabelChange]);
 
   useEffect(() => {
     if (stageMode !== "pindou" || !stageViewportRef.current) {
@@ -1649,8 +1717,8 @@ function EditorStage({
                   >
                     {shouldShowStageCellLabel(cell, stageMode, focusedLabel, cellSize) ? (
                       <span
-                        className="pointer-events-none absolute inset-0 flex items-center justify-center text-[8px] font-bold sm:text-[9px]"
-                        style={getStageCellLabelStyle(cell, stageMode, focusedLabel, isDark)}
+                        className="pointer-events-none absolute inset-0 flex items-center justify-center font-bold"
+                        style={getStageCellLabelStyle(cell, stageMode, focusedLabel, isDark, cellSize)}
                       >
                         {cell.label}
                       </span>
@@ -1765,6 +1833,22 @@ function chooseCursorTextColor(hex: string) {
   const blue = Number.parseInt(normalized.slice(4, 6), 16);
   const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
   return luminance >= 160 ? "#111111" : "#FFFFFF";
+}
+
+function getCellIndexFromTarget(target: EventTarget | null) {
+  const element =
+    target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  const raw = element?.closest<HTMLElement>("[data-cell-index]")?.dataset.cellIndex;
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 function PindouGuideLines({
@@ -1938,11 +2022,15 @@ function getStageCellLabelStyle(
   stageMode: EditorPanelMode,
   focusedLabel: string | null | undefined,
   isDark: boolean,
+  cellSize: number,
 ) {
   const background = getStageCellBackgroundColor(cell, stageMode, focusedLabel, isDark);
   const useLightText = shouldUseLightText(background);
+  const fontSize = Math.max(5, Math.min(10, Math.round(cellSize * 0.22)));
   return {
     color: useLightText ? "rgba(255,255,255,0.96)" : "rgba(17,17,17,0.92)",
+    fontSize: `${fontSize}px`,
+    lineHeight: 1,
     textShadow: useLightText
       ? "0 1px 1px rgba(0,0,0,0.42)"
       : "0 1px 1px rgba(255,255,255,0.35)",

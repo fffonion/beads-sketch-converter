@@ -6,6 +6,8 @@ const sampleImagePath =
   "D:\\fffonion\\Downloads\\拼豆图纸\\bangboo\\绝区零 邦布 拼豆图纸_4 (33 x 33).jpeg";
 const exportedChartImagePath =
   "D:\\fffonion\\Downloads\\拼豆图纸\\bangboo\\绝区零 邦布 拼豆图纸 2_10 (38 x 39)_mard_chart_38x39.png";
+const additionalChartImagePath =
+  "D:\\fffonion\\Downloads\\拼豆图纸\\来吧，拼到眼瞎也要拼_5.jpeg";
 
 function loadRasterWithPowerShell(imagePath: string) {
   const escapedPath = imagePath.replace(/'/g, "''");
@@ -114,4 +116,12 @@ test("auto detect should crop exported chart to the framed pixel board", () => {
   expect(cropWidth).toBeLessThan(raster.width);
   expect(cropHeight).toBeLessThan(raster.height);
   expect(cropHeight).toBeGreaterThan(raster.height * 0.45);
+});
+
+test("diagnose chart detection for 来吧，拼到眼瞎也要拼_5", () => {
+  const raster = loadRasterWithPowerShell(additionalChartImagePath);
+  const result = debugAutoDetectRaster(raster, basename(additionalChartImagePath));
+  console.log("来吧，拼到眼瞎也要拼_5 =>", JSON.stringify(result));
+
+  expect(result.cropBox).not.toBeNull();
 });
