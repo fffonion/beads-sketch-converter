@@ -93,9 +93,9 @@ export function PixelEditorPanel({
         <p className={clsx("text-xs", theme.cardMuted)}>{t.pixelEditorHint}</p>
       </div>
 
-      <div className="mt-4 grid gap-4 xl:grid-cols-[56px_minmax(0,1fr)]">
-        <section className={clsx("rounded-[10px] border p-2 transition-colors xl:min-h-[520px]", theme.card)}>
-          <div className="flex flex-col gap-2">
+      <div className="mt-4 grid min-w-0 gap-3 xl:grid-cols-[56px_minmax(0,1fr)] xl:gap-4">
+        <section className={clsx("min-w-0 rounded-[10px] border p-2 transition-colors xl:min-h-[520px]", theme.card)}>
+          <div className="flex w-full gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
             {tools.map((tool) => (
               <ToolIconButton
                 key={tool.id}
@@ -134,8 +134,8 @@ export function PixelEditorPanel({
           </div>
         </section>
 
-        <section className={clsx("rounded-[10px] border p-3 transition-colors sm:p-4 xl:min-h-[520px]", theme.card)}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <section className={clsx("min-w-0 rounded-[10px] border p-3 transition-colors sm:p-4 xl:min-h-[520px]", theme.card)}>
+          <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between">
             <div>
               <p className={clsx("text-xs uppercase tracking-[0.18em]", theme.cardMuted)}>{t.editorStage}</p>
               <p className={clsx("mt-1 text-xs", theme.cardMuted)}>
@@ -231,7 +231,9 @@ function ContextToolStrip({
       }
 
       const rect = triggerRef.current.getBoundingClientRect();
-      const width = Math.min(460, Math.max(280, Math.min(window.innerWidth - 24, Math.floor(window.innerWidth * 0.34))));
+      const width = window.innerWidth < 640
+        ? Math.min(window.innerWidth - 20, 360)
+        : Math.min(460, Math.max(280, Math.min(window.innerWidth - 24, Math.floor(window.innerWidth * 0.34))));
       const left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12));
       const maxHeight = Math.min(560, Math.max(320, Math.floor(window.innerHeight * 0.62)));
       const preferredTop = rect.bottom + 10;
@@ -264,8 +266,8 @@ function ContextToolStrip({
   }, [pickerOpen]);
 
   return (
-    <div className={clsx("min-w-0 flex-1 rounded-[8px] border px-3 py-2 sm:px-4", theme.previewStage)}>
-      <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
+    <div className={clsx("min-w-0 w-full overflow-hidden rounded-[8px] border px-2.5 py-2 sm:flex-1 sm:px-4", theme.previewStage)}>
+      <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
         {showPalette ? (
           <ColorPickerPopup
             t={t}
@@ -311,7 +313,7 @@ function ContextToolStrip({
             onValueChange={onFillToleranceChange}
           />
         ) : null}
-        <span className={clsx("shrink-0 text-xs", theme.cardMuted)}>{t.paletteHint}</span>
+        <span className={clsx("hidden shrink-0 text-xs xl:inline", theme.cardMuted)}>{t.paletteHint}</span>
       </div>
     </div>
   );
@@ -373,7 +375,7 @@ function ColorPickerPopup({
           className="h-4 w-4 rounded-full border border-black/10"
           style={{ backgroundColor: selectedHex ?? "transparent" }}
         />
-        <span className={clsx("text-[11px] uppercase tracking-[0.14em]", theme.cardMuted)}>{t.selectedColor}</span>
+        <span className={clsx("hidden text-[11px] uppercase tracking-[0.14em] sm:inline", theme.cardMuted)}>{t.selectedColor}</span>
         <span className={clsx("text-sm font-semibold", theme.cardTitle)}>{selectedLabel}</span>
       </button>
 
@@ -476,8 +478,8 @@ function EditorStage({
       }
 
       const rect = stageViewportRef.current.getBoundingClientRect();
-      const width = Math.max(0, rect.width - 24);
-      const height = Math.max(0, window.innerHeight - rect.top - 36);
+      const width = Math.max(0, stageViewportRef.current.clientWidth - (window.innerWidth < 640 ? 16 : 24));
+      const height = Math.max(0, window.innerHeight - rect.top - 24);
       setStageViewport((previous) =>
         previous.width === width && previous.height === height
           ? previous
@@ -512,17 +514,17 @@ function EditorStage({
     stageViewport.width,
     stageViewport.height,
   );
-  const scaledStageWidth = stageWidth * stageScale;
+  const scaledStageWidth = Math.min(stageWidth * stageScale, Math.max(0, stageViewport.width));
   const scaledStageHeight = stageHeight * stageScale;
 
   return (
     <div
       ref={stageViewportRef}
-      className={clsx("mt-4 overflow-hidden rounded-[10px] border p-2 sm:p-3", theme.previewStage)}
+      className={clsx("mt-4 w-full min-w-0 max-w-full overflow-hidden rounded-[10px] border p-2 sm:p-3", theme.previewStage)}
     >
       <div className="flex justify-center">
         <div
-          className="relative overflow-hidden rounded-[8px]"
+          className="relative w-fit max-w-full overflow-hidden rounded-[8px]"
           style={{ width: `${scaledStageWidth}px`, height: `${scaledStageHeight}px` }}
         >
           <div
@@ -615,14 +617,14 @@ function InlineSliderField({
 }) {
   const theme = getThemeClasses(isDark);
   return (
-    <div className={clsx("flex min-w-[210px] shrink-0 items-center gap-3 rounded-md border px-3 py-2", theme.pill)}>
-      <label className={clsx("shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em]", theme.cardMuted)} htmlFor={id}>
+    <div className={clsx("flex min-w-[116px] shrink-0 items-center gap-2 rounded-md border px-2 py-2 sm:min-w-[210px] sm:gap-3 sm:px-3", theme.pill)}>
+      <label className={clsx("hidden shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] sm:inline", theme.cardMuted)} htmlFor={id}>
           {label}
       </label>
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <Slider.Root
           id={id}
-          className="relative flex h-5 min-w-[120px] flex-1 touch-none select-none items-center"
+          className="relative flex h-5 min-w-[56px] flex-1 touch-none select-none items-center sm:min-w-[120px]"
           max={max}
           min={min}
           step={step}
@@ -634,7 +636,7 @@ function InlineSliderField({
           </Slider.Track>
           <Slider.Thumb className={clsx("block h-5 w-5 rounded-full border shadow outline-none", theme.sliderThumb)} />
         </Slider.Root>
-        <span className={clsx("w-8 shrink-0 text-right text-sm font-semibold", theme.cardTitle)}>{value}</span>
+        <span className={clsx("w-7 shrink-0 text-right text-sm font-semibold sm:w-8", theme.cardTitle)}>{value}</span>
       </div>
     </div>
   );
@@ -659,7 +661,7 @@ function ToolIconButton({
   return (
     <button
       className={clsx(
-        "flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition",
+        "flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition xl:h-10 xl:w-10",
         disabled
           ? theme.disabledButton
           : active

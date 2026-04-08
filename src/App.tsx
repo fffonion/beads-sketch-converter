@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Shapes } from "lucide-react";
+import { ImageUp, Shapes } from "lucide-react";
 import { startTransition, useEffect, useRef, useState } from "react";
 import { LanguageSwitch, ThemeSwitch } from "./components/controls";
 import { SidebarPanel } from "./components/sidebar-panel";
@@ -679,69 +679,102 @@ export default function App() {
         </div>
       ) : null}
 
-      <div className="mx-auto grid min-h-[calc(100vh-5rem)] max-w-[1600px] gap-4 px-4 pb-6 pt-4 xl:grid-cols-[420px_minmax(0,1fr)] xl:gap-6 lg:px-6 lg:pt-4">
-        <SidebarPanel
-          t={t}
-          file={file}
-          inputUrl={inputUrl}
-          cropMode={cropMode}
-          onCropModeChange={setCropMode}
-          cropRect={cropRect}
-          onCropChange={setCropRect}
-          busy={busy}
-          isDark={isDark}
-          colorSystemId={colorSystemId}
-          onColorSystemIdChange={setColorSystemId}
-          gridMode={gridMode}
-          onGridModeChange={setGridMode}
-          gridWidth={gridWidth}
-          gridHeight={gridHeight}
-          onGridWidthChange={handleGridWidthChange}
-          onGridHeightChange={handleGridHeightChange}
-          followSourceRatio={followSourceRatio}
-          onFollowSourceRatioChange={setFollowSourceRatio}
-          reduceColors={reduceColors}
-          onReduceColorsChange={setReduceColors}
-          reduceTolerance={reduceTolerance}
-          onReduceToleranceChange={setReduceTolerance}
-          preSharpen={preSharpen}
-          onPreSharpenChange={setPreSharpen}
-          preSharpenStrength={preSharpenStrength}
-          onPreSharpenStrengthChange={setPreSharpenStrength}
-          onFileSelection={handleFileSelection}
-        />
+      {!file ? (
+        <div className="mx-auto flex min-h-[calc(100vh-8rem)] max-w-[1600px] items-center justify-center px-4 pb-8 pt-6 lg:px-6">
+          <section className={clsx("w-full max-w-[640px] rounded-[14px] border p-6 text-center backdrop-blur transition-colors sm:p-8", theme.panel)}>
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[10px] border sm:h-16 sm:w-16" >
+              <ImageUp className={clsx("h-6 w-6 sm:h-7 sm:w-7", theme.cardTitle)} />
+            </div>
+            <h2 className={clsx("mt-5 font-['Iowan_Old_Style','Palatino_Linotype',Georgia,serif] text-2xl sm:text-3xl", theme.cardTitle)}>
+              {t.sourceChooseImage}
+            </h2>
+            <p className={clsx("mx-auto mt-3 max-w-[34rem] text-sm leading-6 sm:text-base", theme.cardMuted)}>
+              {t.sourceStayInTab}
+            </p>
+            <p className={clsx("mt-2 text-xs sm:text-sm", theme.cardMuted)}>
+              {t.sourceSubtitle}
+            </p>
+            <p className={clsx("mt-2 text-xs", theme.cardMuted)}>
+              {t.sourcePrivacyNote}
+            </p>
 
-        <WorkspacePanels
-          t={t}
-          inputUrl={inputUrl}
-          cropRect={cropRect}
-          result={result}
-          isDark={isDark}
-          editTool={editTool}
-          onEditToolChange={setEditTool}
-          overlayEnabled={overlayEnabled}
-          onOverlayEnabledChange={setOverlayEnabled}
-          fillTolerance={fillTolerance}
-          onFillToleranceChange={setFillTolerance}
-          brushSize={brushSize}
-          onBrushSizeChange={setBrushSize}
-          disabledResultLabels={disabledResultLabels}
-          matchedColorsBase={displayMatchedColors}
-          matchedCoveragePercent={matchedCoveragePercent}
-          onMatchedCoveragePercentChange={handleMatchedCoveragePercentChange}
-          onToggleMatchedColor={toggleDisabledMatchedColor}
-          selectedLabel={selectedLabel}
-          onSelectedLabelChange={setSelectedLabel}
-          paletteOptions={paletteOptions}
-          currentCells={renderedEditorCells}
-          onApplyCell={applyCellEdit}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          canUndo={editorHistoryIndex > 0}
-          canRedo={editorHistoryIndex >= 0 && editorHistoryIndex < editorHistory.length - 1}
-          paintActiveRef={paintActiveRef}
-        />
-      </div>
+            <label className={clsx("mx-auto mt-6 flex max-w-[320px] cursor-pointer items-center justify-center gap-2 rounded-md border px-5 py-3 text-sm font-semibold transition", theme.primaryButton)}>
+              <ImageUp className="h-4 w-4" />
+              <span>{t.sourceChooseImage}</span>
+              <input
+                className="hidden"
+                type="file"
+                accept="image/*"
+                onChange={(event) => handleFileSelection(event.target.files?.[0] ?? null)}
+              />
+            </label>
+          </section>
+        </div>
+      ) : (
+        <div className="mx-auto grid min-h-[calc(100vh-5rem)] max-w-[1600px] gap-4 px-4 pb-6 pt-4 xl:grid-cols-[420px_minmax(0,1fr)] xl:gap-6 lg:px-6 lg:pt-4">
+          <SidebarPanel
+            t={t}
+            file={file}
+            inputUrl={inputUrl}
+            cropMode={cropMode}
+            onCropModeChange={setCropMode}
+            cropRect={cropRect}
+            onCropChange={setCropRect}
+            busy={busy}
+            isDark={isDark}
+            colorSystemId={colorSystemId}
+            onColorSystemIdChange={setColorSystemId}
+            gridMode={gridMode}
+            onGridModeChange={setGridMode}
+            gridWidth={gridWidth}
+            gridHeight={gridHeight}
+            onGridWidthChange={handleGridWidthChange}
+            onGridHeightChange={handleGridHeightChange}
+            followSourceRatio={followSourceRatio}
+            onFollowSourceRatioChange={setFollowSourceRatio}
+            reduceColors={reduceColors}
+            onReduceColorsChange={setReduceColors}
+            reduceTolerance={reduceTolerance}
+            onReduceToleranceChange={setReduceTolerance}
+            preSharpen={preSharpen}
+            onPreSharpenChange={setPreSharpen}
+            preSharpenStrength={preSharpenStrength}
+            onPreSharpenStrengthChange={setPreSharpenStrength}
+            onFileSelection={handleFileSelection}
+          />
+
+          <WorkspacePanels
+            t={t}
+            inputUrl={inputUrl}
+            cropRect={cropRect}
+            result={result}
+            isDark={isDark}
+            editTool={editTool}
+            onEditToolChange={setEditTool}
+            overlayEnabled={overlayEnabled}
+            onOverlayEnabledChange={setOverlayEnabled}
+            fillTolerance={fillTolerance}
+            onFillToleranceChange={setFillTolerance}
+            brushSize={brushSize}
+            onBrushSizeChange={setBrushSize}
+            disabledResultLabels={disabledResultLabels}
+            matchedColorsBase={displayMatchedColors}
+            matchedCoveragePercent={matchedCoveragePercent}
+            onMatchedCoveragePercentChange={handleMatchedCoveragePercentChange}
+            onToggleMatchedColor={toggleDisabledMatchedColor}
+            selectedLabel={selectedLabel}
+            onSelectedLabelChange={setSelectedLabel}
+            paletteOptions={paletteOptions}
+            currentCells={renderedEditorCells}
+            onApplyCell={applyCellEdit}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            canUndo={editorHistoryIndex > 0}
+            canRedo={editorHistoryIndex >= 0 && editorHistoryIndex < editorHistory.length - 1}
+            paintActiveRef={paintActiveRef}
+          />
+        </div>
+      )}
     </main>
   );
 }
