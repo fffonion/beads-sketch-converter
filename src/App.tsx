@@ -1,6 +1,7 @@
 import clsx from "clsx";
-import { ImageUp, Minimize2, Shapes } from "lucide-react";
+import { ImageUp } from "lucide-react";
 import { startTransition, useEffect, useRef, useState } from "react";
+import { BrandLogo } from "./components/brand-logo";
 import { LanguageSwitch, ThemeSwitch } from "./components/controls";
 import { SidebarPanel } from "./components/sidebar-panel";
 import { WorkspacePanels } from "./components/workspace-panels";
@@ -15,13 +16,15 @@ import {
   type ProcessResult,
 } from "./lib/mard";
 import { getThemeClasses, type ThemeMode } from "./lib/theme";
+import type { EditorPanelMode } from "./components/pixel-editor-panel";
 
 type GridMode = "auto" | "manual";
 type GridAxis = "width" | "height";
-type EditTool = "paint" | "erase" | "pick" | "fill";
+type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom";
 
 const localeStorageKey = "pindou-convert-locale";
 const themeStorageKey = "pindou-convert-theme";
+const APP_BRAND_TITLE = "拼豆豆 图纸转换";
 
 function readInitialLocale(): Locale {
   if (typeof window === "undefined") {
@@ -49,6 +52,7 @@ export default function App() {
   const sourceMetaRunIdRef = useRef(0);
   const editorHistoryRef = useRef<EditableCell[][]>([]);
   const editorHistoryIndexRef = useRef(-1);
+  const editorDraftRef = useRef<EditableCell[] | null>(null);
   const inputUrlRef = useRef<string | null>(null);
   const resultUrlRef = useRef<string | null>(null);
 
@@ -75,14 +79,20 @@ export default function App() {
   const [reduceTolerance, setReduceTolerance] = useState(16);
   const [preSharpen, setPreSharpen] = useState(true);
   const [preSharpenStrength, setPreSharpenStrength] = useState(20);
-  const [editTool, setEditTool] = useState<EditTool>("paint");
+  const [editTool, setEditTool] = useState<EditTool>("pan");
+  const [editZoom, setEditZoom] = useState(1);
+  const [editFlipHorizontal, setEditFlipHorizontal] = useState(false);
   const [brushSize, setBrushSize] = useState(1);
   const [fillTolerance, setFillTolerance] = useState(16);
   const [overlayEnabled, setOverlayEnabled] = useState(false);
   const [disabledResultLabels, setDisabledResultLabels] = useState<string[]>([]);
   const [editorHistory, setEditorHistory] = useState<EditableCell[][]>([]);
   const [editorHistoryIndex, setEditorHistoryIndex] = useState(-1);
+  const [editorDraftCells, setEditorDraftCells] = useState<EditableCell[] | null>(null);
   const [pindouFocusViewOpen, setPindouFocusViewOpen] = useState(false);
+  const [editorPanelMode, setEditorPanelMode] = useState<EditorPanelMode>("edit");
+  const [pindouFlipHorizontal, setPindouFlipHorizontal] = useState(false);
+  const [pindouZoom, setPindouZoom] = useState(1);
 
   const paletteOptions = getPaletteOptions(colorSystemId);
   const [selectedLabel, setSelectedLabel] = useState<string>(paletteOptions[0]?.label ?? "A1");
@@ -92,8 +102,13 @@ export default function App() {
   const theme = getThemeClasses(isDark);
   const activeAspectRatio = getActiveAspectRatio(sourceSize, cropMode ? cropRect : null);
   const topError = error;
+  const previewCropRect = combineNormalizedCropRects(
+    cropMode ? cropRect : null,
+    result?.detectedCropRect ?? null,
+  );
   const editorBaseCells =
-    editorHistoryIndex >= 0 ? editorHistory[editorHistoryIndex] ?? [] : result?.cells ?? [];
+    editorDraftCells ??
+    (editorHistoryIndex >= 0 ? editorHistory[editorHistoryIndex] ?? [] : result?.cells ?? []);
   const renderedEditorCells = getRenderedEditableCells(
     editorBaseCells,
     disabledResultLabels,
@@ -138,6 +153,13 @@ export default function App() {
     setGridWidth(String(Math.max(1, Math.round(parsedHeight * activeAspectRatio))));
   }
 
+  function handleManualCropChange(nextCropRect: NormalizedCropRect | null) {
+    setCropRect(nextCropRect);
+    if (nextCropRect) {
+      setGridMode("manual");
+    }
+  }
+
   function applyManualFallbackGrid() {
     const ratio = activeAspectRatio ?? 1;
     const defaultGridBase = sourceComplexity;
@@ -158,16 +180,29 @@ export default function App() {
   function handleFileSelection(nextFile: File | null) {
     sourceMetaRunIdRef.current += 1;
     setError(null);
+    setGridMode("auto");
+    setGridWidth("33");
+    setGridHeight("33");
+    setManualLastEditedAxis("width");
+    setFollowSourceRatio(true);
     setCropRect(null);
     setCropMode(false);
     setSourceSize(null);
     setSourceComplexity(52);
     setPindouFocusViewOpen(false);
+    setEditorPanelMode("edit");
+    setEditFlipHorizontal(false);
+    setPindouFlipHorizontal(false);
+    setPindouZoom(1);
+    setEditTool("pan");
+    setEditZoom(1);
     setDisabledResultLabels([]);
     editorHistoryRef.current = [];
     editorHistoryIndexRef.current = -1;
+    editorDraftRef.current = null;
     setEditorHistory([]);
     setEditorHistoryIndex(-1);
+    setEditorDraftCells(null);
 
     if (result?.url) {
       URL.revokeObjectURL(result.url);
@@ -230,6 +265,7 @@ export default function App() {
           canvasContextUnavailable: t.errorCanvasContextUnavailable,
           encodingFailed: t.errorEncodingFailed,
           chartTitle: t.chartTitle,
+          chartMetaLine: t.chartMetaLine,
         },
       });
 
@@ -268,6 +304,8 @@ export default function App() {
   }
 
   function resetEditorHistory(cells: EditableCell[]) {
+    editorDraftRef.current = null;
+    setEditorDraftCells(null);
     const snapshot = cloneEditableCells(cells);
     editorHistoryRef.current = [snapshot];
     editorHistoryIndexRef.current = 0;
@@ -276,6 +314,8 @@ export default function App() {
   }
 
   function commitEditorSnapshot(nextCells: EditableCell[]) {
+    editorDraftRef.current = null;
+    setEditorDraftCells(null);
     const snapshot = cloneEditableCells(nextCells);
     const base = editorHistoryRef.current.slice(0, editorHistoryIndexRef.current + 1);
     base.push(snapshot);
@@ -284,6 +324,20 @@ export default function App() {
     setEditorHistory(base);
     setEditorHistoryIndex(base.length - 1);
     void refreshEditedChart(snapshot);
+  }
+
+  function stageEditorDraft(nextCells: EditableCell[]) {
+    const snapshot = cloneEditableCells(nextCells);
+    editorDraftRef.current = snapshot;
+    setEditorDraftCells(snapshot);
+  }
+
+  function finalizeBrushStroke() {
+    const draft = editorDraftRef.current;
+    if (!draft) {
+      return;
+    }
+    commitEditorSnapshot(draft);
   }
 
   function handleUndo() {
@@ -354,6 +408,10 @@ export default function App() {
       return;
     }
 
+    if (editTool === "pan" || editTool === "zoom") {
+      return;
+    }
+
     const replacement = buildReplacementCell(selectedLabel, paletteOptions, editTool);
     const nextCells =
       editTool === "fill"
@@ -375,6 +433,11 @@ export default function App() {
           );
 
     if (cellsEqual(editorBaseCells, nextCells)) {
+      return;
+    }
+
+    if (editTool === "paint" || editTool === "erase") {
+      stageEditorDraft(nextCells);
       return;
     }
 
@@ -435,7 +498,11 @@ export default function App() {
 
   useEffect(() => {
     const handlePointerUp = () => {
+      const shouldFinalize = paintActiveRef.current;
       paintActiveRef.current = false;
+      if (shouldFinalize) {
+        finalizeBrushStroke();
+      }
     };
 
     window.addEventListener("pointerup", handlePointerUp);
@@ -496,8 +563,10 @@ export default function App() {
       setDisabledResultLabels([]);
       editorHistoryRef.current = [];
       editorHistoryIndexRef.current = -1;
+      editorDraftRef.current = null;
       setEditorHistory([]);
       setEditorHistoryIndex(-1);
+      setEditorDraftCells(null);
       setResult((previous) => {
         if (previous?.url) {
           URL.revokeObjectURL(previous.url);
@@ -521,8 +590,10 @@ export default function App() {
       setDisabledResultLabels([]);
       editorHistoryRef.current = [];
       editorHistoryIndexRef.current = -1;
+      editorDraftRef.current = null;
       setEditorHistory([]);
       setEditorHistoryIndex(-1);
+      setEditorDraftCells(null);
       setResult((previous) => {
         if (previous?.url) {
           URL.revokeObjectURL(previous.url);
@@ -557,6 +628,7 @@ export default function App() {
               canvasContextUnavailable: t.errorCanvasContextUnavailable,
               encodingFailed: t.errorEncodingFailed,
               chartTitle: t.chartTitle,
+              chartMetaLine: t.chartMetaLine,
             },
           });
 
@@ -564,8 +636,36 @@ export default function App() {
             return;
           }
 
+          if (
+            gridMode === "auto" &&
+            activeAspectRatio &&
+            hasLargeAspectRatioMismatch(
+              activeAspectRatio,
+              processed.gridWidth / processed.gridHeight,
+            )
+          ) {
+            setGridMode("manual");
+            applyManualFallbackGrid();
+            setResult((previous) => {
+              if (previous?.url) {
+                URL.revokeObjectURL(previous.url);
+              }
+              return null;
+            });
+            setDisabledResultLabels([]);
+            editorHistoryRef.current = [];
+            editorHistoryIndexRef.current = -1;
+            editorDraftRef.current = null;
+            setEditorHistory([]);
+            setEditorHistoryIndex(-1);
+            setEditorDraftCells(null);
+            setError(t.errorAutoGridAspectMismatch);
+            return;
+          }
+
           const url = URL.createObjectURL(processed.blob);
           setDisabledResultLabels([]);
+          setEditorPanelMode(processed.preferredEditorMode);
           startTransition(() => {
             setResult((previous) => {
               if (previous?.url) {
@@ -606,8 +706,10 @@ export default function App() {
           setDisabledResultLabels([]);
           editorHistoryRef.current = [];
           editorHistoryIndexRef.current = -1;
+          editorDraftRef.current = null;
           setEditorHistory([]);
           setEditorHistoryIndex(-1);
+          setEditorDraftCells(null);
           setError(
             processingError instanceof Error ? processingError.message : t.processingFailed,
           );
@@ -634,22 +736,14 @@ export default function App() {
     preSharpenStrength,
     cropMode,
     cropRect,
+    activeAspectRatio,
     locale,
   ]);
 
   if (file && pindouFocusViewOpen) {
     return (
       <main className={clsx("min-h-screen transition-colors", theme.page)}>
-        <button
-          className={clsx("fixed right-4 top-4 z-[120] flex h-10 w-10 items-center justify-center rounded-md border transition sm:right-6 sm:top-6", theme.pill)}
-          onClick={() => setPindouFocusViewOpen(false)}
-          title={t.pindouExitFocus}
-          type="button"
-        >
-          <Minimize2 className="h-4 w-4" />
-        </button>
-
-        <div className="min-h-screen w-full p-4 sm:p-6">
+        <div className="min-h-screen w-full overflow-auto p-4 sm:p-6">
           <WorkspacePanels
             t={t}
             inputUrl={inputUrl}
@@ -658,6 +752,10 @@ export default function App() {
             isDark={isDark}
             editTool={editTool}
             onEditToolChange={setEditTool}
+            editZoom={editZoom}
+            onEditZoomChange={setEditZoom}
+            editFlipHorizontal={editFlipHorizontal}
+            onEditFlipHorizontalChange={setEditFlipHorizontal}
             overlayEnabled={overlayEnabled}
             onOverlayEnabledChange={setOverlayEnabled}
             fillTolerance={fillTolerance}
@@ -682,6 +780,13 @@ export default function App() {
             focusViewOpen={pindouFocusViewOpen}
             onFocusViewOpenChange={setPindouFocusViewOpen}
             focusOnly
+            preferredEditorMode={editorPanelMode}
+            preferredEditorModeSeed={inputUrl}
+            onPreferredEditorModeChange={setEditorPanelMode}
+            pindouFlipHorizontal={pindouFlipHorizontal}
+            onPindouFlipHorizontalChange={setPindouFlipHorizontal}
+            pindouZoom={pindouZoom}
+            onPindouZoomChange={setPindouZoom}
           />
         </div>
       </main>
@@ -690,16 +795,16 @@ export default function App() {
 
   return (
     <main className={clsx("min-h-screen transition-colors", theme.page)}>
-      <div className="mx-auto max-w-[1600px] px-4 pt-3 sm:pt-4 lg:px-6 lg:pt-6">
+      <div className="mx-auto max-w-[1760px] px-4 pt-3 sm:pt-4 lg:px-6 lg:pt-6">
         <div className="flex flex-col gap-3 sm:gap-4 xl:flex-row xl:items-stretch xl:justify-between">
-          <div className={clsx("min-w-0 rounded-[10px] border px-3 py-2 backdrop-blur transition-colors sm:px-4 xl:flex-1", theme.controlShell)}>
+        <div className={clsx("min-w-0 rounded-[10px] border px-3 py-2 backdrop-blur transition-colors sm:px-4 xl:flex-1", theme.controlShell)}>
             <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:flex-row xl:items-center xl:gap-4">
               <div className="flex shrink-0 items-center gap-3">
                 <div className={clsx("flex h-9 w-9 items-center justify-center rounded-[8px] border", theme.pill)}>
-                  <Shapes className="h-4.5 w-4.5" />
+                  <BrandLogo className="h-5 w-5" />
                 </div>
-                <h1 className={clsx("font-['Iowan_Old_Style','Palatino_Linotype',Georgia,serif] text-xl leading-none sm:text-2xl", theme.cardTitle)}>
-                  {t.appTitle}
+                <h1 className={clsx("text-xl font-semibold leading-none sm:text-2xl", theme.cardTitle)}>
+                  {APP_BRAND_TITLE}
                 </h1>
               </div>
             </div>
@@ -725,7 +830,7 @@ export default function App() {
       </div>
 
       {topError ? (
-        <div className="mx-auto max-w-[1600px] px-4 pt-3 lg:px-6">
+        <div className="mx-auto max-w-[1760px] px-4 pt-3 lg:px-6">
           <div className={clsx("rounded-[10px] border px-4 py-3 text-sm", theme.errorBox)}>
             {topError}
           </div>
@@ -733,12 +838,12 @@ export default function App() {
       ) : null}
 
       {!file ? (
-        <div className="mx-auto flex min-h-[calc(100vh-8rem)] max-w-[1600px] items-center justify-center px-4 pb-8 pt-6 lg:px-6">
+        <div className="mx-auto flex min-h-[calc(100vh-8rem)] max-w-[1760px] items-center justify-center px-4 pb-8 pt-6 lg:px-6">
           <section className={clsx("w-full max-w-[640px] rounded-[14px] border p-6 text-center backdrop-blur transition-colors sm:p-8", theme.panel)}>
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[10px] border sm:h-16 sm:w-16" >
               <ImageUp className={clsx("h-6 w-6 sm:h-7 sm:w-7", theme.cardTitle)} />
             </div>
-            <h2 className={clsx("mt-5 font-['Iowan_Old_Style','Palatino_Linotype',Georgia,serif] text-2xl sm:text-3xl", theme.cardTitle)}>
+            <h2 className={clsx("mt-5 text-2xl font-semibold sm:text-3xl", theme.cardTitle)}>
               {t.sourceChooseImage}
             </h2>
             <p className={clsx("mx-auto mt-3 max-w-[34rem] text-sm leading-6 sm:text-base", theme.cardMuted)}>
@@ -751,7 +856,7 @@ export default function App() {
               {t.sourcePrivacyNote}
             </p>
 
-            <label className={clsx("mx-auto mt-6 flex max-w-[320px] cursor-pointer items-center justify-center gap-2 rounded-md border px-5 py-3 text-sm font-semibold transition", theme.primaryButton)}>
+            <label className={clsx("mx-auto mt-6 flex max-w-[320px] cursor-pointer items-center justify-center gap-2 rounded-md border px-5 py-3 text-sm font-medium transition", theme.primaryButton)}>
               <ImageUp className="h-4 w-4" />
               <span>{t.sourceChooseImage}</span>
               <input
@@ -764,7 +869,7 @@ export default function App() {
           </section>
         </div>
       ) : (
-        <div className="mx-auto grid min-h-[calc(100vh-5rem)] max-w-[1600px] gap-4 px-4 pb-6 pt-4 xl:grid-cols-[420px_minmax(0,1fr)] xl:gap-6 lg:px-6 lg:pt-4">
+        <div className="mx-auto grid h-[calc(100vh-5rem)] min-h-0 max-w-[1760px] gap-4 overflow-hidden px-4 pb-6 pt-4 xl:grid-cols-[minmax(320px,22vw)_minmax(0,1fr)] xl:gap-6 lg:px-6 lg:pt-4">
           <SidebarPanel
             t={t}
             file={file}
@@ -772,7 +877,8 @@ export default function App() {
             cropMode={cropMode}
             onCropModeChange={setCropMode}
             cropRect={cropRect}
-            onCropChange={setCropRect}
+            displayCropRect={previewCropRect}
+            onCropChange={handleManualCropChange}
             busy={busy}
             isDark={isDark}
             colorSystemId={colorSystemId}
@@ -804,6 +910,10 @@ export default function App() {
             isDark={isDark}
             editTool={editTool}
             onEditToolChange={setEditTool}
+            editZoom={editZoom}
+            onEditZoomChange={setEditZoom}
+            editFlipHorizontal={editFlipHorizontal}
+            onEditFlipHorizontalChange={setEditFlipHorizontal}
             overlayEnabled={overlayEnabled}
             onOverlayEnabledChange={setOverlayEnabled}
             fillTolerance={fillTolerance}
@@ -822,13 +932,20 @@ export default function App() {
             onApplyCell={applyCellEdit}
             onUndo={handleUndo}
             onRedo={handleRedo}
-          canUndo={editorHistoryIndex > 0}
-          canRedo={editorHistoryIndex >= 0 && editorHistoryIndex < editorHistory.length - 1}
-          paintActiveRef={paintActiveRef}
-          focusViewOpen={pindouFocusViewOpen}
-          onFocusViewOpenChange={setPindouFocusViewOpen}
-        />
-      </div>
+            canUndo={editorHistoryIndex > 0}
+            canRedo={editorHistoryIndex >= 0 && editorHistoryIndex < editorHistory.length - 1}
+            paintActiveRef={paintActiveRef}
+            focusViewOpen={pindouFocusViewOpen}
+            onFocusViewOpenChange={setPindouFocusViewOpen}
+            preferredEditorMode={editorPanelMode}
+            preferredEditorModeSeed={inputUrl}
+            onPreferredEditorModeChange={setEditorPanelMode}
+            pindouFlipHorizontal={pindouFlipHorizontal}
+            onPindouFlipHorizontalChange={setPindouFlipHorizontal}
+            pindouZoom={pindouZoom}
+            onPindouZoomChange={setPindouZoom}
+          />
+        </div>
       )}
     </main>
   );
@@ -853,6 +970,43 @@ function getActiveAspectRatio(
   }
 
   return cropWidth / cropHeight;
+}
+
+function hasLargeAspectRatioMismatch(
+  sourceAspectRatio: number,
+  detectedAspectRatio: number,
+) {
+  if (
+    !Number.isFinite(sourceAspectRatio) ||
+    !Number.isFinite(detectedAspectRatio) ||
+    sourceAspectRatio <= 0 ||
+    detectedAspectRatio <= 0
+  ) {
+    return false;
+  }
+
+  const larger = Math.max(sourceAspectRatio, detectedAspectRatio);
+  const smaller = Math.min(sourceAspectRatio, detectedAspectRatio);
+  return larger / smaller >= 1.55;
+}
+
+function combineNormalizedCropRects(
+  outer: NormalizedCropRect | null,
+  inner: NormalizedCropRect | null,
+) {
+  if (!outer) {
+    return inner;
+  }
+  if (!inner) {
+    return outer;
+  }
+
+  return {
+    x: outer.x + inner.x * outer.width,
+    y: outer.y + inner.y * outer.height,
+    width: outer.width * inner.width,
+    height: outer.height * inner.height,
+  };
 }
 
 async function loadImageMetadata(file: File) {
@@ -965,7 +1119,11 @@ function buildReplacementCell(
   }
 
   const selected = paletteOptions.find((entry) => entry.label === selectedLabel);
-  if (!selected || selected.label === "H2") {
+  if (selectedLabel === "H2") {
+    return { label: "H2", hex: "#FFFFFF" };
+  }
+
+  if (!selected) {
     return { label: null, hex: null };
   }
 

@@ -111,9 +111,14 @@ export function StatCard({
 }) {
   const theme = getThemeClasses(isDark);
   return (
-    <div className={clsx("rounded-[10px] border px-3 py-3 transition-colors sm:rounded-[12px] sm:px-4", theme.stat)}>
+    <div
+      className={clsx(
+        "flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5 transition-colors sm:rounded-[12px] sm:px-4",
+        theme.stat,
+      )}
+    >
       <p className={clsx("text-xs uppercase tracking-[0.18em]", theme.cardMuted)}>{label}</p>
-      <p className={clsx("mt-2 text-sm font-semibold", theme.cardTitle)}>{value}</p>
+      <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{value}</p>
     </div>
   );
 }

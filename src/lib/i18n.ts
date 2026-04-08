@@ -55,6 +55,7 @@ export interface Messages {
   editorTabEdit: string;
   editorTabPindou: string;
   pindouModeHint: string;
+  pindouFlipHorizontal?: string;
   pindouFocusView: string;
   pindouExitFocus: string;
   toolLabel: string;
@@ -62,6 +63,8 @@ export interface Messages {
   toolErase: string;
   toolPick: string;
   toolFill: string;
+  toolPan?: string;
+  toolZoom?: string;
   toolUndo: string;
   toolRedo: string;
   selectedColor: string;
@@ -74,6 +77,7 @@ export interface Messages {
   overlayOpacity: string;
   brushSize: string;
   fillThreshold: string;
+  zoomLabel?: string;
   editorStage: string;
   modeLabel: string;
   gridLabel: string;
@@ -86,10 +90,12 @@ export interface Messages {
   manualGridValidation: string;
   processingFailed: string;
   errorNonPixelArt: string;
+  errorAutoGridAspectMismatch: string;
   errorManualGridRequired: string;
   errorCanvasContextUnavailable: string;
   errorEncodingFailed: string;
   chartTitle: (width: number, height: number) => string;
+  chartMetaLine: (colorSystemLabel: string, totalBeads: number) => string;
   detectionMode: Record<string, string>;
 }
 
@@ -151,6 +157,7 @@ export const messages: Record<Locale, Messages> = {
     editorTabEdit: "像素编辑",
     editorTabPindou: "拼豆模式",
     pindouModeHint: "点击底部颜色或图纸格子，可单独高亮一种颜色。",
+    pindouFlipHorizontal: "水平翻转",
     pindouFocusView: "专注查看图纸",
     pindouExitFocus: "退出专注查看",
     toolLabel: "工具",
@@ -163,12 +170,12 @@ export const messages: Record<Locale, Messages> = {
     selectedColor: "当前颜色",
     emptyPixel: "空像素",
     paletteTitle: "调色板",
-    paletteHint: "先选颜色，再点击右侧格子进行修改。",
+    paletteHint: "",
     paletteFilterPlaceholder: "输入色号筛选",
     pixelEditorHint: "支持点击和拖动连续修改。",
     overlayToggle: "原图叠加",
     overlayOpacity: "叠加透明度",
-    brushSize: "笔宽",
+    brushSize: "画笔粗细",
     fillThreshold: "填充容差",
     editorStage: "编辑画布",
     modeLabel: "模式",
@@ -182,10 +189,12 @@ export const messages: Record<Locale, Messages> = {
     manualGridValidation: "手动模式下必须填写大于 0 的网格宽度和网格高度。",
     processingFailed: "转换失败。",
     errorNonPixelArt: "这张图不像是可直接识别的网格像素画。请切换到手动网格并先填写宽度和高度。",
+    errorAutoGridAspectMismatch: "自动识别出的网格长宽比和输入图差异过大，已默认切换到手动网格。你仍然可以手动切回自动识别。",
     errorManualGridRequired: "手动模式下必须同时填写网格宽度和网格高度。",
     errorCanvasContextUnavailable: "当前环境无法使用 Canvas 2D 上下文。",
     errorEncodingFailed: "输出 PNG 编码失败。",
     chartTitle: (width, height) => `拼豆图纸 - ${width} x ${height}`,
+    chartMetaLine: (colorSystemLabel, totalBeads) => `${colorSystemLabel} · ${totalBeads} 颗拼豆`,
     detectionMode: {
       "raw-pixel-art": "原始像素画",
       "detected-gridlines": "检测到分隔线网格",
@@ -253,6 +262,7 @@ export const messages: Record<Locale, Messages> = {
     editorTabEdit: "Pixel Edit",
     editorTabPindou: "Pindou Mode",
     pindouModeHint: "Click a color or a grid cell to highlight just that color.",
+    pindouFlipHorizontal: "Flip Horizontally",
     pindouFocusView: "Focus on sketch",
     pindouExitFocus: "Exit focus view",
     toolLabel: "Tool",
@@ -260,6 +270,8 @@ export const messages: Record<Locale, Messages> = {
     toolErase: "Erase",
     toolPick: "Pick",
     toolFill: "Fill",
+    toolPan: "Pan",
+    toolZoom: "Zoom",
     toolUndo: "Undo",
     toolRedo: "Redo",
     selectedColor: "Selected Color",
@@ -272,6 +284,7 @@ export const messages: Record<Locale, Messages> = {
     overlayOpacity: "Overlay Opacity",
     brushSize: "Brush Size",
     fillThreshold: "Fill Threshold",
+    zoomLabel: "Zoom",
     editorStage: "Canvas",
     modeLabel: "Mode",
     gridLabel: "Grid",
@@ -284,10 +297,12 @@ export const messages: Record<Locale, Messages> = {
     manualGridValidation: "Manual mode requires positive grid width and grid height.",
     processingFailed: "Conversion failed.",
     errorNonPixelArt: "This image does not look like grid-based pixel art. Switch to Manual Grid and provide width and height first.",
+    errorAutoGridAspectMismatch: "The auto-detected grid ratio differs too much from the input image, so the app switched to Manual Grid by default. You can still switch back to Auto Detect.",
     errorManualGridRequired: "Manual mode requires both grid width and grid height.",
     errorCanvasContextUnavailable: "Canvas 2D context is not available in this environment.",
     errorEncodingFailed: "Failed to encode the output PNG.",
     chartTitle: (width, height) => `Bead Chart - ${width} x ${height}`,
+    chartMetaLine: (colorSystemLabel, totalBeads) => `${colorSystemLabel} · ${totalBeads} beads`,
     detectionMode: {
       "raw-pixel-art": "Raw pixel art",
       "detected-gridlines": "Detected gridline chart",

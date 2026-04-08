@@ -4,53 +4,64 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import type { NormalizedCropRect } from "../lib/mard";
 import { getThemeClasses } from "../lib/theme";
 
+type ResizeHandle = "nw" | "ne" | "sw" | "se";
+type CropInteraction =
+  | {
+      mode: "create";
+      start: { x: number; y: number };
+    }
+  | {
+      mode: "move";
+      start: { x: number; y: number };
+      origin: NormalizedCropRect;
+    }
+  | {
+      mode: "resize";
+      start: { x: number; y: number };
+      origin: NormalizedCropRect;
+      handle: ResizeHandle;
+    };
+
 export function OriginalPreviewCard({
   title,
-  subtitle,
-  privacyNote,
   file,
   url,
   emptyText,
-  sourceLocalOnly,
   sourceChooseImage,
   sourceStayInTab,
   onFileSelection,
-  cropTitle,
-  cropHint,
   cropReset,
   cropEdit,
   cropMode,
   onCropModeChange,
   cropRect,
+  displayCropRect,
   onCropChange,
   isDark,
 }: {
   title: string;
-  subtitle: string;
-  privacyNote: string;
   file: File | null;
   url: string | null;
   emptyText: string;
-  sourceLocalOnly: string;
   sourceChooseImage: string;
   sourceStayInTab: string;
   onFileSelection: (file: File | null) => void;
-  cropTitle: string;
-  cropHint: string;
   cropReset: string;
   cropEdit: string;
   cropMode: boolean;
   onCropModeChange: (enabled: boolean) => void;
   cropRect: NormalizedCropRect | null;
+  displayCropRect: NormalizedCropRect | null;
   onCropChange: (cropRect: NormalizedCropRect | null) => void;
   isDark: boolean;
 }) {
   const theme = getThemeClasses(isDark);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const interactionRef = useRef<CropInteraction | null>(null);
   const [draftCrop, setDraftCrop] = useState<NormalizedCropRect | null>(null);
-  const visibleCrop = draftCrop ?? cropRect;
+  const visibleCrop = draftCrop ?? cropRect ?? displayCropRect;
 
   function handleSelectFile() {
     if (!fileInputRef.current) {
@@ -64,12 +75,18 @@ export function OriginalPreviewCard({
     if (!cropMode || !imageRef.current) {
       return;
     }
+    if (interactionRef.current) {
+      return;
+    }
     const normalized = eventToNormalizedPoint(event, imageRef.current);
     if (!normalized) {
       return;
     }
 
-    dragStartRef.current = normalized;
+    interactionRef.current = {
+      mode: "create",
+      start: normalized,
+    };
     setDraftCrop({
       x: normalized.x,
       y: normalized.y,
@@ -80,28 +97,94 @@ export function OriginalPreviewCard({
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!cropMode || !imageRef.current || !dragStartRef.current) {
+    if (!cropMode || !imageRef.current || !interactionRef.current) {
       return;
     }
     const normalized = eventToNormalizedPoint(event, imageRef.current);
     if (!normalized) {
       return;
     }
-    setDraftCrop(normalizedRectFromPoints(dragStartRef.current, normalized));
+
+    const interaction = interactionRef.current;
+    if (interaction.mode === "create") {
+      setDraftCrop(normalizedRectFromPoints(interaction.start, normalized));
+      return;
+    }
+
+    if (interaction.mode === "move") {
+      setDraftCrop(
+        clampCropRect(
+          moveCropRect(interaction.origin, normalized.x - interaction.start.x, normalized.y - interaction.start.y),
+        ),
+      );
+      return;
+    }
+
+    setDraftCrop(
+      clampCropRect(resizeCropRect(interaction.origin, interaction.handle, normalized)),
+    );
   }
 
-  function handlePointerUp() {
+  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
     if (!cropMode) {
       return;
     }
-    if (!draftCrop) {
-      dragStartRef.current = null;
+    if (!draftCrop || !interactionRef.current) {
+      interactionRef.current = null;
       return;
     }
 
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     onCropChange(draftCrop.width < 0.02 || draftCrop.height < 0.02 ? null : draftCrop);
-    dragStartRef.current = null;
+    interactionRef.current = null;
     setDraftCrop(null);
+  }
+
+  function handleMoveStart(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!imageRef.current || !visibleCrop) {
+      return;
+    }
+    const normalized = eventToNormalizedPoint(event, imageRef.current);
+    if (!normalized || !previewRef.current) {
+      return;
+    }
+
+    if (!cropMode) {
+      onCropModeChange(true);
+    }
+    interactionRef.current = {
+      mode: "move",
+      start: normalized,
+      origin: visibleCrop,
+    };
+    setDraftCrop(visibleCrop);
+    previewRef.current.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+  }
+
+  function handleResizeStart(handle: ResizeHandle, event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!imageRef.current || !visibleCrop || !previewRef.current) {
+      return;
+    }
+    const normalized = eventToNormalizedPoint(event, imageRef.current);
+    if (!normalized) {
+      return;
+    }
+
+    if (!cropMode) {
+      onCropModeChange(true);
+    }
+    interactionRef.current = {
+      mode: "resize",
+      start: normalized,
+      origin: visibleCrop,
+      handle,
+    };
+    setDraftCrop(visibleCrop);
+    previewRef.current.setPointerCapture(event.pointerId);
+    event.stopPropagation();
   }
 
   return (
@@ -110,12 +193,49 @@ export function OriginalPreviewCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{title}</p>
-            <p className={clsx("text-xs", theme.cardMuted)}>{subtitle}</p>
-            <p className={clsx("mt-1 text-xs", theme.cardMuted)}>{privacyNote}</p>
           </div>
-          <span className={clsx("shrink-0 rounded-md px-2.5 py-1 text-[11px] font-medium sm:px-3 sm:text-xs", theme.tag)}>
-            {sourceLocalOnly}
-          </span>
+          <div className="flex shrink-0 gap-2">
+            <button
+              className={clsx(
+                "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                theme.pill,
+              )}
+              aria-label={sourceChooseImage}
+              onClick={handleSelectFile}
+              title={sourceChooseImage}
+              type="button"
+            >
+              <ImageUp aria-hidden="true" className="h-4 w-4" />
+            </button>
+            {file ? (
+              <>
+                <button
+                  className={clsx(
+                    "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                    cropMode ? theme.primaryButton : theme.pill,
+                  )}
+                  aria-label={cropEdit}
+                  onClick={() => onCropModeChange(!cropMode)}
+                  title={cropEdit}
+                  type="button"
+                >
+                  <Crop aria-hidden="true" className="h-4 w-4" />
+                </button>
+                <button
+                  className={clsx(
+                    "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                    cropRect ? theme.primaryButton : theme.disabledButton,
+                  )}
+                  aria-label={cropReset}
+                  onClick={() => onCropChange(null)}
+                  title={cropReset}
+                  type="button"
+                >
+                  <RotateCcw aria-hidden="true" className="h-4 w-4" />
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
 
         {!file ? (
@@ -143,57 +263,11 @@ export function OriginalPreviewCard({
             onChange={(event) => onFileSelection(event.target.files?.[0] ?? null)}
           />
         ) : null}
-
-        {file ? (
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className={clsx("text-xs uppercase tracking-[0.18em]", theme.cardMuted)}>{cropTitle}</p>
-              <p className={clsx("mt-1 text-xs leading-5", theme.cardMuted)}>{cropHint}</p>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <button
-                className={clsx(
-                  "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
-                  theme.pill,
-                )}
-                aria-label={sourceChooseImage}
-                onClick={handleSelectFile}
-                title={sourceChooseImage}
-                type="button"
-              >
-                <ImageUp aria-hidden="true" className="h-4 w-4" />
-              </button>
-              <button
-                className={clsx(
-                  "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
-                  cropMode ? theme.primaryButton : theme.pill,
-                )}
-                aria-label={cropEdit}
-                onClick={() => onCropModeChange(!cropMode)}
-                title={cropEdit}
-                type="button"
-              >
-                <Crop aria-hidden="true" className="h-4 w-4" />
-              </button>
-              <button
-                className={clsx(
-                  "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
-                  cropRect ? theme.primaryButton : theme.disabledButton,
-                )}
-                aria-label={cropReset}
-                onClick={() => onCropChange(null)}
-                title={cropReset}
-                type="button"
-              >
-                <RotateCcw aria-hidden="true" className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        ) : null}
       </div>
       <div className={clsx("mt-4 flex min-h-[220px] items-center justify-center overflow-hidden rounded-[10px] sm:min-h-[280px] sm:rounded-[12px]", theme.previewStage)}>
         {url ? (
           <div
+            ref={previewRef}
             className="relative inline-block max-h-[52vh] max-w-full touch-none sm:max-h-[66vh] xl:max-h-[72vh]"
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
@@ -209,9 +283,39 @@ export function OriginalPreviewCard({
             />
             {visibleCrop ? (
               <div
-                className="pointer-events-none absolute border-2 border-amber-400 bg-amber-300/18 shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]"
+                className="absolute"
                 style={normalizedCropToStyle(visibleCrop)}
-              />
+              >
+                <div
+                  className={clsx(
+                    "absolute inset-0 border-2 border-amber-400 bg-amber-300/18 shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]",
+                    cropMode || displayCropRect ? "cursor-move pointer-events-auto" : "pointer-events-none",
+                  )}
+                  onPointerDown={handleMoveStart}
+                />
+                {cropMode || displayCropRect ? (
+                  <>
+                    {(
+                      [
+                        ["nw", "left-0 top-0 -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize"],
+                        ["ne", "right-0 top-0 translate-x-1/2 -translate-y-1/2 cursor-nesw-resize"],
+                        ["sw", "left-0 bottom-0 -translate-x-1/2 translate-y-1/2 cursor-nesw-resize"],
+                        ["se", "right-0 bottom-0 translate-x-1/2 translate-y-1/2 cursor-nwse-resize"],
+                      ] as const
+                    ).map(([handle, position]) => (
+                      <button
+                        key={handle}
+                        className={clsx(
+                          "absolute z-10 h-4 w-4 rounded-full border-2 border-white bg-amber-400 shadow",
+                          position,
+                        )}
+                        onPointerDown={(event) => handleResizeStart(handle, event)}
+                        type="button"
+                      />
+                    ))}
+                  </>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : (
@@ -285,4 +389,54 @@ function normalizedCropToStyle(cropRect: NormalizedCropRect) {
     width: `${cropRect.width * 100}%`,
     height: `${cropRect.height * 100}%`,
   };
+}
+
+function moveCropRect(
+  cropRect: NormalizedCropRect,
+  deltaX: number,
+  deltaY: number,
+): NormalizedCropRect {
+  return {
+    x: cropRect.x + deltaX,
+    y: cropRect.y + deltaY,
+    width: cropRect.width,
+    height: cropRect.height,
+  };
+}
+
+function resizeCropRect(
+  cropRect: NormalizedCropRect,
+  handle: ResizeHandle,
+  point: { x: number; y: number },
+): NormalizedCropRect {
+  const left = cropRect.x;
+  const top = cropRect.y;
+  const right = cropRect.x + cropRect.width;
+  const bottom = cropRect.y + cropRect.height;
+
+  switch (handle) {
+    case "nw":
+      return normalizedRectFromPoints({ x: right, y: bottom }, point);
+    case "ne":
+      return normalizedRectFromPoints({ x: left, y: bottom }, point);
+    case "sw":
+      return normalizedRectFromPoints({ x: right, y: top }, point);
+    case "se":
+      return normalizedRectFromPoints({ x: left, y: top }, point);
+  }
+}
+
+function clampCropRect(cropRect: NormalizedCropRect): NormalizedCropRect {
+  const width = Math.max(0, Math.min(1, cropRect.width));
+  const height = Math.max(0, Math.min(1, cropRect.height));
+  return {
+    x: clampNormalized(cropRect.x, 0, 1 - width),
+    y: clampNormalized(cropRect.y, 0, 1 - height),
+    width,
+    height,
+  };
+}
+
+function clampNormalized(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }

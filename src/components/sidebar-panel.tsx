@@ -16,6 +16,7 @@ export function SidebarPanel({
   cropMode,
   onCropModeChange,
   cropRect,
+  displayCropRect,
   onCropChange,
   busy,
   isDark,
@@ -45,6 +46,7 @@ export function SidebarPanel({
   cropMode: boolean;
   onCropModeChange: (enabled: boolean) => void;
   cropRect: NormalizedCropRect | null;
+  displayCropRect: NormalizedCropRect | null;
   onCropChange: (cropRect: NormalizedCropRect | null) => void;
   busy: boolean;
   isDark: boolean;
@@ -71,26 +73,27 @@ export function SidebarPanel({
   const theme = getThemeClasses(isDark);
 
   return (
-    <section className={clsx("rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:sticky xl:top-6 xl:self-start xl:rounded-[18px]", theme.panel)}>
+    <section
+      className={clsx(
+        "scrollbar-none min-h-0 overflow-y-auto rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:h-full xl:self-start xl:rounded-[18px]",
+        theme.panel,
+      )}
+    >
       <div className="space-y-5">
         <OriginalPreviewCard
           title={t.sourceTitle}
-          subtitle={t.sourceSubtitle}
-          privacyNote={t.sourcePrivacyNote}
           file={file}
           url={inputUrl}
           emptyText={t.sourceEmpty}
-          sourceLocalOnly={t.sourceLocalOnly}
           sourceChooseImage={t.sourceChooseImage}
           sourceStayInTab={t.sourceStayInTab}
           onFileSelection={onFileSelection}
-          cropTitle={t.cropTitle}
-          cropHint={t.cropHint}
           cropReset={t.cropReset}
           cropEdit={t.cropEdit}
           cropMode={cropMode}
           onCropModeChange={onCropModeChange}
           cropRect={cropRect}
+          displayCropRect={displayCropRect}
           onCropChange={onCropChange}
           isDark={isDark}
         />
@@ -127,7 +130,7 @@ export function SidebarPanel({
                   value={gridWidth}
                   onChange={onGridWidthChange}
                   min={1}
-                  max={512}
+                  max={156}
                   isDark={isDark}
                 />
                 <NumberSliderField
@@ -136,7 +139,7 @@ export function SidebarPanel({
                   value={gridHeight}
                   onChange={onGridHeightChange}
                   min={1}
-                  max={512}
+                  max={156}
                   isDark={isDark}
                 />
               </div>

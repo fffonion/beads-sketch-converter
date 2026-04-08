@@ -7,6 +7,7 @@ const GRID_SEPARATOR_COLOR = "#C9C4BC";
 const BOARD_FRAME_COLOR = "#111111";
 const CANVAS_BACKGROUND = "#F7F4EE";
 const OMITTED_BACKGROUND_HEX = "#FFFFFF";
+const BRAND_NAME = "拼豆豆";
 
 type Segment = [number, number];
 type CropBox = [number, number, number, number];
@@ -74,6 +75,7 @@ export interface ProcessMessages {
   canvasContextUnavailable: string;
   encodingFailed: string;
   chartTitle: (width: number, height: number) => string;
+  chartMetaLine: (colorSystemLabel: string, totalBeads: number) => string;
 }
 
 export interface ColorCount {
@@ -96,6 +98,8 @@ export interface ProcessResult {
   blob: Blob;
   fileName: string;
   detectionMode: string;
+  preferredEditorMode: "edit" | "pindou";
+  detectedCropRect: NormalizedCropRect | null;
   gridWidth: number;
   gridHeight: number;
   originalUniqueColors: number;
@@ -103,6 +107,21 @@ export interface ProcessResult {
   paletteColorsUsed: number;
   colors: ColorCount[];
   cells: EditableCell[];
+}
+
+export interface AutoDetectionDebugResult {
+  mode: string;
+  gridWidth: number;
+  gridHeight: number;
+  cropBox: [number, number, number, number] | null;
+  cropRatio: number | null;
+  preferredEditorMode: "edit" | "pindou";
+}
+
+export interface AutoDetectionDebugInput {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
 }
 
 export function measureHexDistance255(
@@ -130,6 +149,19 @@ interface PaletteDefinition {
   colors: PaletteColor[];
   byLabel: Map<string, PaletteColor>;
   options: PaletteOption[];
+}
+
+interface ChartImportDetection {
+  logical: RasterImage;
+  gridWidth: number;
+  gridHeight: number;
+  mode: string;
+  cropBox: CropBox;
+}
+
+interface FrameBoxDetection {
+  outer: CropBox;
+  inner: CropBox;
 }
 
 function buildPaletteDefinition(
@@ -244,6 +276,7 @@ const defaultProcessMessages: ProcessMessages = {
   canvasContextUnavailable: "Canvas 2D context is not available in this browser.",
   encodingFailed: "Failed to encode output image.",
   chartTitle: (width, height) => `Bead Chart - ${width} x ${height}`,
+  chartMetaLine: (colorSystemLabel, totalBeads) => `${colorSystemLabel} · ${totalBeads} beads`,
 };
 
 export async function processImageFile(
@@ -259,42 +292,46 @@ export async function processImageFile(
   const source = options.cropRect
     ? cropNormalizedRaster(loadedSource, options.cropRect)
     : loadedSource;
-  const gridHint = parseGridHintFromName(file.name);
-
   let logical: RasterImage;
   let gridWidth: number;
   let gridHeight: number;
   let detectionMode: string;
+  let preferredEditorMode: "edit" | "pindou" = "edit";
+  let detectedCropRect: NormalizedCropRect | null = null;
 
   if (options.gridMode === "auto") {
-    const detection = detectPixelArt(source);
-    if (!detection) {
-      throw new Error(processMessages.nonPixelArtError);
-    }
-
-    if (detection.xSegments && detection.ySegments) {
-      logical = sampleSegments(source, detection.xSegments, detection.ySegments);
+    const chartImport = detectChartLikePixelArt(source, file.name);
+    if (chartImport) {
+      logical = chartImport.logical;
+      gridWidth = chartImport.gridWidth;
+      gridHeight = chartImport.gridHeight;
+      detectionMode = chartImport.mode;
+      preferredEditorMode = "pindou";
+      detectedCropRect = cropBoxToNormalizedCropRect(source.width, source.height, chartImport.cropBox);
     } else {
-      logical = sampleRegularGrid(
-        cropRaster(source, detection.cropBox),
-        detection.gridWidth,
-        detection.gridHeight,
-      );
+      const detection = detectPixelArt(source);
+      if (!detection) {
+        throw new Error(processMessages.nonPixelArtError);
+      }
+
+      if (detection.xSegments && detection.ySegments) {
+        logical = sampleSegments(source, detection.xSegments, detection.ySegments);
+      } else {
+        logical = sampleRegularGrid(
+          cropRaster(source, detection.cropBox),
+          detection.gridWidth,
+          detection.gridHeight,
+        );
+      }
+
+      gridWidth = detection.gridWidth;
+      gridHeight = detection.gridHeight;
+      detectionMode = detection.mode;
+      detectedCropRect = cropBoxToNormalizedCropRect(source.width, source.height, detection.cropBox);
     }
 
-    gridWidth = detection.gridWidth;
-    gridHeight = detection.gridHeight;
-    detectionMode = detection.mode;
-
-    if (
-      gridHint &&
-      isReasonableGrid(gridHint[0], gridHint[1]) &&
-      (gridWidth !== gridHint[0] || gridHeight !== gridHint[1])
-    ) {
-      logical = sampleRegularGrid(logical, gridHint[0], gridHint[1]);
-      gridWidth = gridHint[0];
-      gridHeight = gridHint[1];
-      detectionMode = `${detectionMode}+name-hint`;
+    if (preferredEditorMode !== "pindou" && shouldDefaultToPindouMode(source, file.name)) {
+      preferredEditorMode = "pindou";
     }
   } else {
     if (!options.gridWidth || !options.gridHeight) {
@@ -322,13 +359,21 @@ export async function processImageFile(
   }
 
   const matched = matchPalette(logical, paletteDefinition);
-  const canvas = renderChart(
+  const normalizedCells = collapseOpenBackgroundAreas(
     matched.cells,
-    matched.colors,
+    gridWidth,
+    gridHeight,
+  );
+  const colors = summarizeCells(normalizedCells, paletteDefinition);
+  const totalBeads = colors.reduce((sum, color) => sum + color.count, 0);
+  const canvas = renderChart(
+    normalizedCells,
+    colors,
     gridWidth,
     gridHeight,
     chooseCellSize(gridWidth, gridHeight, options.cellSize),
     processMessages.chartTitle(gridWidth, gridHeight),
+    processMessages.chartMetaLine(paletteDefinition.label, totalBeads),
     processMessages.canvasContextUnavailable,
   );
   const blob = await canvasToBlob(canvas, processMessages.encodingFailed);
@@ -337,13 +382,63 @@ export async function processImageFile(
     blob,
     fileName: defaultOutputName(file.name, gridWidth, gridHeight),
     detectionMode,
+    preferredEditorMode,
+    detectedCropRect,
     gridWidth,
     gridHeight,
     originalUniqueColors,
     reducedUniqueColors,
-    paletteColorsUsed: matched.colors.length,
-    colors: matched.colors,
-    cells: matched.cells,
+    paletteColorsUsed: colors.length,
+    colors,
+    cells: normalizedCells,
+  };
+}
+
+export function debugAutoDetectRaster(
+  image: AutoDetectionDebugInput,
+  fileName: string,
+): AutoDetectionDebugResult {
+  const raster: RasterImage = {
+    width: image.width,
+    height: image.height,
+    data: image.data,
+  };
+  const chartImport = detectChartLikePixelArt(raster, fileName);
+  if (chartImport) {
+    const cropWidth = chartImport.cropBox[2] - chartImport.cropBox[0];
+    const cropHeight = chartImport.cropBox[3] - chartImport.cropBox[1];
+    return {
+      mode: chartImport.mode,
+      gridWidth: chartImport.gridWidth,
+      gridHeight: chartImport.gridHeight,
+      cropBox: chartImport.cropBox,
+      cropRatio: cropWidth / Math.max(1, cropHeight),
+      preferredEditorMode: "pindou",
+    };
+  }
+
+  const detection = detectPixelArt(raster);
+  const preferredEditorMode = shouldDefaultToPindouMode(raster, fileName) ? "pindou" : "edit";
+  if (!detection) {
+    return {
+      mode: "none",
+      gridWidth: 0,
+      gridHeight: 0,
+      cropBox: null,
+      cropRatio: null,
+      preferredEditorMode,
+    };
+  }
+
+  const cropWidth = detection.cropBox[2] - detection.cropBox[0];
+  const cropHeight = detection.cropBox[3] - detection.cropBox[1];
+  return {
+    mode: detection.mode,
+    gridWidth: detection.gridWidth,
+    gridHeight: detection.gridHeight,
+    cropBox: detection.cropBox,
+    cropRatio: cropWidth / Math.max(1, cropHeight),
+    preferredEditorMode,
   };
 }
 
@@ -361,14 +456,17 @@ export async function exportChartFromCells(options: {
     ...options.messages,
   };
   const paletteDefinition = getPaletteDefinition(options.colorSystemId);
-  const colors = summarizeCells(options.cells, paletteDefinition);
+  const normalizedCells = options.cells.map((cell) => normalizeEditableCell(cell));
+  const colors = summarizeCells(normalizedCells, paletteDefinition);
+  const totalBeads = colors.reduce((sum, color) => sum + color.count, 0);
   const canvas = renderChart(
-    options.cells,
+    normalizedCells,
     colors,
     options.gridWidth,
     options.gridHeight,
     chooseCellSize(options.gridWidth, options.gridHeight, options.cellSize),
     processMessages.chartTitle(options.gridWidth, options.gridHeight),
+    processMessages.chartMetaLine(paletteDefinition.label, totalBeads),
     processMessages.canvasContextUnavailable,
   );
   const blob = await canvasToBlob(canvas, processMessages.encodingFailed);
@@ -383,12 +481,12 @@ export async function exportChartFromCells(options: {
 function defaultOutputName(fileName: string, gridWidth: number, gridHeight: number) {
   const dotIndex = fileName.lastIndexOf(".");
   const stem = dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
-  return `${stem}_mard_chart_${gridWidth}x${gridHeight}.png`;
+  return `【拼豆豆】${stem}.png`;
 }
 
 function parseGridHintFromName(fileName: string): [number, number] | null {
   const stem = fileName.replace(/\.[^.]+$/, "");
-  const match = stem.match(/\((\d+)\s*x\s*(\d+)\)/i);
+  const match = stem.match(/(?:_mard_chart_|chart[_\s-]?)(\d+)\s*x\s*(\d+)/i) ?? stem.match(/\((\d+)\s*x\s*(\d+)\)/i);
   if (!match) {
     return null;
   }
@@ -396,16 +494,44 @@ function parseGridHintFromName(fileName: string): [number, number] | null {
   return [Number.parseInt(match[1], 10), Number.parseInt(match[2], 10)];
 }
 
-function hintedGridIsClose(
-  detectedWidth: number,
-  detectedHeight: number,
-  hintWidth: number,
-  hintHeight: number,
+function isPlausiblePixelArtDetection(
+  image: RasterImage,
+  detection: DetectionResult,
 ) {
-  return (
-    Math.abs(detectedWidth - hintWidth) <= 2 &&
-    Math.abs(detectedHeight - hintHeight) <= 2
-  );
+  const cropWidth = detection.cropBox[2] - detection.cropBox[0];
+  const cropHeight = detection.cropBox[3] - detection.cropBox[1];
+  if (cropWidth <= 0 || cropHeight <= 0) {
+    return false;
+  }
+
+  const expectedGridWidth = detection.gridWidth;
+  const expectedGridHeight = detection.gridHeight;
+  if (!isReasonableGrid(expectedGridWidth, expectedGridHeight)) {
+    return false;
+  }
+
+  const cellWidth = cropWidth / expectedGridWidth;
+  const cellHeight = cropHeight / expectedGridHeight;
+  const cellRatio = Math.max(cellWidth, cellHeight) / Math.max(1e-6, Math.min(cellWidth, cellHeight));
+  if (cellRatio > 1.65) {
+    return false;
+  }
+
+  const expectedAspect = expectedGridWidth / expectedGridHeight;
+  const cropAspect = cropWidth / cropHeight;
+  const aspectRatio = Math.max(cropAspect, expectedAspect) / Math.max(1e-6, Math.min(cropAspect, expectedAspect));
+  if (aspectRatio > 1.7) {
+    return false;
+  }
+
+  const sourceAspect = image.width / Math.max(1, image.height);
+  const sourceAspectRatio =
+    Math.max(cropAspect, sourceAspect) / Math.max(1e-6, Math.min(cropAspect, sourceAspect));
+  if (sourceAspectRatio > 1.7) {
+    return false;
+  }
+
+  return true;
 }
 
 async function loadFileAsRaster(
@@ -435,11 +561,152 @@ async function loadFileAsRaster(
 }
 
 function detectPixelArt(image: RasterImage): DetectionResult | null {
+  const candidates = [
+    detectRawPixelArt(image),
+    detectGridlinePixelArt(image),
+    detectGappedGridPixelArt(image),
+    detectBlockPixelArt(image),
+  ].filter((candidate): candidate is DetectionResult => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (isPlausiblePixelArtDetection(image, candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function detectChartLikePixelArt(
+  image: RasterImage,
+  fileName?: string,
+): ChartImportDetection | null {
+  if (image.width < 120 || image.height < 180) {
+    return null;
+  }
+
+  const frameBox = detectDarkFrameBox(image);
+  if (!frameBox) {
+    return null;
+  }
+
+  const legendRegion = cropRaster(
+    image,
+    [0, frameBox.outer[3], image.width, image.height],
+  );
+  if (!isPlausibleChartImportLayout(image, frameBox, legendRegion, fileName)) {
+    return null;
+  }
+  if (!looksLikeChartLegend(legendRegion)) {
+    return null;
+  }
+
+  const boardRegion = cropRaster(image, frameBox.inner);
+  const exportedGridHint =
+    fileName && looksLikeExportedChartFileName(fileName)
+      ? parseGridHintFromName(fileName)
+      : null;
+  if (
+    exportedGridHint &&
+    isReasonableGrid(exportedGridHint[0], exportedGridHint[1])
+  ) {
+    return {
+      logical: sampleRegularGrid(boardRegion, exportedGridHint[0], exportedGridHint[1]),
+      gridWidth: exportedGridHint[0],
+      gridHeight: exportedGridHint[1],
+      mode: "detected-chart-frame+exported-name-hint",
+      cropBox: frameBox.inner,
+    };
+  }
+
+  const boardDetection =
+    detectLightSeparatorPixelArt(boardRegion) ??
+    detectGridlinePixelArt(boardRegion) ??
+    detectGappedGridPixelArt(boardRegion) ??
+    detectBlockPixelArt(boardRegion);
+  if (!boardDetection) {
+    return null;
+  }
+
+  const logical =
+    boardDetection.xSegments && boardDetection.ySegments
+      ? sampleSegments(boardRegion, boardDetection.xSegments, boardDetection.ySegments)
+      : sampleRegularGrid(
+          cropRaster(boardRegion, boardDetection.cropBox),
+          boardDetection.gridWidth,
+          boardDetection.gridHeight,
+        );
+
+  return {
+    logical,
+    gridWidth: boardDetection.gridWidth,
+    gridHeight: boardDetection.gridHeight,
+    mode: `${boardDetection.mode}+chart-frame`,
+    cropBox: offsetCropBox(frameBox.inner, boardDetection.cropBox),
+  };
+}
+
+function shouldDefaultToPindouMode(image: RasterImage, fileName: string) {
+  if (looksLikeExportedChartFileName(fileName)) {
+    return true;
+  }
+
+  const frameBox = detectDarkFrameBox(image);
+  if (!frameBox) {
+    return false;
+  }
+
+  const legendRegion = cropRaster(image, [0, frameBox.outer[3], image.width, image.height]);
+  if (!isPlausibleChartImportLayout(image, frameBox, legendRegion, fileName)) {
+    return false;
+  }
+  return looksLikeChartLegend(legendRegion);
+}
+
+function looksLikeExportedChartFileName(fileName: string) {
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  return /(?:^|[_\s-])(mard_)?chart(?:[_\s-]|$)/i.test(stem) || /_mard_chart_/i.test(stem);
+}
+
+function isPlausibleChartImportLayout(
+  image: RasterImage,
+  frameBox: FrameBoxDetection,
+  legendRegion: RasterImage,
+  fileName?: string,
+) {
+  if (looksLikeExportedChartFileName(fileName ?? "")) {
+    return true;
+  }
+
+  const [left, top, right, bottom] = frameBox.outer;
+  const width = right - left;
+  const height = bottom - top;
+  const legendHeight = image.height - bottom;
+
+  if (width <= 0 || height <= 0 || legendHeight <= 0) {
+    return false;
+  }
+
+  const marginLeft = left;
+  const marginRight = image.width - right;
+  const marginTop = top;
+  const widthRatio = width / image.width;
+  const heightRatio = height / image.height;
+  const legendRatio = legendHeight / image.height;
+  const legendIsTallEnough = legendRegion.height >= 72;
+
+  const edgeAligned =
+    marginLeft <= Math.max(20, image.width * 0.06) &&
+    marginRight <= Math.max(20, image.width * 0.06) &&
+    marginTop <= Math.max(20, image.height * 0.06);
+
   return (
-    detectRawPixelArt(image) ??
-    detectGridlinePixelArt(image) ??
-    detectGappedGridPixelArt(image) ??
-    detectBlockPixelArt(image)
+    edgeAligned &&
+    widthRatio >= 0.78 &&
+    heightRatio >= 0.48 &&
+    legendRatio >= 0.1 &&
+    legendRatio <= 0.42 &&
+    legendIsTallEnough
   );
 }
 
@@ -620,6 +887,488 @@ function detectDarkAxisGrid(image: RasterImage, axis: "x" | "y"): AxisGrid | nul
     return (right.lastLine - right.firstLine) - (left.lastLine - left.firstLine);
   });
   return candidates[0];
+}
+
+function detectLightSeparatorPixelArt(image: RasterImage): DetectionResult | null {
+  const xAxis = detectLightAxisGrid(image, "x");
+  const yAxis = detectLightAxisGrid(image, "y");
+  if (!xAxis || !yAxis) {
+    return null;
+  }
+
+  const gridWidth = Math.round(image.width / xAxis.period);
+  const gridHeight = Math.round(image.height / yAxis.period);
+  if (!isReasonableGrid(gridWidth, gridHeight)) {
+    return null;
+  }
+
+  return {
+    gridWidth,
+    gridHeight,
+    cropBox: [0, 0, image.width, image.height],
+    mode: "detected-light-gridlines",
+  };
+}
+
+function detectLightAxisGrid(image: RasterImage, axis: "x" | "y"): AxisGrid | null {
+  const axisLength = axis === "x" ? image.width : image.height;
+  const otherLength = axis === "x" ? image.height : image.width;
+  if (axisLength < 12 || otherLength < 12) {
+    return null;
+  }
+
+  const signal = new Float32Array(axisLength);
+  for (let line = 0; line < axisLength; line += 1) {
+    let matches = 0;
+    for (let offset = 0; offset < otherLength; offset += 1) {
+      const pixel = axis === "x" ? getPixel(image, line, offset) : getPixel(image, offset, line);
+      if (isLightSeparatorPixel(pixel)) {
+        matches += 1;
+      }
+    }
+    signal[line] = (matches / otherLength) * 255;
+  }
+
+  return buildAxisGridFromSignal(signal, 6);
+}
+
+function detectDarkFrameBox(image: RasterImage): FrameBoxDetection | null {
+  const darkMask = new Uint8Array(image.width * image.height);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      if (isVeryDarkNeutralPixel(getPixel(image, x, y))) {
+        darkMask[y * image.width + x] = 1;
+      }
+    }
+  }
+
+  const visited = new Uint8Array(darkMask.length);
+  let best: { outer: CropBox; inner: CropBox; score: number } | null = null;
+
+  for (let startIndex = 0; startIndex < darkMask.length; startIndex += 1) {
+    if (!darkMask[startIndex] || visited[startIndex]) {
+      continue;
+    }
+
+    const component = collectDarkComponent(darkMask, visited, image.width, image.height, startIndex);
+    const componentWidth = component.maxX - component.minX + 1;
+    const componentHeight = component.maxY - component.minY + 1;
+    if (
+      componentWidth < image.width * 0.5 ||
+      componentHeight < image.height * 0.4 ||
+      component.pixelCount < (componentWidth + componentHeight) * 2
+    ) {
+      continue;
+    }
+
+    const candidate = scoreFrameCandidate(image, darkMask, component.minX, component.minY, component.maxX + 1, component.maxY + 1);
+    if (!candidate) {
+      continue;
+    }
+
+    if (!best || candidate.score > best.score) {
+      best = candidate;
+    }
+  }
+
+  return best ? { outer: best.outer, inner: best.inner } : null;
+}
+
+function looksLikeChartLegend(image: RasterImage) {
+  const pixelCount = image.width * image.height;
+  if (pixelCount <= 0) {
+    return false;
+  }
+
+  const quantizedColors = new Set<string>();
+  let lightPixels = 0;
+  let darkPixels = 0;
+  let colorfulPixels = 0;
+
+  for (let index = 0; index < image.data.length; index += 4) {
+    const red = image.data[index] ?? 0;
+    const green = image.data[index + 1] ?? 0;
+    const blue = image.data[index + 2] ?? 0;
+    const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+    const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+
+    if (luminance >= 214) {
+      lightPixels += 1;
+    }
+    if (luminance <= 72) {
+      darkPixels += 1;
+    }
+    if (chroma >= 34) {
+      colorfulPixels += 1;
+    }
+
+    quantizedColors.add(
+      `${Math.round(red / 24)}-${Math.round(green / 24)}-${Math.round(blue / 24)}`,
+    );
+  }
+
+  return (
+    quantizedColors.size >= 10 &&
+    lightPixels / pixelCount >= 0.22 &&
+    darkPixels / pixelCount >= 0.008 &&
+    colorfulPixels / pixelCount >= 0.025
+  );
+}
+
+function collectDarkComponent(
+  darkMask: Uint8Array,
+  visited: Uint8Array,
+  width: number,
+  height: number,
+  startIndex: number,
+) {
+  const stack = [startIndex];
+  visited[startIndex] = 1;
+  let pixelCount = 0;
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+
+  while (stack.length > 0) {
+    const index = stack.pop()!;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    pixelCount += 1;
+    if (x < minX) {
+      minX = x;
+    }
+    if (x > maxX) {
+      maxX = x;
+    }
+    if (y < minY) {
+      minY = y;
+    }
+    if (y > maxY) {
+      maxY = y;
+    }
+
+    if (x > 0) {
+      const next = index - 1;
+      if (darkMask[next] && !visited[next]) {
+        visited[next] = 1;
+        stack.push(next);
+      }
+    }
+    if (x + 1 < width) {
+      const next = index + 1;
+      if (darkMask[next] && !visited[next]) {
+        visited[next] = 1;
+        stack.push(next);
+      }
+    }
+    if (y > 0) {
+      const next = index - width;
+      if (darkMask[next] && !visited[next]) {
+        visited[next] = 1;
+        stack.push(next);
+      }
+    }
+    if (y + 1 < height) {
+      const next = index + width;
+      if (darkMask[next] && !visited[next]) {
+        visited[next] = 1;
+        stack.push(next);
+      }
+    }
+  }
+
+  return { minX, minY, maxX, maxY, pixelCount };
+}
+
+function scoreFrameCandidate(
+  image: RasterImage,
+  darkMask: Uint8Array,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+) {
+  const width = right - left;
+  const height = bottom - top;
+  if (
+    width < image.width * 0.55 ||
+    height < image.height * 0.45 ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+
+  const thickness = inferFrameThickness(darkMask, image.width, image.height, left, top, right, bottom);
+  const innerLeft = left + thickness.left;
+  const innerTop = top + thickness.top;
+  const innerRight = right - thickness.right;
+  const innerBottom = bottom - thickness.bottom;
+  if (
+    innerRight - innerLeft < image.width * 0.45 ||
+    innerBottom - innerTop < image.height * 0.35
+  ) {
+    return null;
+  }
+
+  const borderCoverage = measureFrameBorderCoverage(
+    darkMask,
+    image.width,
+    image.height,
+    left,
+    top,
+    right,
+    bottom,
+    thickness,
+  );
+  if (borderCoverage < 0.78) {
+    return null;
+  }
+
+  const interiorDarkRatio = measureDarkRatio(
+    darkMask,
+    image.width,
+    image.height,
+    innerLeft,
+    innerTop,
+    innerRight,
+    innerBottom,
+  );
+  if (interiorDarkRatio > 0.22) {
+    return null;
+  }
+
+  const areaScore = (width * height) / (image.width * image.height);
+  const score = areaScore * borderCoverage - interiorDarkRatio * 0.35;
+  return {
+    outer: [left, top, right, bottom] as CropBox,
+    inner: [innerLeft, innerTop, innerRight, innerBottom] as CropBox,
+    score,
+  };
+}
+
+function inferFrameThickness(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+) {
+  const sampleFractions = [0.2, 0.5, 0.8];
+  const maxThickness = 18;
+  const topSamples = sampleFractions.map((fraction) =>
+    countDarkRunDownward(
+      darkMask,
+      width,
+      height,
+      left + Math.floor((right - left - 1) * fraction),
+      top,
+      bottom,
+      maxThickness,
+    ),
+  );
+  const bottomSamples = sampleFractions.map((fraction) =>
+    countDarkRunUpward(
+      darkMask,
+      width,
+      height,
+      left + Math.floor((right - left - 1) * fraction),
+      bottom - 1,
+      top,
+      maxThickness,
+    ),
+  );
+  const leftSamples = sampleFractions.map((fraction) =>
+    countDarkRunRightward(
+      darkMask,
+      width,
+      height,
+      left,
+      top + Math.floor((bottom - top - 1) * fraction),
+      right,
+      maxThickness,
+    ),
+  );
+  const rightSamples = sampleFractions.map((fraction) =>
+    countDarkRunLeftward(
+      darkMask,
+      width,
+      height,
+      right - 1,
+      top + Math.floor((bottom - top - 1) * fraction),
+      left,
+      maxThickness,
+    ),
+  );
+
+  return {
+    top: clampFrameThickness(medianOfSmallSet(topSamples)),
+    bottom: clampFrameThickness(medianOfSmallSet(bottomSamples)),
+    left: clampFrameThickness(medianOfSmallSet(leftSamples)),
+    right: clampFrameThickness(medianOfSmallSet(rightSamples)),
+  };
+}
+
+function measureFrameBorderCoverage(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+  thickness: { top: number; bottom: number; left: number; right: number },
+) {
+  const topCoverage = measureDarkRatio(darkMask, width, height, left, top, right, top + thickness.top);
+  const bottomCoverage = measureDarkRatio(darkMask, width, height, left, bottom - thickness.bottom, right, bottom);
+  const leftCoverage = measureDarkRatio(
+    darkMask,
+    width,
+    height,
+    left,
+    top + thickness.top,
+    left + thickness.left,
+    bottom - thickness.bottom,
+  );
+  const rightCoverage = measureDarkRatio(
+    darkMask,
+    width,
+    height,
+    right - thickness.right,
+    top + thickness.top,
+    right,
+    bottom - thickness.bottom,
+  );
+  return Math.min(topCoverage, bottomCoverage, leftCoverage, rightCoverage);
+}
+
+function measureDarkRatio(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+) {
+  const boundedLeft = Math.max(0, Math.min(width, left));
+  const boundedTop = Math.max(0, Math.min(height, top));
+  const boundedRight = Math.max(boundedLeft, Math.min(width, right));
+  const boundedBottom = Math.max(boundedTop, Math.min(height, bottom));
+  const area = (boundedRight - boundedLeft) * (boundedBottom - boundedTop);
+  if (area <= 0) {
+    return 0;
+  }
+
+  let darkCount = 0;
+  for (let y = boundedTop; y < boundedBottom; y += 1) {
+    for (let x = boundedLeft; x < boundedRight; x += 1) {
+      darkCount += darkMask[y * width + x];
+    }
+  }
+  return darkCount / area;
+}
+
+function countDarkRunDownward(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  startY: number,
+  endY: number,
+  maxThickness: number,
+) {
+  let count = 0;
+  for (let y = startY; y < Math.min(endY, startY + maxThickness); y += 1) {
+    if (!darkMask[y * width + x]) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function countDarkRunUpward(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  startY: number,
+  endY: number,
+  maxThickness: number,
+) {
+  let count = 0;
+  for (let y = startY; y >= Math.max(endY, startY - maxThickness + 1); y -= 1) {
+    if (!darkMask[y * width + x]) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function countDarkRunRightward(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  startX: number,
+  y: number,
+  endX: number,
+  maxThickness: number,
+) {
+  let count = 0;
+  for (let x = startX; x < Math.min(endX, startX + maxThickness); x += 1) {
+    if (!darkMask[y * width + x]) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function countDarkRunLeftward(
+  darkMask: Uint8Array,
+  width: number,
+  height: number,
+  startX: number,
+  y: number,
+  endX: number,
+  maxThickness: number,
+) {
+  let count = 0;
+  for (let x = startX; x >= Math.max(endX, startX - maxThickness + 1); x -= 1) {
+    if (!darkMask[y * width + x]) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function medianOfSmallSet(values: number[]) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+function clampFrameThickness(value: number) {
+  return Math.max(2, Math.min(18, value || 2));
+}
+
+function isVeryDarkNeutralPixel(pixel: Rgb) {
+  const [red, green, blue] = pixel;
+  const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+  const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  return luminance <= 72 && chroma <= 42;
+}
+
+function isLightSeparatorPixel(pixel: Rgb) {
+  const [red, green, blue] = pixel;
+  const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+  const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  return luminance >= 176 && luminance <= 228 && chroma <= 18;
 }
 
 function detectGappedAxis(image: RasterImage, axis: "x" | "y"): Segment[] | null {
@@ -1059,6 +1808,37 @@ function cropNormalizedRaster(image: RasterImage, cropRect: NormalizedCropRect):
   return cropRaster(image, [left, top, right, bottom]);
 }
 
+function cropBoxToNormalizedCropRect(
+  width: number,
+  height: number,
+  cropBox: CropBox,
+): NormalizedCropRect | null {
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const [left, top, right, bottom] = cropBox;
+  if (left <= 0 && top <= 0 && right >= width && bottom >= height) {
+    return null;
+  }
+
+  return {
+    x: clampNormalized(left / width),
+    y: clampNormalized(top / height),
+    width: clampNormalized((right - left) / width),
+    height: clampNormalized((bottom - top) / height),
+  };
+}
+
+function offsetCropBox(base: CropBox, inner: CropBox): CropBox {
+  return [
+    base[0] + inner[0],
+    base[1] + inner[1],
+    base[0] + inner[2],
+    base[1] + inner[3],
+  ];
+}
+
 function sampleSegments(image: RasterImage, xSegments: Segment[], ySegments: Segment[]) {
   const data = new Uint8ClampedArray(xSegments.length * ySegments.length * 4);
   for (let row = 0; row < ySegments.length; row += 1) {
@@ -1244,12 +2024,7 @@ function matchPalette(logical: RasterImage, paletteDefinition: PaletteDefinition
     }));
   }
 
-  const colors = summarizeCells(cells, paletteDefinition);
-
-  return {
-    cells,
-    colors,
-  };
+  return { cells };
 }
 
 function reduceColorsPhotoshopStyle(image: RasterImage, tolerance: number) {
@@ -1511,6 +2286,7 @@ function renderChart(
   gridHeight: number,
   cellSize: number,
   title: string,
+  metaLine: string,
   canvasContextUnavailableMessage: string,
 ) {
   const cellGap = Math.max(1, Math.floor(cellSize / 18));
@@ -1521,13 +2297,18 @@ function renderChart(
   const titleGap = Math.max(16, Math.floor(cellSize / 2));
 
   const labelFontSize = Math.max(10, Math.floor(cellSize * 0.34));
-  const titleFontSize = Math.max(16, Math.floor(cellSize * 0.5));
-  const legendLabelFontSize = Math.max(12, Math.floor(cellSize * 0.33));
-  const legendCountFontSize = Math.max(12, Math.floor(cellSize * 0.28));
+  const brandFontSize = Math.max(28, Math.floor(cellSize * 0.82));
+  const titleFontSize = Math.max(19, Math.floor(cellSize * 0.56));
+  const metaFontSize = Math.max(15, Math.floor(cellSize * 0.4));
+  const legendLabelFontSize = Math.max(14, Math.floor(cellSize * 0.4));
+  const legendCountFontSize = Math.max(14, Math.floor(cellSize * 0.35));
+  const logoSize = Math.max(30, Math.floor(cellSize * 0.96));
+  const brandRowHeight = Math.max(logoSize, brandFontSize) + 14;
+  const metaRowHeight = metaLine ? metaFontSize + Math.max(12, Math.floor(cellSize * 0.24)) : 0;
 
-  const legendTileWidth = Math.max(72, Math.floor(cellSize * 1.8));
-  const legendSwatchHeight = Math.max(38, Math.floor(cellSize * 0.95));
-  const legendTileHeight = legendSwatchHeight + Math.max(24, Math.floor(cellSize * 0.65));
+  const legendTileWidth = Math.max(88, Math.floor(cellSize * 2.08));
+  const legendSwatchHeight = Math.max(46, Math.floor(cellSize * 1.08));
+  const legendTileHeight = legendSwatchHeight + Math.max(30, Math.floor(cellSize * 0.82));
   const legendGap = Math.max(10, Math.floor(cellSize / 4));
 
   const baseCanvasWidth = Math.max(boardWidth + canvasPadding * 2 + frame * 2, 900);
@@ -1545,7 +2326,10 @@ function renderChart(
   );
   const canvasHeight =
     canvasPadding +
+    brandRowHeight +
+    titleGap +
     titleFontSize +
+    metaRowHeight +
     titleGap +
     boardHeight +
     frame * 2 +
@@ -1563,14 +2347,33 @@ function renderChart(
 
   context.fillStyle = CANVAS_BACKGROUND;
   context.fillRect(0, 0, canvasWidth, canvasHeight);
-  context.textAlign = "center";
+  context.textAlign = "left";
   context.textBaseline = "middle";
-  context.font = buildFont(titleFontSize, true, true);
+  const brandRowY = canvasPadding + brandRowHeight / 2;
+  const brandBlockWidth = estimateTextWidth(brandFontSize, true, true, BRAND_NAME) + logoSize + 14;
+  const brandStartX = Math.round((canvasWidth - brandBlockWidth) / 2);
+  drawBrandLogo(context, brandStartX, brandRowY - logoSize / 2, logoSize);
+  context.font = buildFont(brandFontSize, true, true);
   context.fillStyle = "#1C1C1C";
-  context.fillText(title, canvasWidth / 2, canvasPadding + titleFontSize / 2);
+  context.fillText(BRAND_NAME, brandStartX + logoSize + 14, brandRowY);
+
+  context.textAlign = "center";
+  context.font = buildFont(titleFontSize, true, true);
+  context.fillText(title, canvasWidth / 2, canvasPadding + brandRowHeight + titleGap + titleFontSize / 2);
+
+  if (metaLine) {
+    context.font = buildFont(metaFontSize, false, false);
+    context.fillStyle = "#5E5346";
+    context.fillText(
+      metaLine,
+      canvasWidth / 2,
+      canvasPadding + brandRowHeight + titleGap + titleFontSize + metaFontSize / 2 + 8,
+    );
+  }
 
   const boardOuterX = Math.floor((canvasWidth - (boardWidth + frame * 2)) / 2);
-  const boardOuterY = canvasPadding + titleFontSize + titleGap;
+  const boardOuterY =
+    canvasPadding + brandRowHeight + titleGap + titleFontSize + metaRowHeight + titleGap;
   const boardInnerX = boardOuterX + frame;
   const boardInnerY = boardOuterY + frame;
 
@@ -1649,6 +2452,112 @@ function renderChart(
   return canvas;
 }
 
+function drawBrandLogo(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+) {
+  const stroke = "rgba(33,24,17,0.88)";
+  const paperFill = "#F5E8D2";
+  const gridStroke = "#CDB79A";
+  const beadHole = "#F7F2E8";
+  const lineWidth = Math.max(1.4, size * 0.08);
+
+  const paperX = x + size * 0.06;
+  const paperY = y + size * 0.06;
+  const paperWidth = size * 0.66;
+  const paperHeight = size * 0.82;
+  const foldSize = size * 0.18;
+  const radius = Math.max(4, size * 0.08);
+
+  context.beginPath();
+  roundRectPath(context, paperX, paperY, paperWidth, paperHeight, radius);
+  context.fillStyle = paperFill;
+  context.fill();
+  context.lineWidth = lineWidth;
+  context.strokeStyle = stroke;
+  context.stroke();
+
+  context.beginPath();
+  context.moveTo(paperX + paperWidth - foldSize, paperY);
+  context.lineTo(paperX + paperWidth - foldSize, paperY + foldSize);
+  context.lineTo(paperX + paperWidth, paperY + foldSize);
+  context.strokeStyle = stroke;
+  context.stroke();
+
+  context.strokeStyle = gridStroke;
+  context.lineWidth = Math.max(1, size * 0.045);
+  const gridLeft = paperX + size * 0.12;
+  const gridTop = paperY + size * 0.18;
+  const gridWidth = paperWidth - size * 0.2;
+  const gridHeight = paperHeight - size * 0.28;
+  for (let index = 1; index <= 2; index += 1) {
+    const verticalX = gridLeft + (gridWidth / 3) * index;
+    const horizontalY = gridTop + (gridHeight / 3) * index;
+    context.beginPath();
+    context.moveTo(verticalX, gridTop);
+    context.lineTo(verticalX, gridTop + gridHeight);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(gridLeft, horizontalY);
+    context.lineTo(gridLeft + gridWidth, horizontalY);
+    context.stroke();
+  }
+
+  const beadRadius = size * 0.18;
+  const innerRadius = beadRadius * 0.42;
+  const beads: Array<[number, number, string]> = [
+    [x + size * 0.28, y + size * 0.72, "#D57D42"],
+    [x + size * 0.53, y + size * 0.56, "#8DAE63"],
+    [x + size * 0.77, y + size * 0.76, "#6E87C7"],
+  ];
+
+  for (const [centerX, centerY, fill] of beads) {
+    context.beginPath();
+    context.arc(centerX, centerY, beadRadius, 0, Math.PI * 2);
+    context.fillStyle = fill;
+    context.fill();
+    context.lineWidth = lineWidth;
+    context.strokeStyle = stroke;
+    context.stroke();
+
+    context.beginPath();
+    context.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
+    context.fillStyle = beadHole;
+    context.fill();
+    context.strokeStyle = stroke;
+    context.stroke();
+  }
+}
+
+function estimateTextWidth(
+  size: number,
+  bold: boolean,
+  serif: boolean,
+  text: string,
+) {
+  return text.length * size * (serif ? 1.02 : 0.62);
+}
+
+function roundRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const effectiveRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + effectiveRadius, y);
+  context.arcTo(x + width, y, x + width, y + height, effectiveRadius);
+  context.arcTo(x + width, y + height, x, y + height, effectiveRadius);
+  context.arcTo(x, y + height, x, y, effectiveRadius);
+  context.arcTo(x, y, x + width, y, effectiveRadius);
+  context.closePath();
+}
+
 function chooseTextColor(rgb: Rgb) {
   const luminance = (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) / 255;
   return luminance < 0.48 ? "#FFFFFF" : "#111111";
@@ -1681,16 +2590,140 @@ function summarizeCells(cells: EditableCell[], paletteDefinition: PaletteDefinit
     });
 }
 
+function collapseOpenBackgroundAreas(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+) {
+  const normalizedCells = cells.map((cell) => normalizeEditableCell(cell));
+  if (gridWidth <= 0 || gridHeight <= 0 || normalizedCells.length !== gridWidth * gridHeight) {
+    return normalizedCells;
+  }
+
+  const visited = new Uint8Array(normalizedCells.length);
+  const nextCells = normalizedCells.map((cell) => ({ ...cell }));
+  const minimumOpenArea = Math.max(6, Math.round(normalizedCells.length * 0.015));
+
+  for (let index = 0; index < normalizedCells.length; index += 1) {
+    if (visited[index]) {
+      continue;
+    }
+
+    const cell = normalizedCells[index];
+    if (!isBackgroundCandidateCell(cell)) {
+      continue;
+    }
+
+    const queue = [index];
+    const component: number[] = [];
+    const touchedEdges = new Set<"left" | "right" | "top" | "bottom">();
+    visited[index] = 1;
+
+    while (queue.length > 0) {
+      const currentIndex = queue.pop()!;
+      component.push(currentIndex);
+      const x = currentIndex % gridWidth;
+      const y = Math.floor(currentIndex / gridWidth);
+
+      if (x === 0) {
+        touchedEdges.add("left");
+      }
+      if (x === gridWidth - 1) {
+        touchedEdges.add("right");
+      }
+      if (y === 0) {
+        touchedEdges.add("top");
+      }
+      if (y === gridHeight - 1) {
+        touchedEdges.add("bottom");
+      }
+
+      const neighbors = [
+        currentIndex - 1,
+        currentIndex + 1,
+        currentIndex - gridWidth,
+        currentIndex + gridWidth,
+      ];
+
+      for (const neighborIndex of neighbors) {
+        if (
+          neighborIndex < 0 ||
+          neighborIndex >= normalizedCells.length ||
+          visited[neighborIndex]
+        ) {
+          continue;
+        }
+
+        const neighborX = neighborIndex % gridWidth;
+        const neighborY = Math.floor(neighborIndex / gridWidth);
+        if (Math.abs(neighborX - x) + Math.abs(neighborY - y) !== 1) {
+          continue;
+        }
+
+        const neighbor = normalizedCells[neighborIndex];
+        if (!belongsToSameBackgroundComponent(cell, neighbor)) {
+          continue;
+        }
+
+        visited[neighborIndex] = 1;
+        queue.push(neighborIndex);
+      }
+    }
+
+    if (
+      touchedEdges.size === 0 ||
+      (component.length < minimumOpenArea && touchedEdges.size < 2)
+    ) {
+      continue;
+    }
+
+    for (const componentIndex of component) {
+      nextCells[componentIndex] = { label: null, hex: null };
+    }
+  }
+
+  return nextCells;
+}
+
+function isBackgroundCandidateCell(cell: EditableCell) {
+  if (!cell.label || !cell.hex) {
+    return false;
+  }
+
+  return (
+    cell.label.trim().toUpperCase() === "H2" ||
+    cell.hex.toUpperCase() === OMITTED_BACKGROUND_HEX
+  );
+}
+
+function belongsToSameBackgroundComponent(
+  base: EditableCell,
+  candidate: EditableCell,
+) {
+  if (!isBackgroundCandidateCell(base) || !isBackgroundCandidateCell(candidate)) {
+    return false;
+  }
+
+  if (base.label && candidate.label && base.label === candidate.label) {
+    return true;
+  }
+
+  if (base.hex && candidate.hex && base.hex.toUpperCase() === candidate.hex.toUpperCase()) {
+    return true;
+  }
+
+  return false;
+}
+
 function normalizeEditableCell(cell: EditableCell): EditableCell {
   if (!cell.label || !cell.hex) {
     return { label: null, hex: null };
   }
 
-  if (cell.hex.toUpperCase() === OMITTED_BACKGROUND_HEX) {
-    return { label: null, hex: null };
-  }
-
-  return cell;
+  return {
+    label: cell.label,
+    hex: cell.hex.toUpperCase(),
+  };
 }
 
 function buildFont(size: number, bold: boolean, serif: boolean) {
