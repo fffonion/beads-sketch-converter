@@ -1,12 +1,14 @@
 # 拼豆豆 图纸转换
 
-在线演示：https://yooooo.us/beads
+在线演示：https://yooooo.us/pdd/
 
 一个基于 Bun、React、TypeScript、Tailwind CSS 和 Radix UI 的前端工具，用来把图片转换成拼豆图纸，并在网页里继续编辑、查看和导出。
 
 ![工作流预览](images/work.jpg)
 
 ![编辑器预览](images/edit.jpg)
+
+![拼豆预览](images/pindou.jpg)
 
 ## 项目特点
 
