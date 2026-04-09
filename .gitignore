@@ -14,4 +14,4 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-rust-chart-detector/target/
+detecter/target/

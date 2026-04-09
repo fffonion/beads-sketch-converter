@@ -12,6 +12,7 @@ export interface Messages {
   themeDark: string;
   themeSystem: string;
   sourceTitle: string;
+  sourceLandingTitle: string;
   sourceSubtitle: string;
   sourcePrivacyNote: string;
   sourceLocalOnly: string;
@@ -130,11 +131,12 @@ export const messages: Record<Locale, Messages> = {
     themeDark: "深色",
     themeSystem: "跟随系统",
     sourceTitle: "原图",
-    sourceSubtitle: "支持 JPG、PNG、WEBP、GIF",
+    sourceLandingTitle: "导入图片，或导入现有图纸",
+    sourceSubtitle: "",
     sourcePrivacyNote: "全部处理都在浏览器内完成，不会上传到服务器。",
     sourceLocalOnly: "本地图片",
-    sourceChooseImage: "选择图片",
-    sourceStayInTab: "选择图片后会自动生成图纸，也可以导入现有图纸",
+    sourceChooseImage: "导入图片",
+    sourceStayInTab: "",
     sourceChartBadge: "图纸",
     sourcePixelArtBadge: "像素图",
     gridTitle: "网格策略",
@@ -246,11 +248,12 @@ export const messages: Record<Locale, Messages> = {
     themeDark: "Dark",
     themeSystem: "System",
     sourceTitle: "Source Image",
-    sourceSubtitle: "JPG, PNG, WEBP, or GIF",
+    sourceLandingTitle: "Import an image or an existing chart",
+    sourceSubtitle: "",
     sourcePrivacyNote: "Everything is processed in the browser and is not uploaded to a server.",
     sourceLocalOnly: "Local image",
-    sourceChooseImage: "Choose an image",
-    sourceStayInTab: "A chart will be generated automatically after import, or you can import an existing chart",
+    sourceChooseImage: "Import image",
+    sourceStayInTab: "",
     sourceChartBadge: "Chart",
     sourcePixelArtBadge: "Pixel Art",
     gridTitle: "Grid Strategy",

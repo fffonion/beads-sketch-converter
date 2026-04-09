@@ -1,4 +1,4 @@
-interface RustDetectorExports {
+interface WasmDetectorExports {
   memory: WebAssembly.Memory;
   alloc(size: number): number;
   dealloc(ptr: number, size: number): void;
@@ -13,44 +13,44 @@ interface RasterImageLike {
   data: Uint8ClampedArray;
 }
 
-export interface RustChartDetection {
+export interface WasmChartDetection {
   cropBox: [number, number, number, number];
   gridWidth: number;
   gridHeight: number;
 }
 
-export interface RustPixelDetection {
+export interface WasmPixelDetection {
   cropBox: [number, number, number, number];
   gridWidth: number;
   gridHeight: number;
 }
 
-export interface RustAutoDetection {
+export interface WasmAutoDetection {
   kind: "chart" | "pixel";
   cropBox: [number, number, number, number];
   gridWidth: number;
   gridHeight: number;
 }
 
-const wasmUrl = new URL("./rust-chart-detector.wasm", import.meta.url);
-let detectorPromise: Promise<RustDetectorExports | null> | null = null;
+const wasmUrl = new URL("./detecter.wasm", import.meta.url);
+let detectorPromise: Promise<WasmDetectorExports | null> | null = null;
 
-export async function detectChartBoardWithRust(
+export async function detectChartBoardWithWasm(
   raster: RasterImageLike,
-): Promise<RustChartDetection | null> {
-  return await detectWithRust(raster, "detect_chart");
+): Promise<WasmChartDetection | null> {
+  return await detectWithWasm(raster, "detect_chart");
 }
 
-export async function detectPixelArtWithRust(
+export async function detectPixelArtWithWasm(
   raster: RasterImageLike,
-): Promise<RustPixelDetection | null> {
-  return await detectWithRust(raster, "detect_pixel_art");
+): Promise<WasmPixelDetection | null> {
+  return await detectWithWasm(raster, "detect_pixel_art");
 }
 
-export async function detectAutoRasterWithRust(
+export async function detectAutoRasterWithWasm(
   raster: RasterImageLike,
-): Promise<RustAutoDetection | null> {
-  const chart = await detectChartBoardWithRust(raster);
+): Promise<WasmAutoDetection | null> {
+  const chart = await detectChartBoardWithWasm(raster);
   if (chart) {
     return {
       kind: "chart",
@@ -60,7 +60,7 @@ export async function detectAutoRasterWithRust(
     };
   }
 
-  const pixel = await detectPixelArtWithRust(raster);
+  const pixel = await detectPixelArtWithWasm(raster);
   if (!pixel) {
     return null;
   }
@@ -73,11 +73,11 @@ export async function detectAutoRasterWithRust(
   };
 }
 
-async function detectWithRust(
+async function detectWithWasm(
   raster: RasterImageLike,
   methodName: "detect_chart" | "detect_pixel_art",
 ) {
-  const exports = await loadRustDetector();
+  const exports = await loadWasmDetector();
   if (!exports) {
     return null;
   }
@@ -123,18 +123,18 @@ async function detectWithRust(
   }
 }
 
-async function loadRustDetector(): Promise<RustDetectorExports | null> {
+async function loadWasmDetector(): Promise<WasmDetectorExports | null> {
   if (!detectorPromise) {
-    detectorPromise = instantiateRustDetector();
+    detectorPromise = instantiateWasmDetector();
   }
   return detectorPromise;
 }
 
-async function instantiateRustDetector(): Promise<RustDetectorExports | null> {
+async function instantiateWasmDetector(): Promise<WasmDetectorExports | null> {
   try {
     const bytes = await loadWasmBytes();
     const module = await WebAssembly.instantiate(bytes, {});
-    return module.instance.exports as unknown as RustDetectorExports;
+    return module.instance.exports as unknown as WasmDetectorExports;
   } catch {
     return null;
   }
@@ -152,7 +152,7 @@ async function loadWasmBytes() {
 
   const response = await fetch(wasmUrl);
   if (!response.ok) {
-    throw new Error(`Failed to load rust detector wasm: ${response.status}`);
+    throw new Error(`Failed to load detecter wasm: ${response.status}`);
   }
   return await response.arrayBuffer();
 }

@@ -1,9 +1,9 @@
 ﻿import paletteJson from "../data/mard-palette-221.json";
 import colorSystemMappingJson from "../data/color-system-mapping.json";
 import {
-  detectAutoRasterWithRust,
-  detectChartBoardWithRust,
-} from "./rust-chart-detector";
+  detectAutoRasterWithWasm,
+  detectChartBoardWithWasm,
+} from "./detecter";
 
 const GRID_SEPARATOR_COLOR = "#C9C4BC";
 const BOARD_FRAME_COLOR = "#111111";
@@ -17,6 +17,8 @@ const CHART_METADATA_KEYWORD = "pindou-chart";
 const CHART_METADATA_APP = "pindou";
 const CHART_METADATA_VERSION = 1;
 const BRAND_NAME = "拼豆豆";
+const CHART_EDGE_SAMPLE_PROGRESS = [0.15, 0.2, 0.3, 0.35];
+const CHART_EDGE_SAMPLE_INSET = 0.18;
 
 type CropBox = [number, number, number, number];
 type Rgb = [number, number, number];
@@ -47,6 +49,7 @@ export interface ProcessOptions {
   gridHeight?: number;
   cropRect?: NormalizedCropRect | null;
   reduceColors: boolean;
+  applyAutoReduceColorsDefault?: boolean;
   reduceTolerance: number;
   preSharpen: boolean;
   preSharpenStrength: number;
@@ -92,6 +95,7 @@ export interface ProcessResult {
   fileName: string;
   colorSystemId: string;
   detectionMode: string;
+  effectiveReduceColors: boolean;
   preferredEditorMode: "edit" | "pindou";
   detectedCropRect: NormalizedCropRect | null;
   gridWidth: number;
@@ -330,25 +334,26 @@ export async function processImageFile(
   let detectedCropRect: NormalizedCropRect | null = null;
 
   if (options.gridMode === "auto") {
-    const rustDetection = await detectAutoRasterWithRust(source);
-    if (!rustDetection) {
+    const wasmDetection = await detectAutoRasterWithWasm(source);
+    if (!wasmDetection) {
       throw new Error(processMessages.nonPixelArtError);
     }
 
     logical = sampleRegularGrid(
-      cropRaster(source, rustDetection.cropBox),
-      rustDetection.gridWidth,
-      rustDetection.gridHeight,
+      cropRaster(source, wasmDetection.cropBox),
+      wasmDetection.gridWidth,
+      wasmDetection.gridHeight,
+      wasmDetection.kind === "chart" ? "chart-edge" : "patch",
     );
-    gridWidth = rustDetection.gridWidth;
-    gridHeight = rustDetection.gridHeight;
+    gridWidth = wasmDetection.gridWidth;
+    gridHeight = wasmDetection.gridHeight;
     detectionMode =
-      rustDetection.kind === "chart" ? "detected-rust-chart" : "detected-rust-pixel";
-    preferredEditorMode = rustDetection.kind === "chart" ? "pindou" : "edit";
+      wasmDetection.kind === "chart" ? "detected-wasm-chart" : "detected-wasm-pixel";
+    preferredEditorMode = wasmDetection.kind === "chart" ? "pindou" : "edit";
     detectedCropRect = cropBoxToNormalizedCropRect(
       source.width,
       source.height,
-      rustDetection.cropBox,
+      wasmDetection.cropBox,
     );
   } else {
     if (!options.gridWidth || !options.gridHeight) {
@@ -367,9 +372,18 @@ export async function processImageFile(
     detectionMode = "converted-from-image";
   }
 
+  const effectiveReduceColors =
+    options.applyAutoReduceColorsDefault &&
+    options.gridMode === "auto" &&
+    detectionMode === "detected-wasm-pixel" &&
+    gridWidth < 30 &&
+    gridHeight < 30
+      ? false
+      : options.reduceColors;
+
   const originalUniqueColors = countUniqueColors(logical.data);
   let reducedUniqueColors = originalUniqueColors;
-  if (options.reduceColors) {
+  if (effectiveReduceColors) {
     const reduced = reduceColorsPhotoshopStyle(logical, options.reduceTolerance);
     logical = reduced.image;
     reducedUniqueColors = reduced.reducedUniqueColors;
@@ -411,6 +425,7 @@ export async function processImageFile(
     fileName: defaultOutputName(file.name, gridWidth, gridHeight),
     colorSystemId: paletteDefinition.id,
     detectionMode,
+    effectiveReduceColors,
     preferredEditorMode,
     detectedCropRect,
     gridWidth,
@@ -436,7 +451,7 @@ export async function debugAutoDetectRaster(
     height: image.height,
     data: image.data,
   };
-  const detection = await detectAutoRasterWithRust(raster);
+  const detection = await detectAutoRasterWithWasm(raster);
   if (!detection) {
     return {
       mode: "none",
@@ -451,7 +466,7 @@ export async function debugAutoDetectRaster(
   const cropWidth = detection.cropBox[2] - detection.cropBox[0];
   const cropHeight = detection.cropBox[3] - detection.cropBox[1];
   return {
-    mode: detection.kind === "chart" ? "detected-rust-chart" : "detected-rust-pixel",
+    mode: detection.kind === "chart" ? "detected-wasm-chart" : "detected-wasm-pixel",
     gridWidth: detection.gridWidth,
     gridHeight: detection.gridHeight,
     cropBox: detection.cropBox,
@@ -571,6 +586,7 @@ async function tryLoadEmbeddedChartResult(file: File): Promise<ProcessResult | n
     fileName: metadata.fileName || defaultOutputName(file.name, metadata.gridWidth, metadata.gridHeight),
     colorSystemId: paletteDefinition.id,
     detectionMode: "embedded-chart-metadata",
+    effectiveReduceColors: true,
     preferredEditorMode: metadata.preferredEditorMode ?? "pindou",
     detectedCropRect: null,
     gridWidth: metadata.gridWidth,
@@ -889,7 +905,7 @@ function mapPreparedCropBoxToSource(
   ];
 }
 
-function buildPreparedRustChartDetection(
+function buildPreparedWasmChartDetection(
   image: RasterImage,
   prepared: DetectionPreparation,
   detection: {
@@ -907,7 +923,7 @@ function buildPreparedRustChartDetection(
     return null;
   }
 
-  const refinedDetection = refinePreparedRustGuideDetection(prepared.raster, detection);
+  const refinedDetection = refinePreparedWasmGuideDetection(prepared.raster, detection);
 
   const cropBox = mapPreparedCropBoxToSource(refinedDetection.cropBox, image, prepared);
   const cropWidth = cropBox[2] - cropBox[0];
@@ -947,12 +963,12 @@ function buildPreparedRustChartDetection(
   return {
     gridWidth: refinedDetection.gridWidth,
     gridHeight: refinedDetection.gridHeight,
-    mode: "detected-rust-cv",
+    mode: "detected-wasm-cv",
     cropBox,
   };
 }
 
-function refinePreparedRustGuideDetection(
+function refinePreparedWasmGuideDetection(
   image: RasterImage,
   detection: {
     cropBox: CropBox;
@@ -1156,7 +1172,7 @@ function quantizeHueBucket([red, green, blue]: Rgb) {
   return Math.max(0, Math.min(23, Math.floor(hue / 15)));
 }
 
-export async function debugDetectChartBoardWithRustPrepared(
+export async function debugDetectChartBoardWithWasmPrepared(
   image: AutoDetectionDebugInput,
 ) {
   const raster: RasterImage = {
@@ -1165,12 +1181,12 @@ export async function debugDetectChartBoardWithRustPrepared(
     data: image.data,
   };
   const prepared = prepareDetectionRaster(raster);
-  const detection = await detectChartBoardWithRust(raster);
+  const detection = await detectChartBoardWithWasm(raster);
   if (!detection) {
     return null;
   }
-  const refined = refinePreparedRustGuideDetection(raster, detection);
-  const built = buildPreparedRustChartDetection(raster, { raster, scaleX: 1, scaleY: 1 }, detection);
+  const refined = refinePreparedWasmGuideDetection(raster, detection);
+  const built = buildPreparedWasmChartDetection(raster, { raster, scaleX: 1, scaleY: 1 }, detection);
   return {
     raw: detection,
     refined,
@@ -1319,7 +1335,99 @@ function representativeColorFromPatch(
   ];
 }
 
-function sampleRegularGrid(image: RasterImage, gridWidth: number, gridHeight: number): RasterImage {
+function representativeColorFromChartPatch(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): Rgb {
+  const width = Math.max(1, right - left);
+  const height = Math.max(1, bottom - top);
+  const xInset = Math.max(0, Math.min(width - 1, Math.round((width - 1) * CHART_EDGE_SAMPLE_INSET)));
+  const yInset = Math.max(0, Math.min(height - 1, Math.round((height - 1) * CHART_EDGE_SAMPLE_INSET)));
+  const samples: Rgb[] = [];
+
+  function samplePoint(centerX: number, centerY: number) {
+    const startX = Math.max(left, centerX - 1);
+    const endX = Math.min(right - 1, centerX + 1);
+    const startY = Math.max(top, centerY - 1);
+    const endY = Math.min(bottom - 1, centerY + 1);
+    const sums: [number, number, number] = [0, 0, 0];
+    let count = 0;
+    for (let y = startY; y <= endY; y += 1) {
+      for (let x = startX; x <= endX; x += 1) {
+        const pixel = getPixel(image, x, y);
+        sums[0] += pixel[0];
+        sums[1] += pixel[1];
+        sums[2] += pixel[2];
+        count += 1;
+      }
+    }
+    if (!count) {
+      return;
+    }
+    samples.push([
+      clampToByte(sums[0] / count),
+      clampToByte(sums[1] / count),
+      clampToByte(sums[2] / count),
+    ]);
+  }
+
+  for (const progress of CHART_EDGE_SAMPLE_PROGRESS) {
+    const primaryX = left + Math.round((width - 1) * progress);
+    const mirroredX = left + Math.round((width - 1) * (1 - progress));
+    const primaryY = top + Math.round((height - 1) * progress);
+    const mirroredY = top + Math.round((height - 1) * (1 - progress));
+
+    samplePoint(primaryX, top + yInset);
+    samplePoint(mirroredX, top + yInset);
+    samplePoint(primaryX, bottom - 1 - yInset);
+    samplePoint(mirroredX, bottom - 1 - yInset);
+    samplePoint(left + xInset, primaryY);
+    samplePoint(left + xInset, mirroredY);
+    samplePoint(right - 1 - xInset, primaryY);
+    samplePoint(right - 1 - xInset, mirroredY);
+  }
+
+  if (!samples.length) {
+    return representativeColorFromPatch(image, left, top, right, bottom);
+  }
+
+  const buckets = new Map<number, { count: number; sum: [number, number, number] }>();
+  for (const sample of samples) {
+    const code = ((sample[0] >> 3) << 10) | ((sample[1] >> 3) << 5) | (sample[2] >> 3);
+    const current = buckets.get(code) ?? { count: 0, sum: [0, 0, 0] };
+    current.count += 1;
+    current.sum[0] += sample[0];
+    current.sum[1] += sample[1];
+    current.sum[2] += sample[2];
+    buckets.set(code, current);
+  }
+
+  let best: { count: number; sum: [number, number, number] } | null = null;
+  for (const bucket of buckets.values()) {
+    if (!best || bucket.count > best.count) {
+      best = bucket;
+    }
+  }
+  if (!best) {
+    return representativeColorFromPatch(image, left, top, right, bottom);
+  }
+
+  return [
+    clampToByte(best.sum[0] / best.count),
+    clampToByte(best.sum[1] / best.count),
+    clampToByte(best.sum[2] / best.count),
+  ];
+}
+
+function sampleRegularGrid(
+  image: RasterImage,
+  gridWidth: number,
+  gridHeight: number,
+  strategy: "patch" | "chart-edge" = "patch",
+): RasterImage {
   const xEdges = buildEdges(image.width, gridWidth);
   const yEdges = buildEdges(image.height, gridHeight);
   const data = new Uint8ClampedArray(gridWidth * gridHeight * 4);
@@ -1330,7 +1438,10 @@ function sampleRegularGrid(image: RasterImage, gridWidth: number, gridHeight: nu
     for (let column = 0; column < gridWidth; column += 1) {
       const left = xEdges[column];
       const right = Math.max(xEdges[column + 1], left + 1);
-      const color = representativeColorFromPatch(image, left, top, right, bottom);
+      const color =
+        strategy === "chart-edge"
+          ? representativeColorFromChartPatch(image, left, top, right, bottom)
+          : representativeColorFromPatch(image, left, top, right, bottom);
       const index = (row * gridWidth + column) * 4;
       data[index] = color[0];
       data[index + 1] = color[1];
@@ -1437,9 +1548,10 @@ function reduceColorsPhotoshopStyle(image: RasterImage, tolerance: number) {
   const indexByColor = new Map<number, number>();
   const uniqueColors: Rgb[] = [];
   const counts: number[] = [];
-  const inverse = new Int32Array(image.width * image.height);
+  const pixelCount = image.width * image.height;
+  const inverse = new Int32Array(pixelCount);
 
-  for (let index = 0; index < image.width * image.height; index += 1) {
+  for (let index = 0; index < pixelCount; index += 1) {
     const pixelIndex = index * 4;
     const code =
       (image.data[pixelIndex] << 16) |
@@ -1465,59 +1577,59 @@ function reduceColorsPhotoshopStyle(image: RasterImage, tolerance: number) {
     return { image, originalUniqueColors, reducedUniqueColors: originalUniqueColors };
   }
 
-  const sortOrder = uniqueColors
-    .map((_, index) => index)
-    .sort((left, right) => counts[right] - counts[left]);
-  const representatives: Array<{ rgb: [number, number, number]; oklab: Oklab; weight: number }> = [];
-  const colorToCluster = new Int32Array(originalUniqueColors);
+  const rareColorLimit = getRareColorPixelLimit(pixelCount);
+  const oklabByColor = uniqueColors.map((color) => rgbToOklab(color));
+  const replacementByColor = new Int32Array(originalUniqueColors);
+  for (let index = 0; index < originalUniqueColors; index += 1) {
+    replacementByColor[index] = index;
+  }
 
-  for (const colorIndex of sortOrder) {
-    const color = uniqueColors[colorIndex];
-    const oklab = rgbToOklab(color);
-    let assignedCluster = -1;
+  for (let colorIndex = 0; colorIndex < originalUniqueColors; colorIndex += 1) {
+    const currentCount = counts[colorIndex] ?? 0;
+    if (currentCount <= 0 || currentCount > rareColorLimit) {
+      continue;
+    }
 
-    for (let clusterIndex = 0; clusterIndex < representatives.length; clusterIndex += 1) {
-      const distance = Math.sqrt(oklabDistanceSquared(oklab, representatives[clusterIndex].oklab)) * 255;
-      if (distance <= tolerance) {
-        assignedCluster = clusterIndex;
-        break;
+    let bestReplacement = colorIndex;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestCount = -1;
+    for (let candidateIndex = 0; candidateIndex < originalUniqueColors; candidateIndex += 1) {
+      if (candidateIndex === colorIndex) {
+        continue;
+      }
+
+      const candidateCount = counts[candidateIndex] ?? 0;
+      if (candidateCount <= rareColorLimit) {
+        continue;
+      }
+
+      const distance =
+        Math.sqrt(oklabDistanceSquared(oklabByColor[colorIndex], oklabByColor[candidateIndex])) *
+        255;
+      if (distance > tolerance) {
+        continue;
+      }
+
+      if (
+        distance < bestDistance ||
+        (distance === bestDistance && candidateCount > bestCount)
+      ) {
+        bestReplacement = candidateIndex;
+        bestDistance = distance;
+        bestCount = candidateCount;
       }
     }
 
-    if (assignedCluster === -1) {
-      representatives.push({
-        rgb: [color[0], color[1], color[2]],
-        oklab,
-        weight: counts[colorIndex],
-      });
-      assignedCluster = representatives.length - 1;
-    } else {
-      const representative = representatives[assignedCluster];
-      const weight = representative.weight;
-      const colorWeight = counts[colorIndex];
-      representative.rgb = [
-        (representative.rgb[0] * weight + color[0] * colorWeight) / (weight + colorWeight),
-        (representative.rgb[1] * weight + color[1] * colorWeight) / (weight + colorWeight),
-        (representative.rgb[2] * weight + color[2] * colorWeight) / (weight + colorWeight),
-      ];
-      representative.oklab = rgbToOklab([
-        clampToByte(representative.rgb[0]),
-        clampToByte(representative.rgb[1]),
-        clampToByte(representative.rgb[2]),
-      ]);
-      representative.weight = weight + colorWeight;
-    }
-
-    colorToCluster[colorIndex] = assignedCluster;
+    replacementByColor[colorIndex] = bestReplacement;
   }
 
   const data = new Uint8ClampedArray(image.data.length);
-  for (let index = 0; index < image.width * image.height; index += 1) {
-    const cluster = representatives[colorToCluster[inverse[index]]];
+  for (let index = 0; index < pixelCount; index += 1) {
+    const replacement = uniqueColors[replacementByColor[inverse[index]]];
     const pixelIndex = index * 4;
-    data[pixelIndex] = clampToByte(cluster.rgb[0]);
-    data[pixelIndex + 1] = clampToByte(cluster.rgb[1]);
-    data[pixelIndex + 2] = clampToByte(cluster.rgb[2]);
+    data[pixelIndex] = replacement[0];
+    data[pixelIndex + 1] = replacement[1];
+    data[pixelIndex + 2] = replacement[2];
     data[pixelIndex + 3] = 255;
   }
 
@@ -1529,6 +1641,7 @@ function reduceColorsPhotoshopStyle(image: RasterImage, tolerance: number) {
   const neighborhoodReducedImage = mergeRareNeighborhoodColors(
     globallyReducedImage,
     tolerance,
+    rareColorLimit,
   );
 
   return {
@@ -1662,6 +1775,10 @@ function mergeRareNeighborhoodColors(
         data: nextData,
       }
     : image;
+}
+
+function getRareColorPixelLimit(pixelCount: number) {
+  return Math.max(2, Math.min(8, Math.round(pixelCount * 0.0015)));
 }
 
 function chooseCellSize(gridWidth: number, gridHeight: number, requested?: number) {

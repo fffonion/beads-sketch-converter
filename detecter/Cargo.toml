@@ -1,5 +1,5 @@
 [package]
-name = "rust_chart_detector"
+name = "detecter"
 version = "0.1.0"
 edition = "2024"
 

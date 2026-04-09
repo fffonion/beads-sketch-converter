@@ -3,15 +3,15 @@ import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
 const rootDir = resolve(import.meta.dirname, "..");
-const cargoManifestPath = join(rootDir, "rust-chart-detector", "Cargo.toml");
-const outputPath = join(rootDir, "src", "lib", "rust-chart-detector.wasm");
+const cargoManifestPath = join(rootDir, "detecter", "Cargo.toml");
+const outputPath = join(rootDir, "src", "lib", "detecter.wasm");
 const releaseArtifactPath = join(
   rootDir,
-  "rust-chart-detector",
+  "detecter",
   "target",
   "wasm32-unknown-unknown",
   "release",
-  "rust_chart_detector.wasm",
+  "detecter.wasm",
 );
 const rustToolchain = "1.94.1-x86_64-pc-windows-msvc";
 

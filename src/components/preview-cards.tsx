@@ -293,7 +293,9 @@ export function OriginalPreviewCard({
             <span className={clsx("text-sm font-semibold", theme.cardTitle)}>
               {sourceChooseImage}
             </span>
-            <span className={clsx("mt-2 text-xs", theme.cardMuted)}>{sourceStayInTab}</span>
+            {sourceStayInTab ? (
+              <span className={clsx("mt-2 text-xs", theme.cardMuted)}>{sourceStayInTab}</span>
+            ) : null}
           </label>
         ) : null}
       </div>

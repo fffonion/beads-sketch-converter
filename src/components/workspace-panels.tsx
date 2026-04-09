@@ -94,7 +94,10 @@ export function WorkspacePanels({
   onColorSystemIdChange: (value: string) => void;
   paletteOptions: Array<{ label: string; hex: string }>;
   currentCells: ProcessResult["cells"];
-  onApplyCell: (index: number) => void;
+  onApplyCell: (
+    index: number,
+    toolOverride?: "paint" | "erase" | "pick" | "fill" | "pan" | "zoom",
+  ) => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;

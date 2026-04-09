@@ -1,109 +1,7 @@
-use std::slice;
+use crate::fft::estimate_period_from_fft;
+use crate::types::{Detection, LinePair, RectBox};
 
-static mut RESULT: [i32; 7] = [0; 7];
-
-#[unsafe(no_mangle)]
-pub extern "C" fn alloc(size: usize) -> *mut u8 {
-    let mut buffer = Vec::<u8>::with_capacity(size);
-    let pointer = buffer.as_mut_ptr();
-    std::mem::forget(buffer);
-    pointer
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn dealloc(ptr: *mut u8, capacity: usize) {
-    if ptr.is_null() || capacity == 0 {
-        return;
-    }
-    unsafe {
-        drop(Vec::from_raw_parts(ptr, 0, capacity));
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn result_ptr() -> *const i32 {
-    (&raw const RESULT).cast::<i32>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn detect_chart(ptr: *const u8, len: usize, width: u32, height: u32) -> u32 {
-    let width = width as usize;
-    let height = height as usize;
-    let expected_len = width.saturating_mul(height).saturating_mul(4);
-    if ptr.is_null() || len < expected_len || width < 96 || height < 96 {
-        write_result(None);
-        return 0;
-    }
-
-    let rgba = unsafe { slice::from_raw_parts(ptr, expected_len) };
-    let detection = detect_chart_inner(rgba, width, height);
-    write_result(detection);
-    unsafe { RESULT[0] as u32 }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn detect_pixel_art(ptr: *const u8, len: usize, width: u32, height: u32) -> u32 {
-    let width = width as usize;
-    let height = height as usize;
-    let expected_len = width.saturating_mul(height).saturating_mul(4);
-    if ptr.is_null() || len < expected_len || width < 48 || height < 48 {
-        write_result(None);
-        return 0;
-    }
-
-    let rgba = unsafe { slice::from_raw_parts(ptr, expected_len) };
-    let detection = detect_pixel_art_inner(rgba, width, height);
-    write_result(detection);
-    unsafe { RESULT[0] as u32 }
-}
-
-#[derive(Clone, Copy)]
-struct Detection {
-    left: usize,
-    top: usize,
-    right: usize,
-    bottom: usize,
-    grid_width: usize,
-    grid_height: usize,
-}
-
-#[derive(Clone, Copy)]
-struct RectBox {
-    left: usize,
-    top: usize,
-    right: usize,
-    bottom: usize,
-}
-
-#[derive(Clone, Copy)]
-struct LinePair {
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-struct Complex {
-    re: f32,
-    im: f32,
-}
-
-fn write_result(result: Option<Detection>) {
-    unsafe {
-        if let Some(detection) = result {
-            RESULT[0] = 1;
-            RESULT[1] = detection.left as i32;
-            RESULT[2] = detection.top as i32;
-            RESULT[3] = detection.right as i32;
-            RESULT[4] = detection.bottom as i32;
-            RESULT[5] = detection.grid_width as i32;
-            RESULT[6] = detection.grid_height as i32;
-        } else {
-            RESULT = [0; 7];
-        }
-    }
-}
-
-fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
+pub(crate) fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
     let luma = build_luma(rgba, width, height);
     detect_framed_chart_inner(rgba, &luma, width, height)
         .or_else(|| detect_separator_board_inner(rgba, &luma, width, height))
@@ -125,10 +23,14 @@ fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detect
                 || has_significant_outer_margin(width, height, detection))
                 .then_some(detection)
         })
-        .map(|detection| refine_guide_detection(rgba, width, height, detection))
+        .map(|detection| {
+            let detection = refine_inner_framed_chart(rgba, &luma, width, height, detection)
+                .unwrap_or(detection);
+            refine_guide_detection(rgba, width, height, detection)
+        })
 }
 
-fn detect_pixel_art_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
+pub(crate) fn detect_pixel_art_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
     let luma = build_luma(rgba, width, height);
     let mut candidates = Vec::<Detection>::new();
     if let Some(detection) = detect_separator_board_inner(rgba, &luma, width, height) {
@@ -235,6 +137,205 @@ fn detect_framed_chart_inner(
         crop_aspect / grid_aspect
     } else {
         grid_aspect / crop_aspect
+    };
+    if aspect_ratio > 1.28 {
+        return None;
+    }
+
+    Some(Detection {
+        left,
+        top,
+        right,
+        bottom,
+        grid_width,
+        grid_height,
+    })
+}
+
+fn refine_inner_framed_chart(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+    detection: Detection,
+) -> Option<Detection> {
+    let rough_cell_width =
+        ((detection.right.saturating_sub(detection.left)) as f32 / detection.grid_width.max(1) as f32)
+            .max(1.0);
+    let rough_cell_height =
+        ((detection.bottom.saturating_sub(detection.top)) as f32 / detection.grid_height.max(1) as f32)
+            .max(1.0);
+    let pad_x = (rough_cell_width * 2.2).round() as usize;
+    let pad_y = (rough_cell_height * 2.2).round() as usize;
+    let search = RectBox {
+        left: detection.left.saturating_sub(pad_x),
+        top: detection.top.saturating_sub(pad_y),
+        right: (detection.right + pad_x).min(width),
+        bottom: (detection.bottom + pad_y).min(height),
+    };
+    let refined =
+        detect_framed_chart_in_region(rgba, luma, width, height, search, Some(detection))?;
+    let refined_area = refined
+        .right
+        .saturating_sub(refined.left)
+        .saturating_mul(refined.bottom.saturating_sub(refined.top));
+    let current_area = detection
+        .right
+        .saturating_sub(detection.left)
+        .saturating_mul(detection.bottom.saturating_sub(detection.top))
+        .max(1);
+    let area_ratio = refined_area as f32 / current_area as f32;
+    if !(0.45..=1.04).contains(&area_ratio) {
+        return None;
+    }
+
+    let rough_grid_ratio = detection.grid_width as f32 / detection.grid_height.max(1) as f32;
+    let refined_grid_ratio = refined.grid_width as f32 / refined.grid_height.max(1) as f32;
+    let grid_ratio_delta = if rough_grid_ratio > refined_grid_ratio {
+        rough_grid_ratio / refined_grid_ratio.max(0.0001)
+    } else {
+        refined_grid_ratio / rough_grid_ratio.max(0.0001)
+    };
+    if grid_ratio_delta > 1.18 {
+        return None;
+    }
+
+    Some(refined)
+}
+
+fn detect_framed_chart_in_region(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+    region: RectBox,
+    rough_detection: Option<Detection>,
+) -> Option<Detection> {
+    let region_width = region.right.saturating_sub(region.left);
+    let region_height = region.bottom.saturating_sub(region.top);
+    if region_width < width / 4 || region_height < height / 4 {
+        return None;
+    }
+
+    let mut column_projection =
+        build_crop_column_projection(luma, width, region.left, region.right, region.top, region.bottom);
+    let mut row_projection =
+        build_crop_row_projection(luma, width, region.left, region.right, region.top, region.bottom);
+    smooth_projection(&mut column_projection, 4);
+    smooth_projection(&mut row_projection, 4);
+
+    let min_distance_x = rough_detection
+        .map(|detection| {
+            (((detection.right.saturating_sub(detection.left)) as f32
+                / detection.grid_width.max(1) as f32)
+                * 0.45)
+                .round() as usize
+        })
+        .unwrap_or(6)
+        .max(4);
+    let min_distance_y = rough_detection
+        .map(|detection| {
+            (((detection.bottom.saturating_sub(detection.top)) as f32
+                / detection.grid_height.max(1) as f32)
+                * 0.45)
+                .round() as usize
+        })
+        .unwrap_or(6)
+        .max(4);
+
+    let column_peaks = find_local_peaks(&column_projection, 32, min_distance_x);
+    let row_peaks = find_local_peaks(&row_projection, 32, min_distance_y);
+    let horizontal = choose_outer_pair(&column_projection, &column_peaks, region_width)?;
+    let vertical = choose_outer_pair(&row_projection, &row_peaks, region_height)?;
+
+    let absolute_horizontal = LinePair {
+        start: region.left + horizontal.start,
+        end: region.left + horizontal.end,
+    };
+    let absolute_vertical = LinePair {
+        start: region.top + vertical.start,
+        end: region.top + vertical.end,
+    };
+
+    if !border_colors_are_consistent(
+        rgba,
+        width,
+        height,
+        absolute_horizontal,
+        absolute_vertical,
+    ) {
+        return None;
+    }
+
+    let crop_width = absolute_horizontal.end.saturating_sub(absolute_horizontal.start);
+    let crop_height = absolute_vertical.end.saturating_sub(absolute_vertical.start);
+    if crop_width < width / 4 || crop_height < height / 4 {
+        return None;
+    }
+
+    let x_period = dominant_period_for_crop(
+        luma,
+        width,
+        absolute_horizontal.start,
+        absolute_horizontal.end,
+        absolute_vertical.start,
+        absolute_vertical.end,
+        true,
+    )?;
+    let y_period = dominant_period_for_crop(
+        luma,
+        width,
+        absolute_horizontal.start,
+        absolute_horizontal.end,
+        absolute_vertical.start,
+        absolute_vertical.end,
+        false,
+    )?;
+
+    let border_inset_x = (x_period / 10).max(1).min(crop_width / 16);
+    let border_inset_y = (y_period / 10).max(1).min(crop_height / 16);
+    let left = absolute_horizontal.start.saturating_add(border_inset_x);
+    let top = absolute_vertical.start.saturating_add(border_inset_y);
+    let right = absolute_horizontal.end.saturating_sub(border_inset_x);
+    let bottom = absolute_vertical.end.saturating_sub(border_inset_y);
+    if right <= left + 8 || bottom <= top + 8 {
+        return None;
+    }
+
+    let inner_width = right - left;
+    let inner_height = bottom - top;
+    let grid_width = ((inner_width as f32) / (x_period as f32)).round() as usize;
+    let grid_height = ((inner_height as f32) / (y_period as f32)).round() as usize;
+    if !(10..=102).contains(&grid_width) || !(10..=102).contains(&grid_height) {
+        return None;
+    }
+
+    if let Some(rough) = rough_detection {
+        let rough_cell_width =
+            (rough.right.saturating_sub(rough.left)) as f32 / rough.grid_width.max(1) as f32;
+        let rough_cell_height =
+            (rough.bottom.saturating_sub(rough.top)) as f32 / rough.grid_height.max(1) as f32;
+        let cell_ratio_x = if x_period as f32 > rough_cell_width {
+            x_period as f32 / rough_cell_width.max(0.0001)
+        } else {
+            rough_cell_width / x_period.max(1) as f32
+        };
+        let cell_ratio_y = if y_period as f32 > rough_cell_height {
+            y_period as f32 / rough_cell_height.max(0.0001)
+        } else {
+            rough_cell_height / y_period.max(1) as f32
+        };
+        if cell_ratio_x > 1.32 || cell_ratio_y > 1.32 {
+            return None;
+        }
+    }
+
+    let crop_aspect = inner_width as f32 / inner_height.max(1) as f32;
+    let grid_aspect = grid_width as f32 / grid_height.max(1) as f32;
+    let aspect_ratio = if crop_aspect > grid_aspect {
+        crop_aspect / grid_aspect.max(0.0001)
+    } else {
+        grid_aspect / crop_aspect.max(0.0001)
     };
     if aspect_ratio > 1.28 {
         return None;
@@ -1708,154 +1809,6 @@ fn estimate_edge_period_for_crop(
         build_crop_row_projection(luma, width, left, right, top, bottom)
     };
     estimate_period_from_fft(&signal)
-}
-
-fn estimate_period_from_fft(signal: &[f32]) -> Option<usize> {
-    if signal.len() < 24 {
-        return None;
-    }
-
-    let mean = projection_mean(signal);
-    let mut centered = Vec::<f32>::with_capacity(signal.len());
-    for value in signal {
-        centered.push(*value - mean);
-    }
-    if centered.iter().all(|value| value.abs() < 1e-3) {
-        return None;
-    }
-
-    let fft_len = signal.len().next_power_of_two().max(32);
-    let mut buffer = vec![Complex::default(); fft_len];
-    let signal_len = signal.len() as f32;
-    for (index, value) in centered.iter().enumerate() {
-        let hann = if signal.len() <= 1 {
-            1.0
-        } else {
-            let phase = index as f32 / (signal.len() - 1) as f32;
-            0.5 - 0.5 * (std::f32::consts::TAU * phase).cos()
-        };
-        buffer[index].re = *value * hann;
-    }
-    fft_in_place(&mut buffer, false);
-
-    let min_period = 3.0_f32;
-    let max_period = (signal.len() as f32 / 10.0).min(256.0).max(16.0);
-    let mut candidates = Vec::<(f32, f32)>::new();
-    let mut best_score = 0.0_f32;
-    for bin in 1..(fft_len / 2) {
-        let period = fft_len as f32 / bin as f32;
-        if period < min_period || period > max_period {
-            continue;
-        }
-
-        let cell_count = (signal_len / period).round() as usize;
-        if !(10..=102).contains(&cell_count) {
-            continue;
-        }
-
-        let mut score = complex_power(buffer[bin]);
-        let mut harmonic = 2;
-        while bin * harmonic < fft_len / 2 && harmonic <= 5 {
-            score += complex_power(buffer[bin * harmonic]) / harmonic as f32;
-            harmonic += 1;
-        }
-        score *= 1.0 + (period / signal_len).min(0.5) * 0.45;
-
-        if score > best_score {
-            best_score = score;
-        }
-        candidates.push((period, score));
-    }
-
-    if candidates.is_empty() || best_score <= 0.0 {
-        None
-    } else {
-        let threshold = best_score * 0.84;
-        let chosen = candidates
-            .into_iter()
-            .filter(|(_, score)| *score >= threshold)
-            .max_by(|left, right| left.0.total_cmp(&right.0))
-            .map(|(period, _)| period)
-            .unwrap_or(0.0);
-        (chosen > 0.0).then_some(chosen.round() as usize)
-    }
-}
-
-fn complex_power(value: Complex) -> f32 {
-    value.re * value.re + value.im * value.im
-}
-
-fn fft_in_place(values: &mut [Complex], invert: bool) {
-    let length = values.len();
-    if length <= 1 {
-        return;
-    }
-
-    let mut bit_reversed = 0_usize;
-    for index in 1..length {
-        let mut bit = length >> 1;
-        while bit_reversed & bit != 0 {
-            bit_reversed ^= bit;
-            bit >>= 1;
-        }
-        bit_reversed ^= bit;
-        if index < bit_reversed {
-            values.swap(index, bit_reversed);
-        }
-    }
-
-    let mut len = 2_usize;
-    while len <= length {
-        let angle =
-            (std::f32::consts::TAU / len as f32) * if invert { -1.0 } else { 1.0 };
-        let wlen = Complex {
-            re: angle.cos(),
-            im: angle.sin(),
-        };
-        let half = len / 2;
-        let mut start = 0_usize;
-        while start < length {
-            let mut w = Complex { re: 1.0, im: 0.0 };
-            for offset in 0..half {
-                let u = values[start + offset];
-                let v = complex_mul(values[start + offset + half], w);
-                values[start + offset] = complex_add(u, v);
-                values[start + offset + half] = complex_sub(u, v);
-                w = complex_mul(w, wlen);
-            }
-            start += len;
-        }
-        len <<= 1;
-    }
-
-    if invert {
-        let scale = 1.0 / length as f32;
-        for value in values {
-            value.re *= scale;
-            value.im *= scale;
-        }
-    }
-}
-
-fn complex_add(left: Complex, right: Complex) -> Complex {
-    Complex {
-        re: left.re + right.re,
-        im: left.im + right.im,
-    }
-}
-
-fn complex_sub(left: Complex, right: Complex) -> Complex {
-    Complex {
-        re: left.re - right.re,
-        im: left.im - right.im,
-    }
-}
-
-fn complex_mul(left: Complex, right: Complex) -> Complex {
-    Complex {
-        re: left.re * right.re - left.im * right.im,
-        im: left.re * right.im + left.im * right.re,
-    }
 }
 
 fn dominant_period_for_crop(

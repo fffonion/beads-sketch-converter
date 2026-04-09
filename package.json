@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:rust-chart-detector": "node ./scripts/build-rust-chart-detector.mjs",
+    "build:detecter": "node ./scripts/build-detecter.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "bun test"

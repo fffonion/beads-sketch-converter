@@ -63,6 +63,77 @@ function isTypingElement(target: EventTarget | null) {
   );
 }
 
+type FullscreenCapableElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
+type FullscreenCapableDocument = Document & {
+  webkitExitFullscreen?: () => Promise<void> | void;
+  webkitFullscreenElement?: Element | null;
+};
+
+function isMobileLikeUserAgent() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const userAgent = navigator.userAgent.toLowerCase();
+  const matchesMobileUa =
+    /android|iphone|ipad|ipod|mobile|tablet|silk|kindle|playbook|opera mini|iemobile/.test(
+      userAgent,
+    );
+  const isTouchMac =
+    userAgent.includes("macintosh") &&
+    typeof navigator.maxTouchPoints === "number" &&
+    navigator.maxTouchPoints > 1;
+  return matchesMobileUa || isTouchMac;
+}
+
+function getFullscreenElement() {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const fullscreenDocument = document as FullscreenCapableDocument;
+  return document.fullscreenElement ?? fullscreenDocument.webkitFullscreenElement ?? null;
+}
+
+async function requestBrowserFullscreen() {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const target = document.documentElement as FullscreenCapableElement;
+  if (document.fullscreenElement || getFullscreenElement()) {
+    return;
+  }
+
+  if (typeof target.requestFullscreen === "function") {
+    await target.requestFullscreen();
+    return;
+  }
+
+  if (typeof target.webkitRequestFullscreen === "function") {
+    await target.webkitRequestFullscreen();
+  }
+}
+
+async function exitBrowserFullscreen() {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const fullscreenDocument = document as FullscreenCapableDocument;
+  if (typeof document.exitFullscreen === "function") {
+    await document.exitFullscreen();
+    return;
+  }
+
+  if (typeof fullscreenDocument.webkitExitFullscreen === "function") {
+    await fullscreenDocument.webkitExitFullscreen();
+  }
+}
+
 export default function App() {
   const runIdRef = useRef(0);
   const paintActiveRef = useRef(false);
@@ -94,6 +165,7 @@ export default function App() {
   const [manualLastEditedAxis, setManualLastEditedAxis] = useState<GridAxis>("width");
   const [followSourceRatio, setFollowSourceRatio] = useState(true);
   const [reduceColors, setReduceColors] = useState(true);
+  const [reduceColorsTouched, setReduceColorsTouched] = useState(false);
   const [reduceTolerance, setReduceTolerance] = useState(16);
   const [preSharpen, setPreSharpen] = useState(true);
   const [preSharpenStrength, setPreSharpenStrength] = useState(20);
@@ -123,6 +195,7 @@ export default function App() {
 
   const t = getMessages(locale);
   const isDark = themeMode === "dark" || (themeMode === "system" && systemPrefersDark);
+  const useBrowserFullscreenForPindou = isMobileLikeUserAgent();
   const theme = getThemeClasses(isDark);
   const activeAspectRatio = getActiveAspectRatio(sourceSize, cropMode ? cropRect : null);
   const topError = error;
@@ -159,6 +232,56 @@ export default function App() {
     disabledResultLabelsRef.current = disabledResultLabels;
   }, [disabledResultLabels]);
 
+  useEffect(() => {
+    if (!useBrowserFullscreenForPindou || typeof document === "undefined") {
+      return;
+    }
+
+    function handleFullscreenChange() {
+      if (!getFullscreenElement()) {
+        setPindouFocusViewOpen(false);
+      }
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange as EventListener);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        handleFullscreenChange as EventListener,
+      );
+    };
+  }, [useBrowserFullscreenForPindou]);
+
+  async function handlePindouFocusViewOpenChange(nextOpen: boolean) {
+    if (!useBrowserFullscreenForPindou) {
+      setPindouFocusViewOpen(nextOpen);
+      return;
+    }
+
+    if (nextOpen) {
+      try {
+        await requestBrowserFullscreen();
+      } catch {
+        // Ignore browser fullscreen failures and still enter the in-app focus view.
+      }
+
+      setPindouFocusViewOpen(true);
+      return;
+    }
+
+    setPindouFocusViewOpen(false);
+
+    try {
+      if (getFullscreenElement()) {
+        await exitBrowserFullscreen();
+      }
+    } catch {
+      // Ignore exit failures so the in-app focus view can still close normally.
+    }
+  }
+
   function handleGridWidthChange(value: string) {
     setGridWidth(value);
     setManualLastEditedAxis("width");
@@ -191,6 +314,31 @@ export default function App() {
     setCropRect(nextCropRect);
   }
 
+  function handleReduceColorsChange(nextReduceColors: boolean) {
+    setReduceColorsTouched(true);
+    setReduceColors(nextReduceColors);
+  }
+
+  function handleGridModeChange(nextGridMode: GridMode) {
+    if (nextGridMode === gridMode) {
+      return;
+    }
+
+    setGridMode(nextGridMode);
+    if (
+      nextGridMode === "manual" &&
+      gridMode === "auto" &&
+      result
+    ) {
+      setGridWidth(String(result.gridWidth));
+      setGridHeight(String(result.gridHeight));
+      if (result.detectedCropRect) {
+        setCropRect(result.detectedCropRect);
+        setCropMode(true);
+      }
+    }
+  }
+
   function applyManualFallbackGrid() {
     const ratio = activeAspectRatio ?? 1;
     const defaultGridBase = sourceComplexity;
@@ -217,6 +365,8 @@ export default function App() {
     setGridHeight("33");
     setManualLastEditedAxis("width");
     setFollowSourceRatio(true);
+    setReduceColors(true);
+    setReduceColorsTouched(false);
     setCropRect(null);
     setCropMode(false);
     setSourceSize(null);
@@ -455,29 +605,35 @@ export default function App() {
     commitEditorSnapshot(nextCells, nextDisabledLabels);
   }
 
-  function applyCellEdit(index: number) {
+  function applyCellEdit(index: number, toolOverride?: EditTool) {
     if (!result || !editorBaseCells.length) {
       return;
     }
 
-    if (editTool === "pick") {
+    const activeTool = toolOverride ?? editTool;
+
+    if (activeTool === "pick") {
       const picked = renderedEditorCells[index];
       if (picked?.label) {
         setSelectedLabel(picked.label);
-        setEditTool("paint");
-      } else {
+        if (!toolOverride) {
+          setEditTool("paint");
+        }
+      } else if (!toolOverride) {
         setSelectedLabel(EMPTY_SELECTION_LABEL);
         setEditTool("erase");
+      } else {
+        setSelectedLabel(EMPTY_SELECTION_LABEL);
       }
       return;
     }
 
-    if (editTool === "pan" || editTool === "zoom") {
+    if (activeTool === "pan" || activeTool === "zoom") {
       return;
     }
 
     const nextDisabledLabels =
-      editTool !== "erase" &&
+      activeTool !== "erase" &&
       selectedLabel !== EMPTY_SELECTION_LABEL &&
       disabledResultLabels.includes(selectedLabel)
         ? disabledResultLabels.filter((label) => label !== selectedLabel)
@@ -488,9 +644,9 @@ export default function App() {
       setDisabledResultLabels(nextDisabledLabels);
     }
 
-    const replacement = buildReplacementCell(selectedLabel, paletteOptions, editTool);
+    const replacement = buildReplacementCell(selectedLabel, paletteOptions, activeTool);
     const nextCells =
-      editTool === "fill"
+      activeTool === "fill"
         ? floodFillCells(
             editorBaseCells,
             result.gridWidth,
@@ -512,7 +668,7 @@ export default function App() {
       return;
     }
 
-    if (editTool === "paint" || editTool === "erase") {
+    if (activeTool === "paint" || activeTool === "erase") {
       stageEditorDraft(nextCells);
       return;
     }
@@ -783,6 +939,7 @@ export default function App() {
             gridHeight: gridMode === "manual" ? manualHeight : undefined,
             cropRect: cropMode ? cropRect : null,
             reduceColors,
+            applyAutoReduceColorsDefault: !reduceColorsTouched,
             reduceTolerance,
             preSharpen,
             preSharpenStrength,
@@ -829,6 +986,9 @@ export default function App() {
 
           const url = URL.createObjectURL(processed.blob);
           setDisabledResultLabels([]);
+          if (!reduceColorsTouched && reduceColors !== processed.effectiveReduceColors) {
+            setReduceColors(processed.effectiveReduceColors);
+          }
           if (processed.colorSystemId !== colorSystemId) {
             setColorSystemId(processed.colorSystemId);
           }
@@ -899,6 +1059,7 @@ export default function App() {
     gridWidth,
     gridHeight,
     reduceColors,
+    reduceColorsTouched,
     reduceTolerance,
     preSharpen,
     preSharpenStrength,
@@ -911,7 +1072,7 @@ export default function App() {
   if (file && pindouFocusViewOpen) {
     return (
       <main className={clsx("min-h-screen transition-colors", theme.page)}>
-        <div className="min-h-screen w-full overflow-auto p-4 sm:p-6">
+        <div className="min-h-screen w-full overflow-hidden p-0">
           <WorkspacePanels
             t={t}
             inputUrl={inputUrl}
@@ -950,7 +1111,7 @@ export default function App() {
             canRedo={editorHistoryIndex >= 0 && editorHistoryIndex < editorHistory.length - 1}
             paintActiveRef={paintActiveRef}
             focusViewOpen={pindouFocusViewOpen}
-            onFocusViewOpenChange={setPindouFocusViewOpen}
+            onFocusViewOpenChange={handlePindouFocusViewOpenChange}
             focusOnly
             preferredEditorMode={editorPanelMode}
             preferredEditorModeSeed={inputUrl}
@@ -1022,17 +1183,18 @@ export default function App() {
               <ImageUp className={clsx("h-6 w-6 sm:h-7 sm:w-7", theme.cardTitle)} />
             </div>
             <h2 className={clsx("mt-5 text-2xl font-semibold sm:text-3xl", theme.cardTitle)}>
-              {t.sourceChooseImage}
+              {t.sourceLandingTitle}
             </h2>
-            <p className={clsx("mx-auto mt-3 max-w-[34rem] text-sm leading-6 sm:text-base", theme.cardMuted)}>
-              {t.sourceStayInTab}
-            </p>
-            <p className={clsx("mt-2 text-xs sm:text-sm", theme.cardMuted)}>
-              {t.sourceSubtitle}
-            </p>
-            <p className={clsx("mt-2 text-xs", theme.cardMuted)}>
-              {t.sourcePrivacyNote}
-            </p>
+            {t.sourceSubtitle ? (
+              <p className={clsx("mt-2 text-xs sm:text-sm", theme.cardMuted)}>
+                {t.sourceSubtitle}
+              </p>
+            ) : null}
+            {t.sourcePrivacyNote ? (
+              <p className={clsx("mt-2 text-xs", theme.cardMuted)}>
+                {t.sourcePrivacyNote}
+              </p>
+            ) : null}
 
             <label className={clsx("mx-auto mt-6 flex max-w-[320px] cursor-pointer items-center justify-center gap-2 rounded-md border px-5 py-3 text-sm font-medium transition", theme.primaryButton)}>
               <ImageUp className="h-4 w-4" />
@@ -1061,7 +1223,7 @@ export default function App() {
             busy={busy}
             isDark={isDark}
             gridMode={gridMode}
-            onGridModeChange={setGridMode}
+            onGridModeChange={handleGridModeChange}
             gridWidth={gridWidth}
             gridHeight={gridHeight}
             onGridWidthChange={handleGridWidthChange}
@@ -1069,7 +1231,7 @@ export default function App() {
             followSourceRatio={followSourceRatio}
             onFollowSourceRatioChange={setFollowSourceRatio}
             reduceColors={reduceColors}
-            onReduceColorsChange={setReduceColors}
+            onReduceColorsChange={handleReduceColorsChange}
             reduceTolerance={reduceTolerance}
             onReduceToleranceChange={setReduceTolerance}
             preSharpen={preSharpen}
@@ -1117,7 +1279,7 @@ export default function App() {
             canRedo={editorHistoryIndex >= 0 && editorHistoryIndex < editorHistory.length - 1}
             paintActiveRef={paintActiveRef}
             focusViewOpen={pindouFocusViewOpen}
-            onFocusViewOpenChange={setPindouFocusViewOpen}
+            onFocusViewOpenChange={handlePindouFocusViewOpenChange}
             preferredEditorMode={editorPanelMode}
             preferredEditorModeSeed={inputUrl}
             onPreferredEditorModeChange={setEditorPanelMode}

@@ -125,7 +125,7 @@ export function PixelEditorPanel({
   onColorSystemIdChange: (value: string) => void;
   paletteOptions: Array<{ label: string; hex: string }>;
   onSelectedLabelChange: (label: string) => void;
-  onApplyCell: (index: number) => void;
+  onApplyCell: (index: number, toolOverride?: EditTool) => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -552,12 +552,12 @@ function PindouModePanel({
       className={clsx(
         "min-h-0 min-w-0 w-full self-stretch",
         focusOnly
-          ? "relative mx-auto flex h-[calc(100vh-2rem)] w-full max-w-[1600px] flex-col overflow-hidden sm:h-[calc(100vh-3rem)]"
+          ? "relative flex h-screen w-full flex-col overflow-hidden"
           : clsx("flex h-full flex-col rounded-[10px] border p-3 transition-colors sm:p-4", theme.card),
       )}
     >
       {focusOnly ? (
-        <div className="pointer-events-none absolute right-3 top-3 z-30 flex items-center gap-2 sm:right-4 sm:top-4">
+        <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-wrap justify-end gap-2 sm:left-auto sm:right-4 sm:top-4 sm:max-w-[calc(100%-2rem)]">
           <div className={clsx("pointer-events-auto flex h-10 items-center gap-1 rounded-md border px-1 py-0.5 shadow-sm backdrop-blur", theme.pill)}>
             <span className={clsx("min-w-[56px] px-2 text-center text-xs font-semibold", theme.cardTitle)}>{timerDisplay}</span>
             <button
@@ -649,8 +649,8 @@ function PindouModePanel({
         </div>
       ) : (
         <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
               <span className={clsx("min-w-[56px] px-2 text-center text-xs font-semibold", theme.cardTitle)}>{timerDisplay}</span>
               <button
                 className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
@@ -669,7 +669,7 @@ function PindouModePanel({
                 <Redo2 className="h-4 w-4" />
               </button>
             </div>
-            <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
+            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
               <button
                 className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
                 onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom - 0.2))}
@@ -712,7 +712,7 @@ function PindouModePanel({
             >
               <TypeIcon className="h-4 w-4" />
             </button>
-            <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
+            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
               <PindouBeadShapeButtons
                 isDark={isDark}
                 selectedShape={pindouBeadShape}
@@ -721,7 +721,7 @@ function PindouModePanel({
                 onChange={onPindouBeadShapeChange}
               />
             </div>
-            <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
+            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
               <PindouBoardThemeButtons
                 isDark={isDark}
                 selectedTheme={pindouBoardTheme}
@@ -767,7 +767,8 @@ function PindouModePanel({
 
       <div
         className={clsx(
-          "mt-4 flex w-full min-w-0 self-stretch flex-wrap gap-2 overflow-auto pr-1",
+          "flex w-full min-w-0 self-stretch flex-wrap gap-2 overflow-auto pr-1",
+          focusOnly ? "mt-2" : "mt-4",
           focusOnly ? "max-h-[168px] shrink-0 justify-center" : "max-h-[220px]",
         )}
       >
@@ -796,7 +797,7 @@ function PindouModePanel({
           );
         })}
       </div>
-      <p className={clsx("mt-3 text-xs", theme.cardMuted)}>{t.pindouModeHint}</p>
+      {!focusOnly ? <p className={clsx("mt-3 text-xs", theme.cardMuted)}>{t.pindouModeHint}</p> : null}
     </section>
   );
 }

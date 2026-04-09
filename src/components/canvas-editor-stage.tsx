@@ -52,7 +52,7 @@ export function CanvasEditorStage({
   selectedHex?: string | null;
   focusedLabel?: string | null;
   onFocusLabelChange?: (label: string | null) => void;
-  onApplyCell?: (index: number) => void;
+  onApplyCell?: (index: number, toolOverride?: EditTool) => void;
   paintActiveRef: MutableRefObject<boolean>;
   focusOnly?: boolean;
   flipHorizontal?: boolean;
@@ -99,6 +99,7 @@ export function CanvasEditorStage({
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [spacePanActive, setSpacePanActive] = useState(false);
+  const [altPickActive, setAltPickActive] = useState(false);
   const [hoveredCellIndex, setHoveredCellIndex] = useState<number | null>(null);
   const [cursorPreview, setCursorPreview] = useState({ x: 0, y: 0, visible: false });
   const stageInset = typeof window !== "undefined" && window.innerWidth < 640 ? 16 : 24;
@@ -167,13 +168,17 @@ export function CanvasEditorStage({
     stageViewport.height > 0 &&
     totalStageWidth > 0 &&
     totalStageHeight > 0;
-  const panToolActive = stageMode === "edit" && editTool === "pan";
+  const effectiveEditTool =
+    stageMode === "edit" && altPickActive && !spacePanActive ? "pick" : editTool;
+  const panToolActive = stageMode === "edit" && effectiveEditTool === "pan";
   const effectivePanActive = stageMode === "edit" ? panToolActive || spacePanActive : false;
-  const zoomToolActive = stageMode === "edit" && editTool === "zoom";
+  const zoomToolActive = stageMode === "edit" && effectiveEditTool === "zoom";
   const showBrushCursor =
-    stageMode === "edit" && !spacePanActive && (editTool === "paint" || editTool === "erase");
-  const showFillCursor = stageMode === "edit" && !spacePanActive && editTool === "fill";
-  const showPickCursor = stageMode === "edit" && !spacePanActive && editTool === "pick";
+    stageMode === "edit" &&
+    !spacePanActive &&
+    (effectiveEditTool === "paint" || effectiveEditTool === "erase");
+  const showFillCursor = stageMode === "edit" && !spacePanActive && effectiveEditTool === "fill";
+  const showPickCursor = stageMode === "edit" && !spacePanActive && effectiveEditTool === "pick";
   const brushPreviewSize = Math.max(18, Math.round(brushSize * (cellSize + gridGap) * effectiveScale + 10));
   const panLimits = useMemo(
     () => calculateStagePanLimits(totalStageWidth, totalStageHeight, stageViewport.width, stageViewport.height),
@@ -207,25 +212,38 @@ export function CanvasEditorStage({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.code !== "Space" || stageMode !== "edit" || editTool === "pan") {
+      if (stageMode !== "edit") {
         return;
       }
       if (isTypingElement(event.target)) {
         return;
       }
-      event.preventDefault();
-      setSpacePanActive(true);
+
+      if (event.code === "Space" && effectiveEditTool !== "pan") {
+        event.preventDefault();
+        setSpacePanActive(true);
+        return;
+      }
+
+      if (event.key === "Alt") {
+        setAltPickActive(true);
+      }
     }
 
     function handleKeyUp(event: KeyboardEvent) {
-      if (event.code !== "Space") {
+      if (event.code === "Space") {
+        setSpacePanActive(false);
         return;
       }
-      setSpacePanActive(false);
+
+      if (event.key === "Alt") {
+        setAltPickActive(false);
+      }
     }
 
     function handleBlur() {
       setSpacePanActive(false);
+      setAltPickActive(false);
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -236,7 +254,7 @@ export function CanvasEditorStage({
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, [stageMode, editTool]);
+  }, [stageMode, effectiveEditTool]);
 
   const resolveCellIndex = (clientX: number, clientY: number) =>
     resolveStageCellIndexFromClientPoint(
@@ -656,7 +674,7 @@ export function CanvasEditorStage({
       return;
     }
     lastAppliedCellIndexRef.current = index;
-    onApplyCell(index);
+    onApplyCell(index, altPickActive && !spacePanActive ? "pick" : undefined);
   }
 
   return (
@@ -664,7 +682,8 @@ export function CanvasEditorStage({
       ref={stageViewportRef}
       tabIndex={stageMode === "edit" ? 0 : undefined}
       className={clsx(
-        "relative mt-4 flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 touch-none sm:p-3",
+        "relative flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 touch-none sm:p-3",
+        focusOnly ? "mt-2" : "mt-4",
         "overflow-hidden",
         showBrushCursor || showFillCursor || showPickCursor ? "cursor-none" : "",
         zoomToolActive && !spacePanActive ? "cursor-zoom-in" : "",
@@ -686,7 +705,7 @@ export function CanvasEditorStage({
       onPointerEnter={updateHoveredState}
       onPointerMove={(event) => {
         updateHoveredState(event);
-        if (stageMode !== "edit" || effectivePanActive || editTool === "zoom") {
+        if (stageMode !== "edit" || effectivePanActive || effectiveEditTool === "zoom") {
           return;
         }
         if (paintActiveRef.current && drawPointerIdRef.current === event.pointerId) {
@@ -702,12 +721,12 @@ export function CanvasEditorStage({
         if (stageMode !== "edit") {
           return;
         }
-        if (event.pointerType === "mouse" && event.button !== 0 && editTool !== "zoom") {
+        if (event.pointerType === "mouse" && event.button !== 0 && effectiveEditTool !== "zoom") {
           return;
         }
 
         const cellIndex = resolveCellIndex(event.clientX, event.clientY);
-        if (editTool === "zoom") {
+        if (effectiveEditTool === "zoom") {
           if (spacePanActive) {
             return;
           }
@@ -741,7 +760,7 @@ export function CanvasEditorStage({
         }
       }}
       onContextMenu={(event) => {
-        if (stageMode === "edit" && editTool === "zoom") {
+        if (stageMode === "edit" && effectiveEditTool === "zoom") {
           event.preventDefault();
         }
       }}
@@ -777,15 +796,15 @@ export function CanvasEditorStage({
           <div
             className="absolute inset-0 rounded-full shadow-sm"
             style={{
-              border: editTool === "erase" ? "2px dashed" : "2px solid",
+              border: effectiveEditTool === "erase" ? "2px dashed" : "2px solid",
               borderColor:
-                editTool === "erase"
+                effectiveEditTool === "erase"
                   ? isDark
                     ? "rgba(255,255,255,0.88)"
                     : "rgba(17,17,17,0.84)"
                   : selectedHex ?? (isDark ? "#F7F4EE" : "#111111"),
               backgroundColor:
-                editTool === "erase"
+                effectiveEditTool === "erase"
                   ? "transparent"
                   : selectedHex
                     ? `${selectedHex}12`
@@ -799,7 +818,7 @@ export function CanvasEditorStage({
             style={{
               backgroundColor: isDark ? "rgba(17,17,17,0.94)" : "rgba(255,255,255,0.98)",
               borderColor:
-                editTool === "erase"
+                effectiveEditTool === "erase"
                   ? isDark
                     ? "rgba(255,255,255,0.94)"
                     : "rgba(17,17,17,0.94)"
