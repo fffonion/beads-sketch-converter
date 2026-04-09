@@ -268,28 +268,6 @@ export default function App() {
   }, [disabledResultLabels]);
 
   useEffect(() => {
-    if (!useBrowserFullscreenForPindou || typeof document === "undefined") {
-      return;
-    }
-
-    function handleFullscreenChange() {
-      if (!getFullscreenElement()) {
-        setPindouFocusViewOpen(false);
-      }
-    }
-
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    document.addEventListener("webkitfullscreenchange", handleFullscreenChange as EventListener);
-    return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-      document.removeEventListener(
-        "webkitfullscreenchange",
-        handleFullscreenChange as EventListener,
-      );
-    };
-  }, [useBrowserFullscreenForPindou]);
-
-  useEffect(() => {
     if (!sourceFocusViewOpen || typeof window === "undefined") {
       return;
     }

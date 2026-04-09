@@ -37,6 +37,9 @@ export function CanvasEditorStage({
   busy = false,
   onStageEngage,
   onStageDisengage,
+  onPindouStageTap,
+  viewportClassName,
+  embeddedInPanel = false,
 }: {
   cells: EditableCell[];
   gridWidth: number;
@@ -66,6 +69,9 @@ export function CanvasEditorStage({
   busy?: boolean;
   onStageEngage?: () => void;
   onStageDisengage?: () => void;
+  onPindouStageTap?: () => void;
+  viewportClassName?: string;
+  embeddedInPanel?: boolean;
 }) {
   const theme = getThemeClasses(isDark);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -103,6 +109,13 @@ export function CanvasEditorStage({
   const [hoveredCellIndex, setHoveredCellIndex] = useState<number | null>(null);
   const [cursorPreview, setCursorPreview] = useState({ x: 0, y: 0, visible: false });
   const stageInset = typeof window !== "undefined" && window.innerWidth < 640 ? 16 : 24;
+  const isMobileUserAgent = useMemo(() => {
+    if (typeof navigator === "undefined") {
+      return false;
+    }
+    return /Android|iPhone|iPad|iPod|Mobile|Tablet/i.test(navigator.userAgent ?? "");
+  }, []);
+  const showCanvasStatusBadge = !(stageMode === "pindou" && focusOnly && isMobileUserAgent);
 
   function syncAltPickState(nextActive: boolean) {
     setAltPickActive((previous) => (previous === nextActive ? previous : nextActive));
@@ -398,10 +411,11 @@ export function CanvasEditorStage({
         if (
           stageMode === "pindou" &&
           !touchPanState.moved &&
-          touchPanState.cellIndex !== null &&
           suppressTapUntilRef.current <= performance.now()
         ) {
-          const cell = cells[touchPanState.cellIndex] ?? null;
+          onPindouStageTap?.();
+          const cell =
+            touchPanState.cellIndex === null ? null : cells[touchPanState.cellIndex] ?? null;
           onFocusLabelChange?.(cell?.label && cell.label === focusedLabel ? null : cell?.label ?? null);
         }
 
@@ -428,7 +442,7 @@ export function CanvasEditorStage({
       element.removeEventListener("touchcancel", handleTouchEnd);
       clearTouchPan();
     };
-  }, [stageMode, canPanStage, effectivePanActive, pindouZoom, onPindouZoomChange, editZoom, onEditZoomChange, cells, focusedLabel, onFocusLabelChange, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
+  }, [stageMode, canPanStage, effectivePanActive, pindouZoom, onPindouZoomChange, editZoom, onEditZoomChange, cells, focusedLabel, onFocusLabelChange, onPindouStageTap, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
 
   useEffect(() => {
     if ((stageMode !== "pindou" && stageMode !== "edit") || !stageViewportRef.current) {
@@ -535,10 +549,10 @@ export function CanvasEditorStage({
       if (
         stageMode === "pindou" &&
         !state.moved &&
-        state.cellIndex !== null &&
         suppressTapUntilRef.current <= performance.now()
       ) {
-        const cell = cells[state.cellIndex] ?? null;
+        onPindouStageTap?.();
+        const cell = state.cellIndex === null ? null : cells[state.cellIndex] ?? null;
         onFocusLabelChange?.(cell?.label && cell.label === focusedLabel ? null : cell?.label ?? null);
       }
 
@@ -560,7 +574,7 @@ export function CanvasEditorStage({
       element.removeEventListener("pointercancel", handlePointerEnd);
       clearPan();
     };
-  }, [canPanStage, effectivePanActive, stageMode, cells, focusedLabel, onFocusLabelChange, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
+  }, [canPanStage, effectivePanActive, stageMode, cells, focusedLabel, onFocusLabelChange, onPindouStageTap, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
 
   useEffect(() => {
     const canvas = stageCanvasRef.current;
@@ -705,8 +719,11 @@ export function CanvasEditorStage({
       ref={stageViewportRef}
       tabIndex={stageMode === "edit" ? 0 : undefined}
       className={clsx(
-        "relative flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 touch-none sm:p-3",
-        focusOnly ? "mt-2" : "mt-4",
+        "relative flex h-full min-h-0 w-full min-w-0 max-w-full flex-1 touch-none",
+        embeddedInPanel
+          ? "rounded-none border-0 p-2 sm:p-3"
+          : "rounded-[10px] border p-2 sm:p-3",
+        embeddedInPanel ? "mt-0" : focusOnly ? "mt-0" : "mt-4",
         "overflow-hidden",
         showBrushCursor || showFillCursor || showPickCursor ? "cursor-none" : "",
         zoomToolActive && !spacePanActive ? "cursor-zoom-in" : "",
@@ -718,7 +735,8 @@ export function CanvasEditorStage({
               : "cursor-grab"
           : "",
         theme.previewStage,
-        isDark ? "border-white/10" : "border-stone-200",
+        embeddedInPanel ? "" : isDark ? "border-white/10" : "border-stone-200",
+        viewportClassName,
       )}
       onFocus={() => {
         if (stageMode === "edit") {
@@ -805,12 +823,14 @@ export function CanvasEditorStage({
         }
       }}
     >
-      <CanvasStatusBadge
-        gridWidth={gridWidth}
-        gridHeight={gridHeight}
-        hoveredCellIndex={hoveredCellIndex}
-        isDark={isDark}
-      />
+      {showCanvasStatusBadge ? (
+        <CanvasStatusBadge
+          gridWidth={gridWidth}
+          gridHeight={gridHeight}
+          hoveredCellIndex={hoveredCellIndex}
+          isDark={isDark}
+        />
+      ) : null}
       {busy ? <StageLoadingOverlay isDark={isDark} /> : null}
       {showBrushCursor && cursorPreview.visible ? (
         <div

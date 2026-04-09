@@ -2,6 +2,7 @@ interface WasmDetectorExports {
   memory: WebAssembly.Memory;
   alloc(size: number): number;
   dealloc(ptr: number, size: number): void;
+  detect_auto(ptr: number, len: number, width: number, height: number): number;
   detect_chart(ptr: number, len: number, width: number, height: number): number;
   detect_pixel_art(ptr: number, len: number, width: number, height: number): number;
   result_ptr(): number;
@@ -37,11 +38,19 @@ export interface WasmAutoDetection {
 
 const wasmUrl = new URL("../wasm/detecter.wasm", import.meta.url);
 let detectorPromise: Promise<WasmDetectorExports | null> | null = null;
+let detectorCallQueue: Promise<void> = Promise.resolve();
 
 export async function detectChartBoardWithWasm(
   raster: RasterImageLike,
 ): Promise<WasmChartDetection | null> {
-  return await detectWithWasm(raster, "detect_chart");
+  const detection = await detectWithWasm(raster, "detect_chart");
+  if (!detection) {
+    return null;
+  }
+
+  return shouldRefineFullPageChartDetection(raster, detection)
+    ? refineFullPageChartDetection(raster, detection)
+    : detection;
 }
 
 export async function detectPixelArtWithWasm(
@@ -53,8 +62,13 @@ export async function detectPixelArtWithWasm(
 export async function detectAutoRasterWithWasm(
   raster: RasterImageLike,
 ): Promise<WasmAutoDetection | null> {
-  const chart = await detectChartBoardWithWasm(raster);
-  const pixel = await detectPixelArtWithWasm(raster);
+  const autoCandidates = await detectAutoCandidatesWithWasm(raster);
+  const chart = autoCandidates?.chart
+    ? shouldRefineFullPageChartDetection(raster, autoCandidates.chart)
+      ? refineFullPageChartDetection(raster, autoCandidates.chart)
+      : autoCandidates.chart
+    : null;
+  const pixel = autoCandidates?.pixel ?? null;
 
   if (chart && pixel) {
     if (isLikelyTrimmedFullPageChart(raster, chart, pixel)) {
@@ -64,6 +78,16 @@ export async function detectAutoRasterWithWasm(
         gridWidth: chart.gridWidth,
         gridHeight: chart.gridHeight,
         confidence: chart.confidence,
+      };
+    }
+
+    if (isLikelyPlainPixelArt(raster, chart, pixel)) {
+      return {
+        kind: "pixel",
+        cropBox: pixel.cropBox,
+        gridWidth: pixel.gridWidth,
+        gridHeight: pixel.gridHeight,
+        confidence: pixel.confidence,
       };
     }
 
@@ -109,57 +133,91 @@ export async function detectAutoRasterWithWasm(
   };
 }
 
+async function detectAutoCandidatesWithWasm(
+  raster: RasterImageLike,
+): Promise<{ chart: WasmChartDetection | null; pixel: WasmPixelDetection | null } | null> {
+  return await runInDetectorQueue(async () => {
+    const exports = await loadWasmDetector();
+    if (!exports) {
+      return null;
+    }
+
+    const length = raster.data.length;
+    const pointer = exports.alloc(length);
+    try {
+      new Uint8Array(exports.memory.buffer, pointer, length).set(raster.data);
+      exports.detect_auto(pointer, length, raster.width, raster.height);
+      const result = new Int32Array(exports.memory.buffer, exports.result_ptr(), 16);
+      return {
+        chart: parseDetectionResult(result, 0),
+        pixel: parseDetectionResult(result, 8),
+      };
+    } finally {
+      exports.dealloc(pointer, length);
+    }
+  });
+}
+
 async function detectWithWasm(
   raster: RasterImageLike,
   methodName: "detect_chart" | "detect_pixel_art",
 ) {
-  const exports = await loadWasmDetector();
-  if (!exports) {
+  return await runInDetectorQueue(async () => {
+    const exports = await loadWasmDetector();
+    if (!exports) {
+      return null;
+    }
+
+    const length = raster.data.length;
+    const pointer = exports.alloc(length);
+    try {
+      new Uint8Array(exports.memory.buffer, pointer, length).set(raster.data);
+      const found = exports[methodName](pointer, length, raster.width, raster.height);
+      if (!found) {
+        return null;
+      }
+
+      const result = new Int32Array(exports.memory.buffer, exports.result_ptr(), 16);
+      return parseDetectionResult(result, 0);
+    } finally {
+      exports.dealloc(pointer, length);
+    }
+  });
+}
+
+function parseDetectionResult(
+  result: Int32Array,
+  offset: number,
+): WasmChartDetection | WasmPixelDetection | null {
+  if (result[offset] !== 1) {
     return null;
   }
 
-  const length = raster.data.length;
-  const pointer = exports.alloc(length);
-  try {
-    new Uint8Array(exports.memory.buffer, pointer, length).set(raster.data);
-    const found = exports[methodName](pointer, length, raster.width, raster.height);
-    if (!found) {
-      return null;
-    }
-
-    const result = new Int32Array(exports.memory.buffer, exports.result_ptr(), 8);
-    if (result[0] !== 1) {
-      return null;
-    }
-
-    const left = result[1] ?? 0;
-    const top = result[2] ?? 0;
-    const right = result[3] ?? 0;
-    const bottom = result[4] ?? 0;
-    const gridWidth = result[5] ?? 0;
-    const gridHeight = result[6] ?? 0;
-    const confidence = (result[7] ?? 0) / 1000;
-    if (
-      left < 0 ||
-      top < 0 ||
-      right <= left ||
-      bottom <= top ||
-      gridWidth <= 0 ||
-      gridHeight <= 0 ||
-      confidence <= 0
-    ) {
-      return null;
-    }
-
-    return {
-      cropBox: [left, top, right, bottom] as [number, number, number, number],
-      gridWidth,
-      gridHeight,
-      confidence,
-    };
-  } finally {
-    exports.dealloc(pointer, length);
+  const left = result[offset + 1] ?? 0;
+  const top = result[offset + 2] ?? 0;
+  const right = result[offset + 3] ?? 0;
+  const bottom = result[offset + 4] ?? 0;
+  const gridWidth = result[offset + 5] ?? 0;
+  const gridHeight = result[offset + 6] ?? 0;
+  const confidence = (result[offset + 7] ?? 0) / 1000;
+  if (
+    left < 0 ||
+    top < 0 ||
+    right <= left ||
+    bottom <= top ||
+    gridWidth <= 0 ||
+    gridHeight <= 0 ||
+    confidence <= 0
+  ) {
+    return null;
   }
+
+  return {
+    cropBox: [left, top, right, bottom] as [number, number, number, number],
+    gridWidth,
+    gridHeight,
+    confidence,
+  };
 }
 
 async function loadWasmDetector(): Promise<WasmDetectorExports | null> {
@@ -176,6 +234,21 @@ async function instantiateWasmDetector(): Promise<WasmDetectorExports | null> {
     return module.instance.exports as unknown as WasmDetectorExports;
   } catch {
     return null;
+  }
+}
+
+async function runInDetectorQueue<T>(task: () => Promise<T>) {
+  const previous = detectorCallQueue;
+  let release!: () => void;
+  detectorCallQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
   }
 }
 
@@ -244,6 +317,31 @@ function scoreAutoCandidate(
   );
 }
 
+function isLikelyPlainPixelArt(
+  raster: RasterImageLike,
+  chart: WasmChartDetection,
+  pixel: WasmPixelDetection,
+) {
+  const pixelAnchoredSides = [
+    pixel.cropBox[0] <= 1,
+    pixel.cropBox[1] <= 1,
+    raster.width - pixel.cropBox[2] <= 1,
+    raster.height - pixel.cropBox[3] <= 1,
+  ].filter(Boolean).length;
+  const chartArea =
+    (chart.cropBox[2] - chart.cropBox[0]) * (chart.cropBox[3] - chart.cropBox[1]);
+  const pixelArea =
+    (pixel.cropBox[2] - pixel.cropBox[0]) * (pixel.cropBox[3] - pixel.cropBox[1]);
+
+  return (
+    pixelAnchoredSides >= 3 &&
+    pixel.confidence >= chart.confidence + 0.03 &&
+    pixelArea >= chartArea * 1.18 &&
+    pixel.gridWidth >= chart.gridWidth &&
+    pixel.gridHeight >= chart.gridHeight
+  );
+}
+
 function isLikelyTrimmedFullPageChart(
   raster: RasterImageLike,
   chart: WasmChartDetection,
@@ -272,13 +370,306 @@ function isLikelyTrimmedFullPageChart(
   const trimmedSides = [trims.left, trims.top, trims.right].filter(
     (value) => value >= 0.4 && value <= 1.8,
   ).length;
-  const chartLegendTrim = trims.bottom >= 3.5 && trims.bottom <= 8.5;
+  const chartLegendTrim = trims.bottom >= 3.0 && trims.bottom <= 14.0;
   return (
-    trimmedSides >= 2 &&
+    trimmedSides >= 3 &&
     chartLegendTrim &&
     chart.gridWidth <= pixel.gridWidth &&
     chart.gridHeight <= pixel.gridHeight
   );
+}
+
+function refineFullPageChartDetection(
+  raster: RasterImageLike,
+  detection: WasmChartDetection,
+): WasmChartDetection {
+  return trimTrailingFullPageChartBand(raster, detection) ?? detection;
+}
+
+function shouldRefineFullPageChartDetection(
+  raster: RasterImageLike,
+  detection: WasmChartDetection,
+) {
+  const cropWidth = detection.cropBox[2] - detection.cropBox[0];
+  const cropHeight = detection.cropBox[3] - detection.cropBox[1];
+  if (
+    detection.confidence < 0.78 ||
+    detection.confidence > 0.92 ||
+    detection.gridWidth < 30 ||
+    detection.gridHeight < 20
+  ) {
+    return false;
+  }
+
+  const widthRatio = cropWidth / Math.max(1, raster.width);
+  const heightRatio = cropHeight / Math.max(1, raster.height);
+  if (widthRatio < 0.94 || heightRatio < 0.72) {
+    return false;
+  }
+
+  const cellHeight = cropHeight / Math.max(1, detection.gridHeight);
+  const bottomTrimCells =
+    (raster.height - detection.cropBox[3]) / Math.max(1, cellHeight);
+  return bottomTrimCells >= 1.4 && bottomTrimCells <= 5.5;
+}
+
+function trimTrailingFullPageChartBand(
+  raster: RasterImageLike,
+  detection: WasmChartDetection,
+): WasmChartDetection | null {
+  if (detection.gridHeight <= 20) {
+    return null;
+  }
+
+  const profiles = buildHorizontalBandProfiles(raster, detection);
+  if (profiles.length !== detection.gridHeight) {
+    return null;
+  }
+  const baseline = buildBandBaseline(profiles);
+  if (!baseline) {
+    return null;
+  }
+
+  const tail = profiles.at(-1);
+  if (!tail) {
+    return null;
+  }
+
+  const looksDecorative =
+    bandSimilarity(tail, baseline) < 0.74 ||
+    tail.separatorRatio > baseline.separatorRatio * 1.42 ||
+    (tail.coloredRatio < baseline.coloredRatio * 0.22 &&
+      tail.separatorRatio > baseline.separatorRatio * 1.12) ||
+    (tail.separatorRatio < baseline.separatorRatio * 0.22 &&
+      tail.coloredRatio > baseline.coloredRatio * 0.72);
+  if (!looksDecorative) {
+    return null;
+  }
+
+  const cellHeight = Math.max(
+    1,
+    Math.round((detection.cropBox[3] - detection.cropBox[1]) / Math.max(1, detection.gridHeight)),
+  );
+  const nextBottom = detection.cropBox[3] - cellHeight;
+  if (nextBottom <= detection.cropBox[1] + 8) {
+    return null;
+  }
+
+  return {
+    ...detection,
+    cropBox: [detection.cropBox[0], detection.cropBox[1], detection.cropBox[2], nextBottom],
+    gridHeight: detection.gridHeight - 1,
+  };
+}
+
+function buildHorizontalBandProfiles(
+  raster: RasterImageLike,
+  detection: WasmChartDetection,
+) {
+  const [left, top, right, bottom] = detection.cropBox;
+  const bandSpan = Math.max(
+    1,
+    Math.round((bottom - top) / Math.max(1, detection.gridHeight)),
+  );
+  const luma = buildLuma(raster);
+  return Array.from({ length: detection.gridHeight }, (_, index) => {
+    const bandTop = top + bandSpan * index;
+    const bandBottom =
+      index + 1 >= detection.gridHeight ? bottom : Math.min(bottom, bandTop + bandSpan);
+    const rect = { left, top: bandTop, right, bottom: bandBottom };
+    const metrics = sampleBandMetrics(raster, rect);
+    return {
+      coloredRatio: metrics.coloredRatio,
+      separatorRatio: metrics.separatorRatio,
+      gridStrength: estimateRectBoundaryStrength(
+        luma,
+        raster.width,
+        detection,
+        rect,
+        true,
+      ),
+    };
+  });
+}
+
+function buildBandBaseline(
+  profiles: Array<{ coloredRatio: number; separatorRatio: number; gridStrength: number }>,
+) {
+  if (profiles.length < 6) {
+    return null;
+  }
+
+  const ranked = [...profiles].sort((left, right) => {
+    const leftScore = left.gridStrength * 0.7 + left.separatorRatio * 0.3;
+    const rightScore = right.gridStrength * 0.7 + right.separatorRatio * 0.3;
+    return rightScore - leftScore;
+  });
+  const takeCount = Math.min(ranked.length, Math.max(4, Math.floor(ranked.length / 3)));
+  const selected = ranked.slice(0, takeCount);
+  const sum = selected.reduce(
+    (accumulator, profile) => ({
+      coloredRatio: accumulator.coloredRatio + profile.coloredRatio,
+      separatorRatio: accumulator.separatorRatio + profile.separatorRatio,
+      gridStrength: accumulator.gridStrength + profile.gridStrength,
+    }),
+    { coloredRatio: 0, separatorRatio: 0, gridStrength: 0 },
+  );
+
+  return {
+    coloredRatio: sum.coloredRatio / takeCount,
+    separatorRatio: sum.separatorRatio / takeCount,
+    gridStrength: sum.gridStrength / takeCount,
+  };
+}
+
+function bandSimilarity(
+  profile: { coloredRatio: number; separatorRatio: number; gridStrength: number },
+  baseline: { coloredRatio: number; separatorRatio: number; gridStrength: number },
+) {
+  return (
+    normalizedBandSimilarity(profile.coloredRatio, baseline.coloredRatio) * 0.22 +
+    normalizedBandSimilarity(profile.separatorRatio, baseline.separatorRatio) * 0.28 +
+    normalizedBandSimilarity(profile.gridStrength, baseline.gridStrength) * 0.5
+  );
+}
+
+function normalizedBandSimilarity(value: number, baseline: number) {
+  const ratio = Math.min(8, Math.max(0.001, value / Math.max(0.001, baseline)));
+  return 1 - Math.min(1, Math.abs(Math.log(ratio)) / 2.1);
+}
+
+function buildLuma(raster: RasterImageLike) {
+  const output = new Float32Array(raster.width * raster.height);
+  for (let index = 0; index < output.length; index += 1) {
+    const offset = index * 4;
+    const red = raster.data[offset] ?? 0;
+    const green = raster.data[offset + 1] ?? 0;
+    const blue = raster.data[offset + 2] ?? 0;
+    output[index] = 0.299 * red + 0.587 * green + 0.114 * blue;
+  }
+  return output;
+}
+
+function sampleBandMetrics(
+  raster: RasterImageLike,
+  rect: { left: number; top: number; right: number; bottom: number },
+) {
+  let coloredHits = 0;
+  let separatorHits = 0;
+  let total = 0;
+
+  for (let y = rect.top; y < rect.bottom; y += 1) {
+    for (let x = rect.left; x < rect.right; x += 1) {
+      const offset = (y * raster.width + x) * 4;
+      const pixel = [
+        raster.data[offset] ?? 0,
+        raster.data[offset + 1] ?? 0,
+        raster.data[offset + 2] ?? 0,
+        raster.data[offset + 3] ?? 255,
+      ] as const;
+      if (isColoredContentPixel(pixel)) {
+        coloredHits += 1;
+      }
+      if (isLightSeparatorPixel(pixel[0], pixel[1], pixel[2])) {
+        separatorHits += 1;
+      }
+      total += 1;
+    }
+  }
+
+  return {
+    coloredRatio: coloredHits / Math.max(1, total),
+    separatorRatio: separatorHits / Math.max(1, total),
+  };
+}
+
+function estimateRectBoundaryStrength(
+  luma: Float32Array,
+  width: number,
+  detection: WasmChartDetection,
+  rect: { left: number; top: number; right: number; bottom: number },
+  verticalLines: boolean,
+) {
+  if (rect.right <= rect.left + 2 || rect.bottom <= rect.top + 2) {
+    return 0;
+  }
+
+  const cellSize = verticalLines
+    ? (detection.cropBox[2] - detection.cropBox[0]) / Math.max(1, detection.gridWidth)
+    : (detection.cropBox[3] - detection.cropBox[1]) / Math.max(1, detection.gridHeight);
+  const steps = verticalLines ? detection.gridWidth : detection.gridHeight;
+  let boundaryTotal = 0;
+  let boundaryCount = 0;
+  let interiorTotal = 0;
+  let interiorCount = 0;
+
+  for (let index = 1; index < steps; index += 1) {
+    const boundary = verticalLines
+      ? detection.cropBox[0] + index * cellSize
+      : detection.cropBox[1] + index * cellSize;
+    const interior = verticalLines
+      ? detection.cropBox[0] + (index - 0.5) * cellSize
+      : detection.cropBox[1] + (index - 0.5) * cellSize;
+    boundaryTotal += sampleAxisGradientInRect(luma, width, rect, boundary, verticalLines);
+    interiorTotal += sampleAxisGradientInRect(luma, width, rect, interior, verticalLines);
+    boundaryCount += 1;
+    interiorCount += 1;
+  }
+
+  const boundaryMean = boundaryTotal / Math.max(1, boundaryCount);
+  const interiorMean = interiorTotal / Math.max(1, interiorCount);
+  return boundaryMean / Math.max(0.001, interiorMean);
+}
+
+function sampleAxisGradientInRect(
+  luma: Float32Array,
+  width: number,
+  rect: { left: number; top: number; right: number; bottom: number },
+  position: number,
+  verticalLines: boolean,
+) {
+  if (verticalLines) {
+    const x = clamp(Math.round(position), rect.left + 1, rect.right - 2);
+    let total = 0;
+    let count = 0;
+    for (let y = rect.top + 1; y < rect.bottom - 1; y += 1) {
+      const row = y * width;
+      total += Math.abs((luma[row + x + 1] ?? 0) - (luma[row + x - 1] ?? 0));
+      count += 1;
+    }
+    return total / Math.max(1, count);
+  }
+
+  const y = clamp(Math.round(position), rect.top + 1, rect.bottom - 2);
+  let total = 0;
+  let count = 0;
+  const row = y * width;
+  for (let x = rect.left + 1; x < rect.right - 1; x += 1) {
+    total += Math.abs((luma[row + x + width] ?? 0) - (luma[row + x - width] ?? 0));
+    count += 1;
+  }
+  return total / Math.max(1, count);
+}
+
+function isColoredContentPixel(pixel: readonly [number, number, number, number]) {
+  if (pixel[3] < 16) {
+    return false;
+  }
+
+  const [red, green, blue] = pixel;
+  const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+  const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  return luminance < 242 && chroma > 18;
+}
+
+function isLightSeparatorPixel(red: number, green: number, blue: number) {
+  const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+  const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  return luminance >= 168 && luminance <= 244 && chroma <= 24;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function measureOutsideContentProfile(

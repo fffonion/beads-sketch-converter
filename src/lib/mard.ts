@@ -3,6 +3,7 @@ import colorSystemMappingJson from "../data/color-system-mapping.json";
 import {
   detectAutoRasterWithWasm,
   detectChartBoardWithWasm,
+  type WasmAutoDetection,
 } from "./detecter";
 
 const GRID_SEPARATOR_COLOR = "#C9C4BC";
@@ -29,6 +30,12 @@ interface RasterImage {
   height: number;
   data: Uint8ClampedArray;
 }
+
+const embeddedChartResultCache = new WeakMap<File, Promise<ProcessResult | null>>();
+const rasterCache = new WeakMap<File, Promise<RasterImage>>();
+const croppedRasterCache = new WeakMap<RasterImage, Map<string, RasterImage>>();
+const autoDetectionCache = new WeakMap<RasterImage, Promise<WasmAutoDetection | null>>();
+const logicalGridCache = new WeakMap<RasterImage, Map<string, RasterImage>>();
 
 interface PaletteColor {
   label: string;
@@ -308,6 +315,95 @@ const defaultProcessMessages: ProcessMessages = {
   chartMetaLine: (colorSystemLabel, totalBeads) => `${colorSystemLabel} 路 ${totalBeads} beads`,
 };
 
+function getCachedEmbeddedChartResult(file: File) {
+  if (!isPngLikeFile(file)) {
+    return Promise.resolve<ProcessResult | null>(null);
+  }
+
+  let cached = embeddedChartResultCache.get(file);
+  if (!cached) {
+    cached = tryLoadEmbeddedChartResult(file).catch((error) => {
+      embeddedChartResultCache.delete(file);
+      throw error;
+    });
+    embeddedChartResultCache.set(file, cached);
+  }
+  return cached;
+}
+
+function getCachedFileRaster(
+  file: File,
+  canvasContextUnavailableMessage: string,
+) {
+  let cached = rasterCache.get(file);
+  if (!cached) {
+    cached = loadFileAsRaster(file, canvasContextUnavailableMessage).catch((error) => {
+      rasterCache.delete(file);
+      throw error;
+    });
+    rasterCache.set(file, cached);
+  }
+  return cached;
+}
+
+function getCachedCropRaster(
+  source: RasterImage,
+  cropRect: NormalizedCropRect | null | undefined,
+) {
+  if (!cropRect) {
+    return source;
+  }
+
+  let cache = croppedRasterCache.get(source);
+  if (!cache) {
+    cache = new Map<string, RasterImage>();
+    croppedRasterCache.set(source, cache);
+  }
+
+  const key = `${cropRect.x.toFixed(6)}:${cropRect.y.toFixed(6)}:${cropRect.width.toFixed(6)}:${cropRect.height.toFixed(6)}`;
+  const existing = cache.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const cropped = cropNormalizedRaster(source, cropRect);
+  cache.set(key, cropped);
+  return cropped;
+}
+
+function getCachedAutoDetection(source: RasterImage) {
+  let cached = autoDetectionCache.get(source);
+  if (!cached) {
+    cached = detectAutoRasterWithWasm(source).catch((error) => {
+        autoDetectionCache.delete(source);
+        throw error;
+      });
+    autoDetectionCache.set(source, cached);
+  }
+  return cached;
+}
+
+function getCachedLogicalGrid(
+  source: RasterImage,
+  key: string,
+  build: () => RasterImage,
+) {
+  let cache = logicalGridCache.get(source);
+  if (!cache) {
+    cache = new Map<string, RasterImage>();
+    logicalGridCache.set(source, cache);
+  }
+
+  const existing = cache.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const logical = build();
+  cache.set(key, logical);
+  return logical;
+}
+
 export async function processImageFile(
   file: File,
   options: ProcessOptions,
@@ -316,16 +412,14 @@ export async function processImageFile(
     ...defaultProcessMessages,
     ...options.messages,
   };
-  const embeddedResult = await tryLoadEmbeddedChartResult(file);
+  const embeddedResult = await getCachedEmbeddedChartResult(file);
   if (embeddedResult) {
     return embeddedResult;
   }
 
   const paletteDefinition = getPaletteDefinition(options.colorSystemId);
-  const loadedSource = await loadFileAsRaster(file, processMessages.canvasContextUnavailable);
-  const source = options.cropRect
-    ? cropNormalizedRaster(loadedSource, options.cropRect)
-    : loadedSource;
+  const loadedSource = await getCachedFileRaster(file, processMessages.canvasContextUnavailable);
+  const source = getCachedCropRaster(loadedSource, options.cropRect);
   let logical: RasterImage;
   let gridWidth: number;
   let gridHeight: number;
@@ -334,16 +428,20 @@ export async function processImageFile(
   let detectedCropRect: NormalizedCropRect | null = null;
 
   if (options.gridMode === "auto") {
-    const wasmDetection = await detectAutoRasterWithWasm(source);
+    const wasmDetection = await getCachedAutoDetection(source);
     if (!wasmDetection) {
       throw new Error(processMessages.nonPixelArtError);
     }
 
-    logical = sampleRegularGrid(
-      cropRaster(source, wasmDetection.cropBox),
-      wasmDetection.gridWidth,
-      wasmDetection.gridHeight,
-      wasmDetection.kind === "chart" ? "chart-edge" : "patch",
+    logical = getCachedLogicalGrid(
+      source,
+      `auto:${wasmDetection.kind}:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}`,
+      () => sampleRegularGrid(
+        cropRaster(source, wasmDetection.cropBox),
+        wasmDetection.gridWidth,
+        wasmDetection.gridHeight,
+        wasmDetection.kind === "chart" ? "chart-edge" : "patch",
+      ),
     );
     gridWidth = wasmDetection.gridWidth;
     gridHeight = wasmDetection.gridHeight;
@@ -362,12 +460,16 @@ export async function processImageFile(
 
     gridWidth = options.gridWidth;
     gridHeight = options.gridHeight;
-    logical = convertImageToLogicalGrid(
+    logical = getCachedLogicalGrid(
       source,
-      gridWidth,
-      gridHeight,
-      options.preSharpen,
-      options.preSharpenStrength,
+      `manual:${gridWidth}:${gridHeight}:${options.preSharpen ? 1 : 0}:${options.preSharpenStrength}`,
+      () => convertImageToLogicalGrid(
+        source,
+        gridWidth,
+        gridHeight,
+        options.preSharpen,
+        options.preSharpenStrength,
+      ),
     );
     detectionMode = "converted-from-image";
   }

@@ -1,30 +1,55 @@
 use crate::fft::estimate_period_from_fft;
 use crate::types::{Detection, LinePair, RectBox};
 
+pub(crate) fn detect_auto_inner(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+) -> (Option<Detection>, Option<Detection>) {
+    let luma = build_luma(rgba, width, height);
+    let chart = detect_chart_with_luma(rgba, &luma, width, height);
+    let pixel = detect_pixel_art_with_luma(rgba, &luma, width, height);
+    (chart, pixel)
+}
+
 pub(crate) fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
     let luma = build_luma(rgba, width, height);
+    detect_chart_with_luma(rgba, &luma, width, height)
+}
+
+pub(crate) fn detect_pixel_art_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
+    let luma = build_luma(rgba, width, height);
+    detect_pixel_art_with_luma(rgba, &luma, width, height)
+}
+
+fn detect_chart_with_luma(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+) -> Option<Detection> {
     let mut candidates = Vec::<Detection>::new();
-    if let Some(detection) = detect_framed_chart_inner(rgba, &luma, width, height) {
+    if let Some(detection) = detect_framed_chart_inner(rgba, luma, width, height) {
         candidates.push(detection);
     }
-    if let Some(detection) = detect_separator_board_inner(rgba, &luma, width, height) {
+    if let Some(detection) = detect_separator_board_inner(rgba, luma, width, height) {
         candidates.push(detection);
     }
-    if let Some(detection) = detect_content_coverage_board_inner(rgba, &luma, width, height) {
+    if let Some(detection) = detect_content_coverage_board_inner(rgba, luma, width, height) {
         if has_meaningful_content_outside_detection(rgba, width, height, detection)
             || has_significant_outer_margin(width, height, detection)
         {
             candidates.push(detection);
         }
     }
-    if let Some(detection) = detect_dense_edge_board_inner(&luma, width, height) {
+    if let Some(detection) = detect_dense_edge_board_inner(luma, width, height) {
         if has_meaningful_content_outside_detection(rgba, width, height, detection)
             || has_significant_outer_margin(width, height, detection)
         {
             candidates.push(detection);
         }
     }
-    if let Some(detection) = detect_pixel_art_inner(rgba, width, height) {
+    if let Some(detection) = detect_pixel_art_with_luma(rgba, luma, width, height) {
         let trimmed = trim_chart_outer_bands(
             rgba,
             width,
@@ -51,7 +76,7 @@ pub(crate) fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Op
     candidates
         .into_iter()
         .map(|detection| {
-            let detection = refine_inner_framed_chart(rgba, &luma, width, height, detection)
+            let detection = refine_inner_framed_chart(rgba, luma, width, height, detection)
                 .unwrap_or(detection);
             let detection = refine_guide_detection(rgba, width, height, detection);
             trim_chart_outer_bands(rgba, width, height, detection)
@@ -63,16 +88,20 @@ pub(crate) fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Op
         })
 }
 
-pub(crate) fn detect_pixel_art_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
-    let luma = build_luma(rgba, width, height);
+fn detect_pixel_art_with_luma(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+) -> Option<Detection> {
     let mut candidates = Vec::<Detection>::new();
-    if let Some(detection) = detect_separator_board_inner(rgba, &luma, width, height) {
+    if let Some(detection) = detect_separator_board_inner(rgba, luma, width, height) {
         candidates.push(detection);
     }
-    if let Some(detection) = detect_dense_edge_board_inner(&luma, width, height) {
+    if let Some(detection) = detect_dense_edge_board_inner(luma, width, height) {
         candidates.push(detection);
     }
-    if let Some(detection) = detect_content_box_pixel_inner(rgba, &luma, width, height) {
+    if let Some(detection) = detect_content_box_pixel_inner(rgba, luma, width, height) {
         candidates.push(detection);
     }
 
@@ -951,12 +980,33 @@ fn trim_chart_outer_bands(
     let near_top = detection.top <= (cell_height / 2).max(2);
     let near_bottom = height.saturating_sub(detection.bottom) <= (cell_height / 2).max(2);
     if !(near_left || near_right || near_top || near_bottom) {
+        let full_page_width_ratio =
+            detection.right.saturating_sub(detection.left) as f32 / width.max(1) as f32;
+        if full_page_width_ratio < 0.94 {
+            return detection;
+        }
+
+        if let Some(trim_count) =
+            count_full_page_trailing_annotation_bands(rgba, width, detection)
+        {
+            let band_span = chart_cell_height(detection).round() as usize;
+            if let Some(trimmed) =
+                build_trimmed_chart_detection_simple(detection, false, band_span.max(1), 0, trim_count)
+            {
+                return boost_confidence(trimmed, 0.01);
+            }
+        }
+
         return detection;
     }
 
     let luma = build_luma(rgba, width, height);
     let current = optimize_chart_band_trim(rgba, &luma, width, height, detection, false);
-    optimize_chart_band_trim(rgba, &luma, width, height, current, true)
+    if near_left || near_right {
+        optimize_chart_band_trim(rgba, &luma, width, height, current, true)
+    } else {
+        current
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1069,20 +1119,15 @@ fn optimize_chart_band_trim(
         return detection;
     }
 
-    let mut trimmed = detection;
-    if vertical_band {
-        trimmed.left = (trimmed.left + band_span * best_start_trim).min(trimmed.right.saturating_sub(1));
-        trimmed.right = trimmed.right.saturating_sub(band_span * best_end_trim).max(trimmed.left + 1);
-        trimmed.grid_width = trimmed
-            .grid_width
-            .saturating_sub(best_start_trim + best_end_trim);
-    } else {
-        trimmed.top = (trimmed.top + band_span * best_start_trim).min(trimmed.bottom.saturating_sub(1));
-        trimmed.bottom = trimmed.bottom.saturating_sub(band_span * best_end_trim).max(trimmed.top + 1);
-        trimmed.grid_height = trimmed
-            .grid_height
-            .saturating_sub(best_start_trim + best_end_trim);
-    }
+    let Some(trimmed) = build_trimmed_chart_detection_simple(
+        detection,
+        vertical_band,
+        band_span,
+        best_start_trim,
+        best_end_trim,
+    ) else {
+        return detection;
+    };
 
     boost_confidence(trimmed, 0.01)
 }
@@ -1217,6 +1262,94 @@ fn chart_band_trim_score(
     }
     let removed_score = removed_dissimilarity / removed_count.max(1) as f32;
     edge_similarity + removed_score * 1.1 - (start_trim + end_trim) as f32 * 0.05
+}
+
+fn build_trimmed_chart_detection_simple(
+    detection: Detection,
+    vertical_band: bool,
+    band_span: usize,
+    start_trim: usize,
+    end_trim: usize,
+) -> Option<Detection> {
+    let mut trimmed = detection;
+    if vertical_band {
+        trimmed.left = (trimmed.left + band_span * start_trim).min(trimmed.right.saturating_sub(1));
+        trimmed.right = trimmed.right.saturating_sub(band_span * end_trim).max(trimmed.left + 1);
+        trimmed.grid_width = trimmed
+            .grid_width
+            .saturating_sub(start_trim + end_trim);
+    } else {
+        trimmed.top = (trimmed.top + band_span * start_trim).min(trimmed.bottom.saturating_sub(1));
+        trimmed.bottom = trimmed.bottom.saturating_sub(band_span * end_trim).max(trimmed.top + 1);
+        trimmed.grid_height = trimmed
+            .grid_height
+            .saturating_sub(start_trim + end_trim);
+    }
+
+    let crop_width = trimmed.right.saturating_sub(trimmed.left);
+    let crop_height = trimmed.bottom.saturating_sub(trimmed.top);
+    if crop_width < 8
+        || crop_height < 8
+        || trimmed.grid_width < 10
+        || trimmed.grid_height < 10
+    {
+        return None;
+    }
+
+    Some(trimmed)
+}
+
+fn count_full_page_trailing_annotation_bands(
+    rgba: &[u8],
+    width: usize,
+    detection: Detection,
+) -> Option<usize> {
+    if detection.grid_width < 30 || detection.grid_height < 20 {
+        return None;
+    }
+
+    let band_span = chart_cell_height(detection).round() as usize;
+    if band_span < 4 {
+        return None;
+    }
+
+    let height = (rgba.len() / 4) / width.max(1);
+    let luma = build_luma(rgba, width, height.max(1));
+    let profiles = collect_chart_band_profiles(
+        rgba,
+        &luma,
+        width,
+        detection,
+        false,
+        band_span,
+    );
+    if profiles.len() != detection.grid_height {
+        return None;
+    }
+    let Some(baseline) = chart_band_baseline(&profiles) else {
+        return None;
+    };
+
+    let mut trimmed = 0_usize;
+    for profile in profiles.iter().rev() {
+        let similarity = chart_band_similarity(*profile, baseline);
+        let is_annotation_band =
+            similarity < 0.74
+                || profile.separator_ratio > baseline.separator_ratio * 1.42
+                || (profile.colored_ratio < baseline.colored_ratio * 0.22
+                    && profile.separator_ratio > baseline.separator_ratio * 1.12)
+                || (profile.separator_ratio < baseline.separator_ratio * 0.22
+                    && profile.colored_ratio > baseline.colored_ratio * 0.72);
+        if !is_annotation_band {
+            break;
+        }
+        trimmed += 1;
+        if trimmed >= 4 {
+            break;
+        }
+    }
+
+    (trimmed > 0).then_some(trimmed)
 }
 
 fn count_leading_decorative_bands(

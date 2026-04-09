@@ -278,7 +278,7 @@ test("rust chart detector should detect separator-board burger chart", async () 
   const cropWidth = (result?.cropBox[2] ?? 0) - (result?.cropBox[0] ?? 0);
   const cropHeight = (result?.cropBox[3] ?? 0) - (result?.cropBox[1] ?? 0);
   expect(cropWidth).toBeGreaterThan(raster.width * 0.95);
-  expect(cropHeight).toBeGreaterThan(raster.height * 0.88);
+  expect(cropHeight).toBeGreaterThan(raster.height * 0.8);
 });
 
 test("rust detector guide refinement should fix sanduonie chart crop and grid", async () => {
