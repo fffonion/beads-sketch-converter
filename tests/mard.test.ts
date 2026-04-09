@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { basename, join } from "node:path";
 import { debugAutoDetectRaster, processImageFile } from "../src/lib/mard";
+import { detectChartBoardWithRust } from "../src/lib/rust-chart-detector";
 
 const fixtureDir = join(import.meta.dir, "fixtures");
 const sampleImagePath = join(fixtureDir, "bangboo_4.jpeg");
@@ -228,6 +229,20 @@ test("auto detect should crop exported chart to the framed pixel board", () => {
   expect(cropWidth).toBeLessThan(raster.width);
   expect(cropHeight).toBeLessThan(raster.height);
   expect(cropHeight).toBeGreaterThan(raster.height * 0.45);
+});
+
+test("rust chart detector should detect the framed board and grid size", async () => {
+  const raster = loadRasterWithPowerShell(exportedChartImagePath);
+  const result = await detectChartBoardWithRust(raster);
+
+  expect(result).not.toBeNull();
+  expect(result?.gridWidth).toBe(38);
+  expect(result?.gridHeight).toBe(39);
+
+  const cropWidth = (result?.cropBox[2] ?? 0) - (result?.cropBox[0] ?? 0);
+  const cropHeight = (result?.cropBox[3] ?? 0) - (result?.cropBox[1] ?? 0);
+  expect(cropWidth).toBeGreaterThan(raster.width * 0.85);
+  expect(cropHeight).toBeGreaterThan(raster.height * 0.8);
 });
 
 test("auto detect should import chart_eye_blind_5 as a chart", () => {

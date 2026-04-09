@@ -1,5 +1,6 @@
 import paletteJson from "../data/mard-palette-221.json";
 import colorSystemMappingJson from "../data/color-system-mapping.json";
+import { detectChartBoardWithRust } from "./rust-chart-detector";
 
 const DEFAULT_MIN_GRID_CELLS = 4;
 const DEFAULT_MAX_GRID_CELLS = 512;
@@ -359,7 +360,7 @@ export async function processImageFile(
   let detectedCropRect: NormalizedCropRect | null = null;
 
   if (options.gridMode === "auto") {
-    const chartImport = detectChartLikePixelArtPrepared(source, file.name);
+    const chartImport = await detectChartLikePixelArtPreparedAsync(source, file.name);
     if (chartImport) {
       logical = sampleRegularGrid(
         cropRaster(source, chartImport.cropBox),
@@ -1299,7 +1300,44 @@ function detectChartLikePixelArtPrepared(
   fileName?: string,
 ): Omit<ChartImportDetection, "logical"> | null {
   const prepared = prepareDetectionRaster(image);
+  return detectChartLikePixelArtPreparedCore(image, prepared, fileName);
+}
+
+async function detectChartLikePixelArtPreparedAsync(
+  image: RasterImage,
+  fileName?: string,
+): Promise<Omit<ChartImportDetection, "logical"> | null> {
+  const prepared = prepareDetectionRaster(image);
   const quickPixelDetection = detectQuickPixelArt(prepared.raster);
+  if (
+    quickPixelDetection &&
+    shouldSkipChartDetectionForQuickPixelArt(prepared.raster, quickPixelDetection, fileName)
+  ) {
+    return null;
+  }
+  if (!mayContainLegendChart(prepared.raster, fileName)) {
+    return null;
+  }
+
+  const rustDetection = buildPreparedRustChartDetection(
+    image,
+    prepared,
+    await detectChartBoardWithRust(prepared.raster),
+  );
+  if (rustDetection) {
+    return rustDetection;
+  }
+
+  return detectChartLikePixelArtPreparedCore(image, prepared, fileName, quickPixelDetection);
+}
+
+function detectChartLikePixelArtPreparedCore(
+  image: RasterImage,
+  prepared: DetectionPreparation,
+  fileName?: string,
+  quickPixelDetectionInput?: DetectionResult | null,
+): Omit<ChartImportDetection, "logical"> | null {
+  const quickPixelDetection = quickPixelDetectionInput ?? detectQuickPixelArt(prepared.raster);
   if (
     quickPixelDetection &&
     shouldSkipChartDetectionForQuickPixelArt(prepared.raster, quickPixelDetection, fileName)
@@ -1371,6 +1409,62 @@ function detectChartLikePixelArtPrepared(
     visualCropBox: detection.visualCropBox
       ? mapPreparedCropBoxToSource(detection.visualCropBox, image, prepared)
       : undefined,
+  };
+}
+
+function buildPreparedRustChartDetection(
+  image: RasterImage,
+  prepared: DetectionPreparation,
+  detection: {
+    cropBox: CropBox;
+    gridWidth: number;
+    gridHeight: number;
+  } | null,
+): Omit<ChartImportDetection, "logical"> | null {
+  if (!detection) {
+    return null;
+  }
+
+  const cropBox = mapPreparedCropBoxToSource(detection.cropBox, image, prepared);
+  const cropWidth = cropBox[2] - cropBox[0];
+  const cropHeight = cropBox[3] - cropBox[1];
+  if (cropWidth <= 0 || cropHeight <= 0) {
+    return null;
+  }
+
+  if (
+    detection.gridWidth < 10 ||
+    detection.gridWidth > 102 ||
+    detection.gridHeight < 10 ||
+    detection.gridHeight > 102
+  ) {
+    return null;
+  }
+
+  const cropAspect = cropWidth / Math.max(1, cropHeight);
+  const gridAspect = detection.gridWidth / Math.max(1, detection.gridHeight);
+  const aspectRatio =
+    cropAspect > gridAspect ? cropAspect / Math.max(0.0001, gridAspect) : gridAspect / Math.max(0.0001, cropAspect);
+  if (aspectRatio > 1.18) {
+    return null;
+  }
+
+  const cellWidth = cropWidth / detection.gridWidth;
+  const cellHeight = cropHeight / detection.gridHeight;
+  if (cellWidth < 2 || cellHeight < 2) {
+    return null;
+  }
+
+  const areaRatio = (cropWidth * cropHeight) / Math.max(1, image.width * image.height);
+  if (areaRatio < 0.16) {
+    return null;
+  }
+
+  return {
+    gridWidth: detection.gridWidth,
+    gridHeight: detection.gridHeight,
+    mode: "detected-rust-cv",
+    cropBox,
   };
 }
 
