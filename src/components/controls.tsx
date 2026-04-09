@@ -84,7 +84,7 @@ export function LanguageSwitch({
           onClick={() => setLocale("zh-CN")}
           type="button"
         >
-          {chineseLabel}
+          中
         </button>
         <button
           className={clsx(
@@ -94,7 +94,7 @@ export function LanguageSwitch({
           onClick={() => setLocale("en-US")}
           type="button"
         >
-          {englishLabel}
+          En
         </button>
       </div>
     </div>
@@ -165,6 +165,7 @@ export function NumberSliderField({
   max,
   step = 1,
   isDark,
+  mobileSliderOnly = false,
 }: {
   id: string;
   label: string;
@@ -174,6 +175,7 @@ export function NumberSliderField({
   max: number;
   step?: number;
   isDark: boolean;
+  mobileSliderOnly?: boolean;
 }) {
   const theme = getThemeClasses(isDark);
   const parsed = Number.parseInt(value, 10);
@@ -183,13 +185,33 @@ export function NumberSliderField({
 
   return (
     <div className="space-y-3">
-      <NumberField
-        id={id}
-        label={label}
-        value={value}
-        onChange={onChange}
-        isDark={isDark}
-      />
+      {mobileSliderOnly ? (
+        <>
+          <div className="flex items-center justify-between gap-3 sm:hidden">
+            <Label.Root className={clsx("text-xs font-semibold uppercase tracking-[0.14em]", theme.cardMuted)} htmlFor={`${id}-slider`}>
+              {label}
+            </Label.Root>
+            <span className={clsx("text-sm font-semibold", theme.cardTitle)}>{sliderValue}</span>
+          </div>
+          <div className="hidden sm:block">
+            <NumberField
+              id={id}
+              label={label}
+              value={value}
+              onChange={onChange}
+              isDark={isDark}
+            />
+          </div>
+        </>
+      ) : (
+        <NumberField
+          id={id}
+          label={label}
+          value={value}
+          onChange={onChange}
+          isDark={isDark}
+        />
+      )}
       <Slider.Root
         id={`${id}-slider`}
         className="relative flex h-5 touch-none select-none items-center"
@@ -225,8 +247,8 @@ export function SwitchRow({
 }) {
   const theme = getThemeClasses(isDark);
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-      <div className="min-w-0">
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0 flex-1">
         <Label.Root className={clsx("text-sm font-semibold", theme.cardTitle)} htmlFor={id}>
           {title}
         </Label.Root>

@@ -83,6 +83,7 @@ export function CanvasEditorStage({
     moved: boolean;
     cellIndex: number | null;
   } | null>(null);
+  const drawPointerIdRef = useRef<number | null>(null);
   const lastAppliedCellIndexRef = useRef<number | null>(null);
   const suppressTapUntilRef = useRef(0);
 
@@ -186,6 +187,7 @@ export function CanvasEditorStage({
 
   useEffect(() => {
     function clearStroke() {
+      drawPointerIdRef.current = null;
       lastAppliedCellIndexRef.current = null;
     }
     window.addEventListener("pointerup", clearStroke);
@@ -634,7 +636,7 @@ export function CanvasEditorStage({
       ref={stageViewportRef}
       tabIndex={stageMode === "edit" ? 0 : undefined}
       className={clsx(
-        "relative mt-4 flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 sm:p-3",
+        "relative mt-4 flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 touch-none sm:p-3",
         "overflow-hidden",
         showBrushCursor || showFillCursor || showPickCursor ? "cursor-none" : "",
         zoomToolActive && !spacePanActive ? "cursor-zoom-in" : "",
@@ -657,7 +659,7 @@ export function CanvasEditorStage({
         if (stageMode !== "edit" || effectivePanActive || editTool === "zoom") {
           return;
         }
-        if ((event.buttons & 1) === 1 && paintActiveRef.current) {
+        if (paintActiveRef.current && drawPointerIdRef.current === event.pointerId) {
           applyCellAt(resolveCellIndex(event.clientX, event.clientY));
         }
       }}
@@ -685,8 +687,28 @@ export function CanvasEditorStage({
         if (effectivePanActive || cellIndex === null) {
           return;
         }
+        if (event.currentTarget.setPointerCapture) {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
+        drawPointerIdRef.current = event.pointerId;
         paintActiveRef.current = true;
         applyCellAt(cellIndex);
+      }}
+      onPointerUp={(event) => {
+        if (drawPointerIdRef.current === event.pointerId) {
+          drawPointerIdRef.current = null;
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }
+      }}
+      onPointerCancel={(event) => {
+        if (drawPointerIdRef.current === event.pointerId) {
+          drawPointerIdRef.current = null;
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }
       }}
       onContextMenu={(event) => {
         if (stageMode === "edit" && editTool === "zoom") {

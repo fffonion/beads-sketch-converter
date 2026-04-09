@@ -67,10 +67,13 @@ export function SidebarPanel({
   onFileSelection: (file: File | null) => void;
 }) {
   const theme = getThemeClasses(isDark);
-  const [collapsedSections, setCollapsedSections] = useState({
-    source: false,
-    grid: false,
-    polish: false,
+  const [collapsedSections, setCollapsedSections] = useState(() => {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+    return {
+      source: false,
+      grid: isMobile,
+      polish: isMobile,
+    };
   });
 
   function toggleSection(section: keyof typeof collapsedSections) {
@@ -146,6 +149,7 @@ export function SidebarPanel({
                   min={1}
                   max={156}
                   isDark={isDark}
+                  mobileSliderOnly
                 />
                 <NumberSliderField
                   id="grid-height"
@@ -155,13 +159,14 @@ export function SidebarPanel({
                   min={1}
                   max={156}
                   isDark={isDark}
+                  mobileSliderOnly
                 />
               </div>
               <div className="mt-4">
                 <SwitchRow
                   id="follow-source-ratio"
                   title={t.gridFollowRatio}
-                  description={t.gridFollowRatioDescription}
+                  description=""
                   checked={followSourceRatio}
                   onCheckedChange={onFollowSourceRatioChange}
                   isDark={isDark}

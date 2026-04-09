@@ -289,9 +289,9 @@ export function PixelEditorPanel({
         style={panelViewportHeight > 0 ? { height: `${panelViewportHeight}px`, minHeight: `${panelViewportHeight}px` } : undefined}
       >
         <Tabs.Content value="edit" className="mt-4 flex min-h-0 flex-1">
-          <div className="grid h-full min-w-0 flex-1 items-stretch gap-3 xl:grid-cols-[56px_minmax(0,1fr)] xl:gap-4">
-            <section className={clsx("min-h-0 min-w-0 rounded-[10px] border p-2 transition-colors", theme.card)}>
-              <div className="flex w-full gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
+          <div className="flex h-full min-w-0 flex-1 flex-col gap-3 xl:grid xl:grid-cols-[56px_minmax(0,1fr)] xl:items-stretch xl:gap-4">
+            <section className={clsx("min-h-0 min-w-0 self-start rounded-[10px] border p-2 transition-colors xl:self-auto", theme.card)}>
+              <div className="flex w-full flex-wrap gap-2 overflow-visible xl:flex-col xl:flex-nowrap">
                 {tools.map((tool) => (
                   <ToolIconButton
                     key={tool.id}
@@ -303,35 +303,37 @@ export function PixelEditorPanel({
                   />
                 ))}
                 <div className={clsx("hidden h-px xl:block", theme.divider)} />
-                <ToolIconButton
-                  active={false}
-                  disabled={!canUndo}
-                  icon={Undo2}
-                  isDark={isDark}
-                  label={t.toolUndo}
-                  onClick={onUndo}
-                />
-                <ToolIconButton
-                  active={false}
-                  disabled={!canRedo}
-                  icon={Redo2}
-                  isDark={isDark}
-                  label={t.toolRedo}
-                  onClick={onRedo}
-                />
-                <div className={clsx("hidden h-px xl:block", theme.divider)} />
-                <ToolIconButton
-                  active={overlayEnabled}
-                  icon={overlayEnabled ? Eye : EyeOff}
-                  isDark={isDark}
-                  label={t.overlayToggle}
-                  onClick={() => onOverlayEnabledChange(!overlayEnabled)}
-                />
+                <div className="flex basis-full gap-2 xl:contents">
+                  <ToolIconButton
+                    active={false}
+                    disabled={!canUndo}
+                    icon={Undo2}
+                    isDark={isDark}
+                    label={t.toolUndo}
+                    onClick={onUndo}
+                  />
+                  <ToolIconButton
+                    active={false}
+                    disabled={!canRedo}
+                    icon={Redo2}
+                    isDark={isDark}
+                    label={t.toolRedo}
+                    onClick={onRedo}
+                  />
+                  <div className={clsx("hidden h-px xl:block", theme.divider)} />
+                  <ToolIconButton
+                    active={overlayEnabled}
+                    icon={overlayEnabled ? Eye : EyeOff}
+                    isDark={isDark}
+                    label={t.overlayToggle}
+                    onClick={() => onOverlayEnabledChange(!overlayEnabled)}
+                  />
+                </div>
               </div>
             </section>
 
-            <section className={clsx("relative flex min-h-0 min-w-0 flex-col rounded-[10px] border p-3 transition-colors sm:p-4", theme.card)}>
-              <div data-edit-toolbar-row="true" className="flex min-w-0 items-start gap-2">
+            <section className={clsx("relative flex min-h-0 min-w-0 flex-1 flex-col rounded-[10px] border p-3 transition-colors sm:p-4", theme.card)}>
+              <div data-edit-toolbar-row="true" className="flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap">
                 <div className="min-w-0 flex-1">
                   <ContextToolStrip
                     t={t}
@@ -1264,7 +1266,7 @@ function ContextToolStrip({
     >
       <div
         ref={rowRef}
-        className="flex min-h-10 min-w-0 items-center gap-2 overflow-x-auto overflow-y-visible"
+        className="flex min-h-10 min-w-0 flex-wrap items-center gap-2 overflow-visible sm:flex-nowrap"
       >
         {showPalette ? (
           <ColorPickerPopup

@@ -26,6 +26,7 @@ const localeStorageKey = "pindou-convert-locale";
 const themeStorageKey = "pindou-convert-theme";
 const EMPTY_SELECTION_LABEL = "__EMPTY__";
 const APP_BRAND_TITLE = "拼豆豆 图纸转换";
+const APP_BRAND_TITLE_MOBILE = "拼豆豆";
 
 function readInitialLocale(): Locale {
   if (typeof window === "undefined") {
@@ -921,28 +922,22 @@ export default function App() {
   return (
     <main className={clsx("min-h-screen transition-colors", theme.page)}>
       <div className="mx-auto max-w-[1760px] px-4 pt-3 sm:pt-4 lg:px-6 lg:pt-6">
-        <div className="flex flex-col gap-3 sm:gap-4 xl:flex-row xl:items-stretch xl:justify-between">
-          <div className={clsx("min-w-0 rounded-[10px] border px-3 py-2 backdrop-blur transition-colors sm:px-4 xl:flex-1", theme.controlShell)}>
-            <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:flex-row xl:items-center xl:gap-4">
-              <div className="flex min-w-0 shrink items-center justify-between gap-3">
-                <div className={clsx("flex h-11 w-11 items-center justify-center rounded-[8px] border", theme.pill)}>
-                  <BrandLogo className="h-9 w-9" />
-                </div>
-                <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                  <h1 className={clsx("truncate text-xl font-semibold leading-none sm:text-2xl", theme.cardTitle)}>
-                    {APP_BRAND_TITLE}
-                  </h1>
-                  {headerStatusLabel ? (
-                    <div className={clsx("shrink-0 rounded-[8px] px-3 py-1 text-xs font-semibold sm:text-sm", theme.statusBar(busy, false))}>
-                      {headerStatusLabel}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
+        <div className={clsx("flex min-w-0 items-center gap-2 rounded-[10px] border px-3 py-2 backdrop-blur transition-colors sm:gap-3 sm:px-4", theme.controlShell)}>
+          <div className={clsx("flex h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border", theme.pill)}>
+            <BrandLogo className="h-9 w-9" />
           </div>
-
-          <div className="ml-auto flex max-w-full flex-wrap items-stretch justify-end gap-2 xl:shrink-0">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+            <h1 className={clsx("min-w-0 truncate text-xl font-semibold leading-none sm:text-2xl", theme.cardTitle)}>
+              <span className="sm:hidden">{APP_BRAND_TITLE_MOBILE}</span>
+              <span className="hidden sm:inline">{APP_BRAND_TITLE}</span>
+            </h1>
+            {headerStatusLabel ? (
+              <div className={clsx("hidden shrink-0 rounded-[8px] px-3 py-1 text-xs font-semibold sm:block", theme.statusBar(busy, false))}>
+                {headerStatusLabel}
+              </div>
+            ) : null}
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <ThemeSwitch
               themeLabel={t.themeLabel}
               themeMode={themeMode}
