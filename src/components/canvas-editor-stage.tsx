@@ -1002,11 +1002,11 @@ function clampStagePanOffset(offset: { x: number; y: number }, limits: { maxX: n
   };
 }
 
-function clampPindouZoom(value: number) {
+export function clampPindouZoom(value: number) {
   return Math.max(0.5, Math.min(4, Number(value.toFixed(2))));
 }
 
-function clampEditorZoom(value: number) {
+export function clampEditorZoom(value: number) {
   return Math.max(0.5, Math.min(6, Number(value.toFixed(2))));
 }
 
