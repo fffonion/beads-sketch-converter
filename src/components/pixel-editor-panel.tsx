@@ -326,25 +326,41 @@ export function PixelEditorPanel({
               </div>
             </section>
 
-            <section className={clsx("flex min-h-0 min-w-0 flex-col rounded-[10px] border p-3 transition-colors sm:p-4", theme.card)}>
-              <ContextToolStrip
-                t={t}
-                isDark={isDark}
-                editTool={editTool}
-                editFlipHorizontal={editFlipHorizontal}
-                selectedLabel={selectedLabel}
-                selectedHex={selectedHex}
-                paletteOptions={paletteOptions}
-                brushSize={brushSize}
-                onBrushSizeChange={onBrushSizeChange}
-                editZoom={editZoom}
-                onEditZoomChange={onEditZoomChange}
-                onEditFlipHorizontalChange={onEditFlipHorizontalChange}
-                fillTolerance={fillTolerance}
-                onFillToleranceChange={onFillToleranceChange}
-                onEditToolChange={onEditToolChange}
-                onSelectedLabelChange={onSelectedLabelChange}
-              />
+            <section className={clsx("relative flex min-h-0 min-w-0 flex-col rounded-[10px] border p-3 transition-colors sm:p-4", theme.card)}>
+              <div data-edit-toolbar-row="true" className="flex min-w-0 items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <ContextToolStrip
+                    t={t}
+                    isDark={isDark}
+                    editTool={editTool}
+                    editFlipHorizontal={editFlipHorizontal}
+                    selectedLabel={selectedLabel}
+                    selectedHex={selectedHex}
+                    paletteOptions={paletteOptions}
+                    brushSize={brushSize}
+                    onBrushSizeChange={onBrushSizeChange}
+                    editZoom={editZoom}
+                    onEditZoomChange={onEditZoomChange}
+                    onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+                    fillTolerance={fillTolerance}
+                    onFillToleranceChange={onFillToleranceChange}
+                    onEditToolChange={onEditToolChange}
+                    onSelectedLabelChange={onSelectedLabelChange}
+                  />
+                </div>
+                <EditResultSummary
+                  t={t}
+                  isDark={isDark}
+                  matchedColors={matchedColors}
+                  disabledResultLabels={disabledResultLabels}
+                  matchedCoveragePercent={matchedCoveragePercent}
+                  activeMatchedColorCount={activeMatchedColorCount}
+                  onMatchedCoveragePercentChange={onMatchedCoveragePercentChange}
+                  onToggleMatchedColor={onToggleMatchedColor}
+                  onReplaceMatchedColor={onReplaceMatchedColor}
+                  paletteOptions={paletteOptions}
+                />
+              </div>
 
               <CanvasEditorStage
                 cells={cells}
@@ -365,21 +381,6 @@ export function PixelEditorPanel({
                 onApplyCell={onApplyCell}
                 paintActiveRef={paintActiveRef}
                 busy={busy}
-              />
-
-              <EditResultSummary
-                t={t}
-                isDark={isDark}
-                resultUrl={resultUrl}
-                resultFileName={resultFileName}
-                matchedColors={matchedColors}
-                disabledResultLabels={disabledResultLabels}
-                matchedCoveragePercent={matchedCoveragePercent}
-                activeMatchedColorCount={activeMatchedColorCount}
-                onMatchedCoveragePercentChange={onMatchedCoveragePercentChange}
-                onToggleMatchedColor={onToggleMatchedColor}
-                onReplaceMatchedColor={onReplaceMatchedColor}
-                paletteOptions={paletteOptions}
               />
             </section>
           </div>
@@ -465,7 +466,7 @@ function PindouModePanel({
     >
       {focusOnly ? (
         <div className="pointer-events-none absolute right-3 top-3 z-30 flex items-center gap-2 sm:right-4 sm:top-4">
-          <div className={clsx("pointer-events-auto flex items-center gap-1 rounded-md border px-1 py-1 shadow-sm backdrop-blur", theme.pill)}>
+          <div className={clsx("pointer-events-auto flex h-10 items-center gap-1 rounded-md border px-1 py-0.5 shadow-sm backdrop-blur", theme.pill)}>
             <button
               className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
               onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom - 0.2))}
@@ -510,7 +511,7 @@ function PindouModePanel({
         <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <p className={clsx("text-xs", theme.cardMuted)}>{t.pindouModeHint}</p>
-            <div className={clsx("flex items-center gap-1 rounded-md border px-1 py-1", theme.pill)}>
+            <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
               <button
                 className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
                 onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom - 0.2))}
@@ -613,8 +614,6 @@ function PindouModePanel({
 function EditResultSummary({
   t,
   isDark,
-  resultUrl,
-  resultFileName,
   matchedColors,
   disabledResultLabels,
   matchedCoveragePercent,
@@ -626,8 +625,6 @@ function EditResultSummary({
 }: {
   t: Messages;
   isDark: boolean;
-  resultUrl: string;
-  resultFileName: string;
   matchedColors: Array<{ label: string; count: number; hex: string }>;
   disabledResultLabels: string[];
   matchedCoveragePercent: number;
@@ -638,6 +635,24 @@ function EditResultSummary({
   paletteOptions: Array<{ label: string; hex: string }>;
 }) {
   const theme = getThemeClasses(isDark);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [triggerRect, setTriggerRect] = useState<{
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [hostRect, setHostRect] = useState<{
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [hoveredLabel, setHoveredLabel] = useState<string | null>(null);
   const [hoveredAnchorRect, setHoveredAnchorRect] = useState<{
     left: number;
@@ -647,6 +662,8 @@ function EditResultSummary({
     width: number;
     height: number;
   } | null>(null);
+  const detailsHoldRef = useRef(false);
+  const detailsLeaveTimeoutRef = useRef<number | null>(null);
   const popupHoldRef = useRef(false);
   const leaveTimeoutRef = useRef<number | null>(null);
   const disabledLabelSet = useMemo(() => new Set(disabledResultLabels), [disabledResultLabels]);
@@ -663,11 +680,55 @@ function EditResultSummary({
 
   useEffect(() => {
     return () => {
+      if (detailsLeaveTimeoutRef.current !== null) {
+        window.clearTimeout(detailsLeaveTimeoutRef.current);
+      }
       if (leaveTimeoutRef.current !== null) {
         window.clearTimeout(leaveTimeoutRef.current);
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!detailsOpen || typeof window === "undefined") {
+      return;
+    }
+
+    function syncTriggerRect() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      setTriggerRect({
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      });
+      const host = triggerRef.current?.closest("[data-edit-toolbar-row='true']") as HTMLElement | null;
+      const hostBounds = host?.getBoundingClientRect();
+      if (hostBounds) {
+        setHostRect({
+          left: hostBounds.left,
+          top: hostBounds.top,
+          right: hostBounds.right,
+          bottom: hostBounds.bottom,
+          width: hostBounds.width,
+          height: hostBounds.height,
+        });
+      }
+    }
+
+    syncTriggerRect();
+    window.addEventListener("resize", syncTriggerRect);
+    window.addEventListener("scroll", syncTriggerRect, true);
+    return () => {
+      window.removeEventListener("resize", syncTriggerRect);
+      window.removeEventListener("scroll", syncTriggerRect, true);
+    };
+  }, [detailsOpen]);
 
   useEffect(() => {
     if (!hoveredLabel || !disabledLabelSet.has(hoveredLabel)) {
@@ -676,6 +737,53 @@ function EditResultSummary({
     setHoveredLabel(null);
     setHoveredAnchorRect(null);
   }, [hoveredLabel, disabledLabelSet]);
+
+  function openDetailsPopup() {
+    if (detailsLeaveTimeoutRef.current !== null) {
+      window.clearTimeout(detailsLeaveTimeoutRef.current);
+      detailsLeaveTimeoutRef.current = null;
+    }
+    detailsHoldRef.current = false;
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setTriggerRect({
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+    const host = triggerRef.current?.closest("[data-edit-toolbar-row='true']") as HTMLElement | null;
+    const hostBounds = host?.getBoundingClientRect();
+    if (hostBounds) {
+      setHostRect({
+        left: hostBounds.left,
+        top: hostBounds.top,
+        right: hostBounds.right,
+        bottom: hostBounds.bottom,
+        width: hostBounds.width,
+        height: hostBounds.height,
+      });
+    }
+    setDetailsOpen(true);
+  }
+
+  function closeDetailsPopupSoon() {
+    if (detailsLeaveTimeoutRef.current !== null) {
+      window.clearTimeout(detailsLeaveTimeoutRef.current);
+    }
+    detailsLeaveTimeoutRef.current = window.setTimeout(() => {
+      if (detailsHoldRef.current) {
+        return;
+      }
+      popupHoldRef.current = false;
+      setHoveredLabel(null);
+      setHoveredAnchorRect(null);
+      setDetailsOpen(false);
+    }, 90);
+  }
 
   function openReplacementPopup(
     label: string,
@@ -688,6 +796,11 @@ function EditResultSummary({
       window.clearTimeout(leaveTimeoutRef.current);
       leaveTimeoutRef.current = null;
     }
+    if (detailsLeaveTimeoutRef.current !== null) {
+      window.clearTimeout(detailsLeaveTimeoutRef.current);
+      detailsLeaveTimeoutRef.current = null;
+    }
+    detailsHoldRef.current = true;
     popupHoldRef.current = false;
     setHoveredLabel(label);
     const rect = event.currentTarget.getBoundingClientRect();
@@ -714,9 +827,47 @@ function EditResultSummary({
     }, 80);
   }
 
+  function closeDetailsPopup() {
+    if (leaveTimeoutRef.current !== null) {
+      window.clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+    if (detailsLeaveTimeoutRef.current !== null) {
+      window.clearTimeout(detailsLeaveTimeoutRef.current);
+      detailsLeaveTimeoutRef.current = null;
+    }
+    detailsHoldRef.current = false;
+    popupHoldRef.current = false;
+    setHoveredLabel(null);
+    setHoveredAnchorRect(null);
+    setDetailsOpen(false);
+  }
+
   const hoveredOptions = hoveredLabel
     ? nearestReplacementMap.get(hoveredLabel) ?? []
     : [];
+  const detailsPopupWidth =
+    hostRect === null
+      ? 640
+      : Math.min(window.innerWidth - 24, Math.max(420, Math.round(hostRect.width)));
+  const detailsShowBelow =
+    triggerRect !== null
+      ? triggerRect.bottom + 248 <= window.innerHeight - 12
+      : true;
+  const detailsPopupLeft =
+    hostRect === null
+      ? 12
+      : Math.min(
+          window.innerWidth - detailsPopupWidth - 12,
+          Math.max(12, hostRect.left),
+        );
+  const detailsPopupTop =
+    triggerRect === null
+      ? 12
+      : detailsShowBelow
+        ? triggerRect.bottom - 1
+        : Math.max(12, triggerRect.top - 248 + 1);
+  const detailsColumns = Math.max(1, Math.min(6, Math.floor((detailsPopupWidth - 24) / 112)));
   const popupWidth = 182;
   const popupHeight = 132;
   const anchorCenterX = hoveredAnchorRect ? hoveredAnchorRect.left + hoveredAnchorRect.width / 2 : null;
@@ -746,15 +897,22 @@ function EditResultSummary({
           <div
             className="fixed z-[199]"
             onMouseEnter={() => {
+              detailsHoldRef.current = true;
               popupHoldRef.current = true;
               if (leaveTimeoutRef.current !== null) {
                 window.clearTimeout(leaveTimeoutRef.current);
                 leaveTimeoutRef.current = null;
               }
+              if (detailsLeaveTimeoutRef.current !== null) {
+                window.clearTimeout(detailsLeaveTimeoutRef.current);
+                detailsLeaveTimeoutRef.current = null;
+              }
             }}
             onMouseLeave={() => {
+              detailsHoldRef.current = false;
               popupHoldRef.current = false;
               closeReplacementPopupSoon();
+              closeDetailsPopupSoon();
             }}
             style={{
               left: `${Math.max(12, hoveredAnchorRect.left - 8)}px`,
@@ -781,15 +939,22 @@ function EditResultSummary({
               theme.controlShell,
             )}
             onMouseEnter={() => {
+              detailsHoldRef.current = true;
               popupHoldRef.current = true;
               if (leaveTimeoutRef.current !== null) {
                 window.clearTimeout(leaveTimeoutRef.current);
                 leaveTimeoutRef.current = null;
               }
+              if (detailsLeaveTimeoutRef.current !== null) {
+                window.clearTimeout(detailsLeaveTimeoutRef.current);
+                detailsLeaveTimeoutRef.current = null;
+              }
             }}
             onMouseLeave={() => {
+              detailsHoldRef.current = false;
               popupHoldRef.current = false;
               closeReplacementPopupSoon();
+              closeDetailsPopupSoon();
             }}
             style={{
               left: `${popupLeft}px`,
@@ -798,7 +963,11 @@ function EditResultSummary({
             }}
           >
             <div className={clsx("mb-2 text-xs font-semibold", theme.cardMuted)}>
-              {hoveredLabel} {"->"}
+              {(t.similarColorsLabel
+                ? t.similarColorsLabel(hoveredLabel)
+                : t.matchedColorsTitle === "Matched Colors"
+                  ? `Colors similar to ${hoveredLabel}`
+                  : `和 ${hoveredLabel} 相似的颜色`)}
             </div>
             <div className="grid grid-cols-2 gap-1.5">
               {hoveredOptions.map((option) => (
@@ -837,68 +1006,114 @@ function EditResultSummary({
           document.body,
         )
       : null;
+  const detailsPopup =
+    detailsOpen && triggerRect && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            className={clsx(
+              "fixed z-[190] overflow-hidden rounded-[10px] border p-3 shadow-xl backdrop-blur",
+              theme.controlShell,
+              detailsShowBelow ? "rounded-tr-none" : "rounded-br-none",
+              isDark ? "border-white/10" : "border-stone-200",
+            )}
+            onMouseEnter={() => {
+              detailsHoldRef.current = true;
+              if (detailsLeaveTimeoutRef.current !== null) {
+                window.clearTimeout(detailsLeaveTimeoutRef.current);
+                detailsLeaveTimeoutRef.current = null;
+              }
+            }}
+            onMouseLeave={() => {
+              detailsHoldRef.current = false;
+              closeDetailsPopupSoon();
+            }}
+            style={{
+              left: `${detailsPopupLeft}px`,
+              top: `${detailsPopupTop}px`,
+              width: `${detailsPopupWidth}px`,
+              maxWidth: "calc(100vw - 24px)",
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <Slider.Root
+                className="relative flex h-5 flex-1 touch-none select-none items-center"
+                max={100}
+                min={0}
+                step={1}
+                value={[matchedCoveragePercent]}
+                onValueChange={(next) => onMatchedCoveragePercentChange(next[0] ?? 100)}
+              >
+                <Slider.Track className={clsx("relative h-2 grow rounded-full", theme.sliderTrack)}>
+                  <Slider.Range className={clsx("absolute h-full rounded-full", theme.sliderRange)} />
+                </Slider.Track>
+                <Slider.Thumb className={clsx("block h-5 w-5 rounded-full border shadow outline-none", theme.sliderThumb)} />
+              </Slider.Root>
+              <span className={clsx("shrink-0 text-right text-sm font-semibold", theme.cardTitle)}>
+                {t.labelsCount(activeMatchedColorCount)}
+              </span>
+            </div>
+            <div
+              className="mt-3 grid max-h-[220px] gap-2 overflow-auto pr-1"
+              style={{ gridTemplateColumns: `repeat(${detailsColumns}, minmax(0, 1fr))` }}
+            >
+              {matchedColors.map((color) => (
+                <button
+                  key={color.label}
+                  className={clsx(
+                    "grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors",
+                    theme.card,
+                  )}
+                  onClick={() => onToggleMatchedColor(color.label)}
+                  type="button"
+                  title={color.label}
+                  style={{
+                    opacity: disabledLabelSet.has(color.label) ? 0.4 : 1,
+                    filter: disabledLabelSet.has(color.label) ? "grayscale(1)" : "none",
+                  }}
+                >
+                  <span
+                    className="h-5 w-5 rounded-full border border-black/10"
+                    onMouseEnter={
+                      disabledLabelSet.has(color.label)
+                        ? undefined
+                        : (event) => openReplacementPopup(color.label, event)
+                    }
+                    onMouseLeave={disabledLabelSet.has(color.label) ? undefined : closeReplacementPopupSoon}
+                    style={{ backgroundColor: color.hex }}
+                  />
+                  <span className="min-w-0">
+                    <span className={clsx("block truncate text-sm font-semibold", theme.cardTitle)}>{color.label}</span>
+                  </span>
+                  <span className={clsx("text-xs font-semibold", theme.cardMuted)}>{color.count}</span>
+                </button>
+              ))}
+            </div>
+            <p className={clsx("mt-3 text-xs", theme.cardMuted)}>{t.matchedColorsHint}</p>
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
-    <section
-      className={clsx(
-        "mt-4 shrink-0 space-y-4 border-t pt-4",
-        isDark ? "border-stone-700/70" : "border-stone-200/90",
-      )}
-    >
-      <div className={clsx("rounded-[10px] border p-4 transition-colors sm:rounded-[12px]", theme.pill)}>
-        <div className="flex items-center gap-3">
-          <Slider.Root
-            className="relative flex h-5 flex-1 touch-none select-none items-center"
-            max={100}
-            min={0}
-            step={1}
-            value={[matchedCoveragePercent]}
-            onValueChange={(next) => onMatchedCoveragePercentChange(next[0] ?? 100)}
-          >
-            <Slider.Track className={clsx("relative h-2 grow rounded-full", theme.sliderTrack)}>
-              <Slider.Range className={clsx("absolute h-full rounded-full", theme.sliderRange)} />
-            </Slider.Track>
-            <Slider.Thumb className={clsx("block h-5 w-5 rounded-full border shadow outline-none", theme.sliderThumb)} />
-          </Slider.Root>
-          <span className={clsx("shrink-0 text-right text-sm font-semibold", theme.cardTitle)}>
-            {t.labelsCount(activeMatchedColorCount)}
-          </span>
-        </div>
-        <div className="mt-4 flex max-h-[132px] flex-wrap gap-2 overflow-auto pr-1 sm:max-h-[180px]">
-          {matchedColors.map((color) => (
-            <button
-              key={color.label}
-              className={clsx("flex items-center gap-3 rounded-md border px-3 py-2 transition-colors", theme.card)}
-              onClick={() => onToggleMatchedColor(color.label)}
-              type="button"
-              title={color.label}
-              style={{
-                opacity: disabledLabelSet.has(color.label) ? 0.4 : 1,
-                filter: disabledLabelSet.has(color.label) ? "grayscale(1)" : "none",
-              }}
-            >
-              <span
-                className="h-5 w-5 rounded-full border border-black/10"
-                onMouseEnter={
-                  disabledLabelSet.has(color.label)
-                    ? undefined
-                    : (event) => openReplacementPopup(color.label, event)
-                }
-                onMouseLeave={
-                  disabledLabelSet.has(color.label) ? undefined : closeReplacementPopupSoon
-                }
-                style={{ backgroundColor: color.hex }}
-              />
-              <span className={clsx("text-sm font-semibold", theme.cardTitle)}>{color.label}</span>
-              <span className={clsx("text-xs", theme.cardMuted)}>{color.count}</span>
-            </button>
-          ))}
-        </div>
-        <p className={clsx("mt-3 text-xs", theme.cardMuted)}>{t.matchedColorsHint}</p>
-      </div>
+    <>
+      <button
+        ref={triggerRef}
+        className={clsx(
+          "flex h-14 shrink-0 items-center gap-2 border px-3 text-sm font-semibold transition sm:px-4",
+          detailsOpen ? theme.controlShell : theme.previewStage,
+          isDark ? "border-white/10" : "border-stone-200",
+          detailsOpen ? (detailsShowBelow ? "rounded-[8px] rounded-b-none border-b-transparent" : "rounded-[8px] rounded-t-none border-t-transparent") : "rounded-[8px]",
+        )}
+        onMouseEnter={openDetailsPopup}
+        onMouseLeave={closeDetailsPopupSoon}
+        type="button"
+      >
+        <span className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.labelsCount(activeMatchedColorCount)}</span>
+      </button>
       {bridge}
+      {detailsPopup}
       {popup}
-    </section>
+    </>
   );
 }
 
@@ -1014,6 +1229,7 @@ function ContextToolStrip({
   return (
     <div
       ref={shellRef}
+      data-edit-toolstrip-shell="true"
       className={clsx(
         "relative min-w-0 w-full max-w-full overflow-visible rounded-[8px] border px-2.5 py-2 sm:px-4",
         theme.previewStage,
@@ -1060,7 +1276,7 @@ function ContextToolStrip({
           />
         ) : null}
         {showZoomControls ? (
-          <div className={clsx("flex items-center gap-1 rounded-md border px-1 py-1", theme.pill)}>
+          <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
             <button
               className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
               onClick={() => onEditZoomChange(clampEditorZoom(editZoom - 0.2))}
@@ -1093,7 +1309,7 @@ function ContextToolStrip({
         >
           <FlipHorizontal className="h-4 w-4" />
         </button>
-        <span className={clsx("hidden shrink-0 text-xs xl:inline", theme.cardMuted)}>{t.paletteHint}</span>
+        <span className={clsx("ml-auto hidden shrink-0 text-xs xl:inline", theme.cardMuted)}>{t.paletteHint}</span>
       </div>
 
       {showPalette && pickerOpen && popupStyle ? (

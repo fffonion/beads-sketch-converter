@@ -31,6 +31,8 @@ export function CanvasEditorStage({
   pindouZoom = 1,
   onPindouZoomChange,
   busy = false,
+  onStageEngage,
+  onStageDisengage,
 }: {
   cells: EditableCell[];
   gridWidth: number;
@@ -55,6 +57,8 @@ export function CanvasEditorStage({
   pindouZoom?: number;
   onPindouZoomChange?: (value: number) => void;
   busy?: boolean;
+  onStageEngage?: () => void;
+  onStageDisengage?: () => void;
 }) {
   const theme = getThemeClasses(isDark);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -628,6 +632,7 @@ export function CanvasEditorStage({
   return (
     <div
       ref={stageViewportRef}
+      tabIndex={stageMode === "edit" ? 0 : undefined}
       className={clsx(
         "relative mt-4 flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 sm:p-3",
         "overflow-hidden",
@@ -641,6 +646,11 @@ export function CanvasEditorStage({
         theme.previewStage,
         isDark ? "border-white/10" : "border-stone-200",
       )}
+      onFocus={() => {
+        if (stageMode === "edit") {
+          onStageEngage?.();
+        }
+      }}
       onPointerEnter={updateHoveredState}
       onPointerMove={(event) => {
         updateHoveredState(event);
@@ -652,6 +662,10 @@ export function CanvasEditorStage({
         }
       }}
       onPointerDown={(event) => {
+        if (stageMode === "edit") {
+          event.currentTarget.focus();
+          onStageEngage?.();
+        }
         updateHoveredState(event);
         if (stageMode !== "edit") {
           return;
@@ -683,6 +697,11 @@ export function CanvasEditorStage({
         setHoveredCellIndex(null);
         lastAppliedCellIndexRef.current = null;
         setCursorPreview((previous) => ({ ...previous, visible: false }));
+      }}
+      onBlur={() => {
+        if (stageMode === "edit") {
+          onStageDisengage?.();
+        }
       }}
     >
       <CanvasStatusBadge

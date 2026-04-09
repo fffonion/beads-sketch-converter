@@ -85,6 +85,7 @@ export interface Messages {
   paletteColorsUsedLabel: string;
   matchedColorsTitle: string;
   matchedColorsHint: string;
+  similarColorsLabel?: (label: string) => string;
   labelsCount: (count: number) => string;
   readyHint: string;
   manualGridValidation: string;
@@ -292,6 +293,7 @@ export const messages: Record<Locale, Messages> = {
     paletteColorsUsedLabel: "Palette Colors Used",
     matchedColorsTitle: "Matched Colors",
     matchedColorsHint: "Click a color to disable or restore it",
+    similarColorsLabel: (label) => `Colors similar to ${label}`,
     labelsCount: (count) => `${count} colors`,
     readyHint: "Upload an image and the result will appear here.",
     manualGridValidation: "Manual mode requires positive grid width and grid height.",
