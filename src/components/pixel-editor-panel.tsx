@@ -639,9 +639,17 @@ function EditResultSummary({
 }) {
   const theme = getThemeClasses(isDark);
   const [hoveredLabel, setHoveredLabel] = useState<string | null>(null);
-  const [hoveredPointer, setHoveredPointer] = useState<{ x: number; y: number } | null>(null);
+  const [hoveredAnchorRect, setHoveredAnchorRect] = useState<{
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const popupHoldRef = useRef(false);
   const leaveTimeoutRef = useRef<number | null>(null);
+  const disabledLabelSet = useMemo(() => new Set(disabledResultLabels), [disabledResultLabels]);
   const nearestReplacementMap = useMemo(
     () =>
       new Map(
@@ -661,13 +669,36 @@ function EditResultSummary({
     };
   }, []);
 
-  function openReplacementPopup(label: string, event: Pick<MouseEvent, "clientX" | "clientY">) {
+  useEffect(() => {
+    if (!hoveredLabel || !disabledLabelSet.has(hoveredLabel)) {
+      return;
+    }
+    setHoveredLabel(null);
+    setHoveredAnchorRect(null);
+  }, [hoveredLabel, disabledLabelSet]);
+
+  function openReplacementPopup(
+    label: string,
+    event: Pick<MouseEvent, "currentTarget"> & { currentTarget: EventTarget & Element },
+  ) {
+    if (disabledLabelSet.has(label)) {
+      return;
+    }
     if (leaveTimeoutRef.current !== null) {
       window.clearTimeout(leaveTimeoutRef.current);
       leaveTimeoutRef.current = null;
     }
+    popupHoldRef.current = false;
     setHoveredLabel(label);
-    setHoveredPointer({ x: event.clientX, y: event.clientY });
+    const rect = event.currentTarget.getBoundingClientRect();
+    setHoveredAnchorRect({
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    });
   }
 
   function closeReplacementPopupSoon() {
@@ -679,7 +710,7 @@ function EditResultSummary({
         return;
       }
       setHoveredLabel(null);
-      setHoveredPointer(null);
+      setHoveredAnchorRect(null);
     }, 80);
   }
 
@@ -688,19 +719,61 @@ function EditResultSummary({
     : [];
   const popupWidth = 182;
   const popupHeight = 132;
+  const anchorCenterX = hoveredAnchorRect ? hoveredAnchorRect.left + hoveredAnchorRect.width / 2 : null;
   const popupLeft =
-    hoveredPointer === null
+    hoveredAnchorRect === null || anchorCenterX === null
       ? 12
-      : Math.min(window.innerWidth - popupWidth - 12, Math.max(12, hoveredPointer.x + 14));
+      : Math.min(
+          window.innerWidth - popupWidth - 12,
+          Math.max(12, anchorCenterX - popupWidth / 2),
+        );
+  const showAbove =
+    hoveredAnchorRect !== null
+      ? hoveredAnchorRect.top - popupHeight - 14 >= 12
+      : true;
   const popupTop =
-    hoveredPointer === null
+    hoveredAnchorRect === null
       ? 12
-      : hoveredPointer.y - popupHeight - 12 >= 12
-        ? hoveredPointer.y - popupHeight - 12
-        : Math.min(window.innerHeight - popupHeight - 12, Math.max(12, hoveredPointer.y + 12));
+      : showAbove
+        ? hoveredAnchorRect.top - popupHeight - 14
+        : Math.min(
+            window.innerHeight - popupHeight - 12,
+            Math.max(12, hoveredAnchorRect.bottom + 14),
+          );
+  const bridge =
+    hoveredLabel && hoveredAnchorRect && hoveredOptions.length && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            className="fixed z-[199]"
+            onMouseEnter={() => {
+              popupHoldRef.current = true;
+              if (leaveTimeoutRef.current !== null) {
+                window.clearTimeout(leaveTimeoutRef.current);
+                leaveTimeoutRef.current = null;
+              }
+            }}
+            onMouseLeave={() => {
+              popupHoldRef.current = false;
+              closeReplacementPopupSoon();
+            }}
+            style={{
+              left: `${Math.max(12, hoveredAnchorRect.left - 8)}px`,
+              top: showAbove ? `${popupTop + popupHeight}px` : `${hoveredAnchorRect.bottom}px`,
+              width: `${Math.min(popupWidth, hoveredAnchorRect.width + 16)}px`,
+              height: `${Math.max(
+                10,
+                showAbove
+                  ? hoveredAnchorRect.top - (popupTop + popupHeight)
+                  : popupTop - hoveredAnchorRect.bottom,
+              )}px`,
+            }}
+          />,
+          document.body,
+        )
+      : null;
 
   const popup =
-    hoveredLabel && hoveredPointer && hoveredOptions.length && typeof document !== "undefined"
+    hoveredLabel && hoveredAnchorRect && hoveredOptions.length && typeof document !== "undefined"
       ? createPortal(
           <div
             className={clsx(
@@ -739,13 +812,13 @@ function EditResultSummary({
                     event.preventDefault();
                     onReplaceMatchedColor(hoveredLabel, option.label);
                     setHoveredLabel(null);
-                    setHoveredPointer(null);
+                    setHoveredAnchorRect(null);
                     popupHoldRef.current = false;
                   }}
                   onClick={() => {
                     onReplaceMatchedColor(hoveredLabel, option.label);
                     setHoveredLabel(null);
-                    setHoveredPointer(null);
+                    setHoveredAnchorRect(null);
                     popupHoldRef.current = false;
                   }}
                   type="button"
@@ -797,17 +870,23 @@ function EditResultSummary({
               key={color.label}
               className={clsx("flex items-center gap-3 rounded-md border px-3 py-2 transition-colors", theme.card)}
               onClick={() => onToggleMatchedColor(color.label)}
-              onMouseEnter={(event) => openReplacementPopup(color.label, event)}
-              onMouseLeave={closeReplacementPopupSoon}
               type="button"
               title={color.label}
               style={{
-                opacity: disabledResultLabels.includes(color.label) ? 0.4 : 1,
-                filter: disabledResultLabels.includes(color.label) ? "grayscale(1)" : "none",
+                opacity: disabledLabelSet.has(color.label) ? 0.4 : 1,
+                filter: disabledLabelSet.has(color.label) ? "grayscale(1)" : "none",
               }}
             >
               <span
                 className="h-5 w-5 rounded-full border border-black/10"
+                onMouseEnter={
+                  disabledLabelSet.has(color.label)
+                    ? undefined
+                    : (event) => openReplacementPopup(color.label, event)
+                }
+                onMouseLeave={
+                  disabledLabelSet.has(color.label) ? undefined : closeReplacementPopupSoon
+                }
                 style={{ backgroundColor: color.hex }}
               />
               <span className={clsx("text-sm font-semibold", theme.cardTitle)}>{color.label}</span>
@@ -817,6 +896,7 @@ function EditResultSummary({
         </div>
         <p className={clsx("mt-3 text-xs", theme.cardMuted)}>{t.matchedColorsHint}</p>
       </div>
+      {bridge}
       {popup}
     </section>
   );

@@ -86,6 +86,7 @@ export function CanvasEditorStage({
   const [stageViewport, setStageViewport] = useState({ width: 0, height: 0 });
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [spacePanActive, setSpacePanActive] = useState(false);
   const [hoveredCellIndex, setHoveredCellIndex] = useState<number | null>(null);
   const [cursorPreview, setCursorPreview] = useState({ x: 0, y: 0, visible: false });
   const stageInset = typeof window !== "undefined" && window.innerWidth < 640 ? 16 : 24;
@@ -155,10 +156,12 @@ export function CanvasEditorStage({
     totalStageWidth > 0 &&
     totalStageHeight > 0;
   const panToolActive = stageMode === "edit" && editTool === "pan";
+  const effectivePanActive = stageMode === "edit" ? panToolActive || spacePanActive : false;
   const zoomToolActive = stageMode === "edit" && editTool === "zoom";
-  const showBrushCursor = stageMode === "edit" && (editTool === "paint" || editTool === "erase");
-  const showFillCursor = stageMode === "edit" && editTool === "fill";
-  const showPickCursor = stageMode === "edit" && editTool === "pick";
+  const showBrushCursor =
+    stageMode === "edit" && !spacePanActive && (editTool === "paint" || editTool === "erase");
+  const showFillCursor = stageMode === "edit" && !spacePanActive && editTool === "fill";
+  const showPickCursor = stageMode === "edit" && !spacePanActive && editTool === "pick";
   const brushPreviewSize = Math.max(18, Math.round(brushSize * (cellSize + gridGap) * effectiveScale + 10));
   const panLimits = useMemo(
     () => calculateStagePanLimits(totalStageWidth, totalStageHeight, stageViewport.width, stageViewport.height),
@@ -188,6 +191,39 @@ export function CanvasEditorStage({
       window.removeEventListener("pointercancel", clearStroke);
     };
   }, []);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.code !== "Space" || stageMode !== "edit" || editTool === "pan") {
+        return;
+      }
+      if (isTypingElement(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      setSpacePanActive(true);
+    }
+
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.code !== "Space") {
+        return;
+      }
+      setSpacePanActive(false);
+    }
+
+    function handleBlur() {
+      setSpacePanActive(false);
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, [stageMode, editTool]);
 
   const resolveCellIndex = (clientX: number, clientY: number) =>
     resolveStageCellIndexFromClientPoint(
@@ -229,7 +265,7 @@ export function CanvasEditorStage({
     function handleTouchStart(event: TouchEvent) {
       if (event.touches.length === 1) {
         pinchStateRef.current = null;
-        if (!canPanStage || (stageMode === "edit" && !panToolActive)) {
+        if (!canPanStage || (stageMode === "edit" && !effectivePanActive)) {
           clearTouchPan();
           return;
         }
@@ -338,7 +374,7 @@ export function CanvasEditorStage({
       element.removeEventListener("touchcancel", handleTouchEnd);
       clearTouchPan();
     };
-  }, [stageMode, canPanStage, panToolActive, pindouZoom, onPindouZoomChange, editZoom, onEditZoomChange, cells, focusedLabel, onFocusLabelChange, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
+  }, [stageMode, canPanStage, effectivePanActive, pindouZoom, onPindouZoomChange, editZoom, onEditZoomChange, cells, focusedLabel, onFocusLabelChange, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
 
   useEffect(() => {
     if ((stageMode !== "pindou" && stageMode !== "edit") || !stageViewportRef.current) {
@@ -391,7 +427,7 @@ export function CanvasEditorStage({
       if (event.pointerType === "mouse" && event.button !== 0) {
         return;
       }
-      if (stageMode === "edit" && !panToolActive) {
+      if (stageMode === "edit" && !effectivePanActive) {
         return;
       }
 
@@ -470,7 +506,7 @@ export function CanvasEditorStage({
       element.removeEventListener("pointercancel", handlePointerEnd);
       clearPan();
     };
-  }, [canPanStage, panToolActive, stageMode, cells, focusedLabel, onFocusLabelChange, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
+  }, [canPanStage, effectivePanActive, stageMode, cells, focusedLabel, onFocusLabelChange, panLimits, leftGutter, topGutter, scaledStageWidth, scaledStageHeight, stagePitch, scaledCellSize, gridWidth, gridHeight, flipHorizontal]);
 
   useEffect(() => {
     const canvas = stageCanvasRef.current;
@@ -596,8 +632,8 @@ export function CanvasEditorStage({
         "relative mt-4 flex min-h-0 w-full min-w-0 max-w-full flex-1 rounded-[10px] border p-2 sm:p-3",
         "overflow-hidden",
         showBrushCursor || showFillCursor || showPickCursor ? "cursor-none" : "",
-        zoomToolActive ? "cursor-zoom-in" : "",
-        canPanStage && (stageMode === "pindou" || panToolActive)
+        zoomToolActive && !spacePanActive ? "cursor-zoom-in" : "",
+        canPanStage && (stageMode === "pindou" || effectivePanActive)
           ? isPanning
             ? "cursor-grabbing select-none"
             : "cursor-grab"
@@ -608,7 +644,7 @@ export function CanvasEditorStage({
       onPointerEnter={updateHoveredState}
       onPointerMove={(event) => {
         updateHoveredState(event);
-        if (stageMode !== "edit" || editTool === "pan" || editTool === "zoom") {
+        if (stageMode !== "edit" || effectivePanActive || editTool === "zoom") {
           return;
         }
         if ((event.buttons & 1) === 1 && paintActiveRef.current) {
@@ -626,10 +662,13 @@ export function CanvasEditorStage({
 
         const cellIndex = resolveCellIndex(event.clientX, event.clientY);
         if (editTool === "zoom") {
+          if (spacePanActive) {
+            return;
+          }
           onEditZoomChange?.(clampEditorZoom(editZoom + (event.button === 2 || event.shiftKey ? -0.2 : 0.2)));
           return;
         }
-        if (editTool === "pan" || cellIndex === null) {
+        if (effectivePanActive || cellIndex === null) {
           return;
         }
         paintActiveRef.current = true;
@@ -1146,4 +1185,15 @@ function parseCssColor(color: string): [number, number, number] | null {
 
 function toLinearChannel(value: number) {
   return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function isTypingElement(target: EventTarget | null) {
+  const element = target instanceof HTMLElement ? target : null;
+  if (!element) {
+    return false;
+  }
+
+  return (
+    element.closest("input, textarea, [contenteditable='true'], [role='textbox']") !== null
+  );
 }
