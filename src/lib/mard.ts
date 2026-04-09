@@ -818,7 +818,9 @@ function crc32(bytes: Uint8Array) {
 function defaultOutputName(fileName: string, gridWidth: number, gridHeight: number) {
   const dotIndex = fileName.lastIndexOf(".");
   const stem = dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
-  return `銆愭嫾璞嗚眴銆?{stem}.png`;
+  void gridWidth;
+  void gridHeight;
+  return `【拼豆豆】${stem}.png`;
 }
 
 async function loadFileAsRaster(

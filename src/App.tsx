@@ -1,12 +1,17 @@
 import clsx from "clsx";
-import { ImageUp } from "lucide-react";
+import { ImageUp, X } from "lucide-react";
 import { startTransition, useEffect, useRef, useState } from "react";
 import { BrandLogo } from "./components/brand-logo";
 import { LanguageSwitch, ThemeSwitch } from "./components/controls";
+import { OriginalPreviewCard } from "./components/preview-cards";
 import { SidebarPanel } from "./components/sidebar-panel";
 import { WorkspacePanels } from "./components/workspace-panels";
 import { defaultLocale, getMessages, type Locale } from "./lib/i18n";
-import type { PindouBeadShape, PindouBoardTheme } from "./lib/pindou-board-theme";
+import {
+  pindouBoardThemes,
+  type PindouBeadShape,
+  type PindouBoardTheme,
+} from "./lib/pindou-board-theme";
 import {
   exportChartFromCells,
   getPaletteOptions,
@@ -25,6 +30,8 @@ type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom";
 
 const localeStorageKey = "pindou-convert-locale";
 const themeStorageKey = "pindou-convert-theme";
+const pindouBeadShapeStorageKey = "pindou-convert-pindou-bead-shape";
+const pindouBoardThemeStorageKey = "pindou-convert-pindou-board-theme";
 const EMPTY_SELECTION_LABEL = "__EMPTY__";
 const APP_BRAND_TITLE = "拼豆豆";
 const APP_BRAND_TITLE_MOBILE = "拼豆豆";
@@ -47,6 +54,26 @@ function readInitialThemeMode(): ThemeMode {
   return stored === "light" || stored === "dark" || stored === "system"
     ? stored
     : "system";
+}
+
+function readInitialPindouBeadShape(): PindouBeadShape {
+  if (typeof window === "undefined") {
+    return "square";
+  }
+
+  const stored = window.localStorage.getItem(pindouBeadShapeStorageKey);
+  return stored === "circle" || stored === "square" ? stored : "square";
+}
+
+function readInitialPindouBoardTheme(): PindouBoardTheme {
+  if (typeof window === "undefined") {
+    return "gray";
+  }
+
+  const stored = window.localStorage.getItem(pindouBoardThemeStorageKey);
+  return pindouBoardThemes.includes(stored as PindouBoardTheme)
+    ? (stored as PindouBoardTheme)
+    : "gray";
 }
 
 function isTypingElement(target: EventTarget | null) {
@@ -144,6 +171,7 @@ export default function App() {
   const inputUrlRef = useRef<string | null>(null);
   const resultUrlRef = useRef<string | null>(null);
   const disabledResultLabelsRef = useRef<string[]>([]);
+  const sourceFocusOverlayRef = useRef<HTMLDivElement | null>(null);
 
   const [locale, setLocale] = useState<Locale>(readInitialLocale);
   const [themeMode, setThemeMode] = useState<ThemeMode>(readInitialThemeMode);
@@ -179,12 +207,17 @@ export default function App() {
   const [editorHistory, setEditorHistory] = useState<EditableCell[][]>([]);
   const [editorHistoryIndex, setEditorHistoryIndex] = useState(-1);
   const [editorDraftCells, setEditorDraftCells] = useState<EditableCell[] | null>(null);
+  const [sourceFocusViewOpen, setSourceFocusViewOpen] = useState(false);
   const [pindouFocusViewOpen, setPindouFocusViewOpen] = useState(false);
   const [editorPanelMode, setEditorPanelMode] = useState<EditorPanelMode>("edit");
   const [pindouFlipHorizontal, setPindouFlipHorizontal] = useState(false);
   const [pindouShowLabels, setPindouShowLabels] = useState(false);
-  const [pindouBeadShape, setPindouBeadShape] = useState<PindouBeadShape>("square");
-  const [pindouBoardTheme, setPindouBoardTheme] = useState<PindouBoardTheme>("gray");
+  const [pindouBeadShape, setPindouBeadShape] = useState<PindouBeadShape>(
+    readInitialPindouBeadShape,
+  );
+  const [pindouBoardTheme, setPindouBoardTheme] = useState<PindouBoardTheme>(
+    readInitialPindouBoardTheme,
+  );
   const [pindouZoom, setPindouZoom] = useState(1);
   const [pindouTimerRunning, setPindouTimerRunning] = useState(false);
   const [pindouTimerElapsedMs, setPindouTimerElapsedMs] = useState(0);
@@ -208,7 +241,9 @@ export default function App() {
       ? { kind: "chart" as const, label: t.sourceChartBadge }
       : result && result.detectionMode !== "converted-from-image"
         ? { kind: "pixel-art" as const, label: t.sourcePixelArtBadge }
-        : null;
+        : file
+          ? { kind: "image" as const, label: t.sourceImageBadge }
+          : null;
   const editorBaseCells =
     editorDraftCells ??
     (editorHistoryIndex >= 0 ? editorHistory[editorHistoryIndex] ?? [] : result?.cells ?? []);
@@ -253,6 +288,29 @@ export default function App() {
       );
     };
   }, [useBrowserFullscreenForPindou]);
+
+  useEffect(() => {
+    if (!sourceFocusViewOpen || typeof window === "undefined") {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setSourceFocusViewOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [sourceFocusViewOpen]);
+
+  useEffect(() => {
+    if (!sourceFocusViewOpen) {
+      return;
+    }
+
+    sourceFocusOverlayRef.current?.focus();
+  }, [sourceFocusViewOpen]);
 
   async function handlePindouFocusViewOpenChange(nextOpen: boolean) {
     if (!useBrowserFullscreenForPindou) {
@@ -332,8 +390,8 @@ export default function App() {
     ) {
       setGridWidth(String(result.gridWidth));
       setGridHeight(String(result.gridHeight));
-      if (result.detectedCropRect) {
-        setCropRect(result.detectedCropRect);
+      if (previewCropRect) {
+        setCropRect(previewCropRect);
         setCropMode(true);
       }
     }
@@ -356,6 +414,23 @@ export default function App() {
     setGridWidth(String(Math.max(1, Math.round(defaultGridBase * ratio))));
   }
 
+  function applyDetectedManualFallback(processed: ProcessResult) {
+    setGridMode("manual");
+    setGridWidth(String(processed.gridWidth));
+    setGridHeight(String(processed.gridHeight));
+    if (processed.detectedCropRect) {
+      setCropRect(processed.detectedCropRect);
+      setCropMode(true);
+    }
+  }
+
+  function applyPlainManualFallback() {
+    setGridMode("manual");
+    setCropRect(null);
+    setCropMode(false);
+    applyManualFallbackGrid();
+  }
+
   function handleFileSelection(nextFile: File | null) {
     sourceMetaRunIdRef.current += 1;
     setError(null);
@@ -371,13 +446,12 @@ export default function App() {
     setCropMode(false);
     setSourceSize(null);
     setSourceComplexity(52);
+    setSourceFocusViewOpen(false);
     setPindouFocusViewOpen(false);
     setEditorPanelMode("edit");
     setEditFlipHorizontal(false);
     setPindouFlipHorizontal(false);
     setPindouShowLabels(false);
-    setPindouBeadShape("square");
-    setPindouBoardTheme("gray");
     setPindouZoom(1);
     setPindouTimerRunning(false);
     setPindouTimerElapsedMs(0);
@@ -714,6 +788,14 @@ export default function App() {
   }, [themeMode, isDark]);
 
   useEffect(() => {
+    window.localStorage.setItem(pindouBeadShapeStorageKey, pindouBeadShape);
+  }, [pindouBeadShape]);
+
+  useEffect(() => {
+    window.localStorage.setItem(pindouBoardThemeStorageKey, pindouBoardTheme);
+  }, [pindouBoardTheme]);
+
+  useEffect(() => {
     resultUrlRef.current = result?.url ?? null;
   }, [result?.url]);
 
@@ -965,8 +1047,7 @@ export default function App() {
               processed.gridWidth / processed.gridHeight,
             )
           ) {
-            setGridMode("manual");
-            applyManualFallbackGrid();
+            applyDetectedManualFallback(processed);
             setResult((previous) => {
               if (previous?.url) {
                 URL.revokeObjectURL(previous.url);
@@ -981,6 +1062,30 @@ export default function App() {
             setEditorHistoryIndex(-1);
             setEditorDraftCells(null);
             setError(t.errorAutoGridAspectMismatch);
+            return;
+          }
+
+          if (
+            gridMode === "auto" &&
+            (processed.detectionMode === "detected-wasm-chart" ||
+              processed.detectionMode === "detected-wasm-pixel") &&
+            (processed.gridWidth < 20 || processed.gridHeight < 20)
+          ) {
+            applyPlainManualFallback();
+            setResult((previous) => {
+              if (previous?.url) {
+                URL.revokeObjectURL(previous.url);
+              }
+              return null;
+            });
+            setDisabledResultLabels([]);
+            editorHistoryRef.current = [];
+            editorHistoryIndexRef.current = -1;
+            editorDraftRef.current = null;
+            setEditorHistory([]);
+            setEditorHistoryIndex(-1);
+            setEditorDraftCells(null);
+            setError(t.errorAutoGridTooSmall);
             return;
           }
 
@@ -1209,12 +1314,14 @@ export default function App() {
           </section>
         </div>
       ) : (
-        <div className="mx-auto grid min-h-0 max-w-[1760px] gap-4 px-4 pb-6 pt-4 xl:h-[calc(100vh-5rem)] xl:grid-cols-[minmax(320px,22vw)_minmax(0,1fr)] xl:gap-6 xl:overflow-hidden lg:px-6 lg:pt-4">
+        <div className="mx-auto grid min-h-0 max-w-[1760px] gap-4 px-4 pb-6 pt-4 lg:h-[calc(100vh-5rem)] lg:grid-cols-[minmax(320px,22vw)_minmax(0,1fr)] lg:gap-6 lg:overflow-hidden lg:px-6 lg:pt-4">
           <SidebarPanel
             t={t}
             file={file}
             inputUrl={inputUrl}
             sourceBadge={sourceBadge}
+            sourceFocusViewOpen={sourceFocusViewOpen}
+            onSourceFocusViewOpenChange={setSourceFocusViewOpen}
             cropMode={cropMode}
             onCropModeChange={setCropMode}
             cropRect={cropRect}
@@ -1300,6 +1407,55 @@ export default function App() {
           />
         </div>
       )}
+
+      {file && sourceFocusViewOpen ? (
+        <div
+          ref={sourceFocusOverlayRef}
+          tabIndex={-1}
+          className="fixed inset-0 z-[80] bg-black/45 p-3 backdrop-blur-[2px] outline-none sm:p-5"
+        >
+          <div className="mx-auto flex h-full max-w-[1760px] min-w-0 flex-col gap-3">
+            <div className="flex justify-end">
+              <button
+                className={clsx(
+                  "z-[81] flex h-10 w-10 items-center justify-center rounded-md border shadow-sm backdrop-blur",
+                  theme.pill,
+                )}
+                aria-label={t.sourceExitFocus}
+                onClick={() => setSourceFocusViewOpen(false)}
+                title={t.sourceExitFocus}
+                type="button"
+              >
+                <X aria-hidden="true" className="h-4 w-4" />
+              </button>
+            </div>
+            <OriginalPreviewCard
+              title=""
+              file={file}
+              url={inputUrl}
+              busy={busy}
+              emptyText={t.sourceEmpty}
+              sourceChooseImage={t.sourceChooseImage}
+              sourceStayInTab={t.sourceStayInTab}
+              sourceFocusView={t.sourceFocusView}
+              sourceExitFocus={t.sourceExitFocus}
+              sourceBadge={sourceBadge}
+              onFileSelection={handleFileSelection}
+              cropReset={t.cropReset}
+              cropEdit={t.cropEdit}
+              cropMode={cropMode}
+              onCropModeChange={setCropMode}
+              cropRect={cropRect}
+              displayCropRect={previewCropRect}
+              onCropChange={handleManualCropChange}
+              isDark={isDark}
+              focusViewOpen={sourceFocusViewOpen}
+              onFocusViewOpenChange={setSourceFocusViewOpen}
+              focusOnly
+            />
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

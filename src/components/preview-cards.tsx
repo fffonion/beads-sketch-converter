@@ -1,5 +1,15 @@
 import clsx from "clsx";
-import { ChevronDown, Crop, FileImage, ImageUp, LayoutGrid, RotateCcw } from "lucide-react";
+import {
+  ChevronDown,
+  Crop,
+  FileImage,
+  ImageIcon,
+  ImageUp,
+  LayoutGrid,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+} from "lucide-react";
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { NormalizedCropRect } from "../lib/mard";
 import { getThemeClasses } from "../lib/theme";
@@ -30,6 +40,8 @@ export function OriginalPreviewCard({
   emptyText,
   sourceChooseImage,
   sourceStayInTab,
+  sourceFocusView,
+  sourceExitFocus,
   sourceBadge,
   onFileSelection,
   cropReset,
@@ -40,6 +52,9 @@ export function OriginalPreviewCard({
   displayCropRect,
   onCropChange,
   isDark,
+  focusViewOpen = false,
+  onFocusViewOpenChange,
+  focusOnly = false,
   collapsed = false,
   onToggleCollapsed,
 }: {
@@ -50,7 +65,9 @@ export function OriginalPreviewCard({
   emptyText: string;
   sourceChooseImage: string;
   sourceStayInTab: string;
-  sourceBadge?: { kind: "chart" | "pixel-art"; label: string } | null;
+  sourceFocusView: string;
+  sourceExitFocus: string;
+  sourceBadge?: { kind: "chart" | "pixel-art" | "image"; label: string } | null;
   onFileSelection: (file: File | null) => void;
   cropReset: string;
   cropEdit: string;
@@ -60,6 +77,9 @@ export function OriginalPreviewCard({
   displayCropRect: NormalizedCropRect | null;
   onCropChange: (cropRect: NormalizedCropRect | null) => void;
   isDark: boolean;
+  focusViewOpen?: boolean;
+  onFocusViewOpenChange?: (open: boolean) => void;
+  focusOnly?: boolean;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
 }) {
@@ -196,11 +216,17 @@ export function OriginalPreviewCard({
   }
 
   return (
-    <section className={clsx("rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:rounded-[18px]", theme.panel)}>
+    <section
+      className={clsx(
+        "rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:rounded-[18px]",
+        focusOnly ? "flex h-full min-h-0 w-full flex-col" : "",
+        theme.panel,
+      )}
+    >
       <div className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{title}</p>
+            {title ? <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{title}</p> : null}
             {sourceBadge ? (
               <div
                 className={clsx(
@@ -210,8 +236,10 @@ export function OriginalPreviewCard({
               >
                 {sourceBadge.kind === "chart" ? (
                   <FileImage aria-hidden="true" className="h-3.5 w-3.5" />
-                ) : (
+                ) : sourceBadge.kind === "pixel-art" ? (
                   <LayoutGrid aria-hidden="true" className="h-3.5 w-3.5" />
+                ) : (
+                  <ImageIcon aria-hidden="true" className="h-3.5 w-3.5" />
                 )}
                 <span>{sourceBadge.label}</span>
               </div>
@@ -258,13 +286,13 @@ export function OriginalPreviewCard({
                 </button>
               </>
             ) : null}
-            {onToggleCollapsed ? (
+            {onToggleCollapsed && !focusOnly ? (
               <button
                 className={clsx(
                   "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
                   theme.pill,
                 )}
-                aria-label={collapsed ? title : title}
+                aria-label={title || sourceBadge?.label || "toggle"}
                 onClick={onToggleCollapsed}
                 type="button"
               >
@@ -300,11 +328,20 @@ export function OriginalPreviewCard({
         ) : null}
       </div>
       {!collapsed ? (
-        <div className={clsx("mt-4 flex min-h-[220px] items-center justify-center overflow-hidden rounded-[10px] sm:min-h-[280px] sm:rounded-[12px]", theme.previewStage)}>
+        <div
+          className={clsx(
+            "mt-4 flex items-center justify-center overflow-hidden rounded-[10px] sm:rounded-[12px]",
+            focusOnly ? "min-h-0 flex-1" : "min-h-[220px] sm:min-h-[280px]",
+            theme.previewStage,
+          )}
+        >
           {url ? (
             <div
               ref={previewRef}
-              className="relative inline-block max-h-[52vh] max-w-full touch-none sm:max-h-[66vh] xl:max-h-[72vh]"
+              className={clsx(
+                "relative inline-block max-w-full touch-none",
+                focusOnly ? "h-full max-h-full" : "max-h-[52vh] sm:max-h-[66vh] xl:max-h-[72vh]",
+              )}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
@@ -312,11 +349,36 @@ export function OriginalPreviewCard({
             >
               <img
                 ref={imageRef}
-                className="max-h-[52vh] max-w-full object-contain sm:max-h-[66vh] xl:max-h-[72vh]"
+                className={clsx(
+                  "max-w-full object-contain",
+                  focusOnly ? "h-full max-h-full" : "max-h-[52vh] sm:max-h-[66vh] xl:max-h-[72vh]",
+                )}
                 draggable={false}
                 src={url}
                 alt={title}
               />
+              {onFocusViewOpenChange ? (
+                <button
+                  className={clsx(
+                    "absolute right-2 top-2 z-30 flex h-9 w-9 items-center justify-center rounded-md border text-xs font-semibold shadow-sm backdrop-blur-sm transition sm:h-8 sm:w-8",
+                    focusViewOpen || focusOnly ? theme.primaryButton : theme.pill,
+                  )}
+                  aria-label={focusViewOpen || focusOnly ? sourceExitFocus : sourceFocusView}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFocusViewOpenChange(!(focusViewOpen || focusOnly));
+                  }}
+                  title={focusViewOpen || focusOnly ? sourceExitFocus : sourceFocusView}
+                  type="button"
+                >
+                  {focusViewOpen || focusOnly ? (
+                    <Minimize2 aria-hidden="true" className="h-4 w-4" />
+                  ) : (
+                    <Maximize2 aria-hidden="true" className="h-4 w-4" />
+                  )}
+                </button>
+              ) : null}
               {visibleCrop ? (
                 <div
                   className="absolute"

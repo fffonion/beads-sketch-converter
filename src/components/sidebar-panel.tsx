@@ -14,6 +14,8 @@ export function SidebarPanel({
   file,
   inputUrl,
   sourceBadge,
+  sourceFocusViewOpen,
+  onSourceFocusViewOpenChange,
   cropMode,
   onCropModeChange,
   cropRect,
@@ -42,7 +44,9 @@ export function SidebarPanel({
   t: Messages;
   file: File | null;
   inputUrl: string | null;
-  sourceBadge: { kind: "chart" | "pixel-art"; label: string } | null;
+  sourceBadge: { kind: "chart" | "pixel-art" | "image"; label: string } | null;
+  sourceFocusViewOpen: boolean;
+  onSourceFocusViewOpenChange: (value: boolean) => void;
   cropMode: boolean;
   onCropModeChange: (enabled: boolean) => void;
   cropRect: NormalizedCropRect | null;
@@ -88,19 +92,21 @@ export function SidebarPanel({
   return (
     <section
       className={clsx(
-        "scrollbar-none min-h-0 overflow-y-auto rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:h-full xl:self-start xl:rounded-[18px]",
+        "scrollbar-none min-h-0 overflow-y-auto rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 lg:h-full lg:self-start xl:rounded-[18px]",
         theme.panel,
       )}
     >
       <div className="space-y-5">
         <OriginalPreviewCard
-          title={t.sourceTitle}
+          title=""
           file={file}
           url={inputUrl}
           busy={busy}
           emptyText={t.sourceEmpty}
           sourceChooseImage={t.sourceChooseImage}
           sourceStayInTab={t.sourceStayInTab}
+          sourceFocusView={t.sourceFocusView}
+          sourceExitFocus={t.sourceExitFocus}
           sourceBadge={sourceBadge}
           onFileSelection={onFileSelection}
           cropReset={t.cropReset}
@@ -111,6 +117,8 @@ export function SidebarPanel({
           displayCropRect={displayCropRect}
           onCropChange={onCropChange}
           isDark={isDark}
+          focusViewOpen={sourceFocusViewOpen}
+          onFocusViewOpenChange={onSourceFocusViewOpenChange}
           collapsed={collapsedSections.source}
           onToggleCollapsed={() => toggleSection("source")}
         />

@@ -1,4 +1,4 @@
-export type Locale = "zh-CN" | "en-US";
+﻿export type Locale = "zh-CN" | "en-US";
 
 export interface Messages {
   appBadge: string;
@@ -18,8 +18,11 @@ export interface Messages {
   sourceLocalOnly: string;
   sourceChooseImage: string;
   sourceStayInTab: string;
+  sourceFocusView: string;
+  sourceExitFocus: string;
   sourceChartBadge: string;
   sourcePixelArtBadge: string;
+  sourceImageBadge: string;
   gridTitle: string;
   gridSubtitle: string;
   colorSystemTitle: string;
@@ -108,6 +111,7 @@ export interface Messages {
   processingFailed: string;
   errorNonPixelArt: string;
   errorAutoGridAspectMismatch: string;
+  errorAutoGridTooSmall: string;
   errorManualGridRequired: string;
   errorCanvasContextUnavailable: string;
   errorEncodingFailed: string;
@@ -135,10 +139,13 @@ export const messages: Record<Locale, Messages> = {
     sourceSubtitle: "",
     sourcePrivacyNote: "全部处理都在浏览器内完成，不会上传到服务器。",
     sourceLocalOnly: "本地图片",
-    sourceChooseImage: "导入图片",
+    sourceChooseImage: "选择图片",
     sourceStayInTab: "",
+    sourceFocusView: "放大原图",
+    sourceExitFocus: "关闭放大原图",
     sourceChartBadge: "图纸",
     sourcePixelArtBadge: "像素图",
+    sourceImageBadge: "图片",
     gridTitle: "网格策略",
     gridSubtitle: "自动识别像素画，或手动指定网格后先像素化。",
     colorSystemTitle: "色系",
@@ -219,21 +226,18 @@ export const messages: Record<Locale, Messages> = {
     processingFailed: "转换失败。",
     errorNonPixelArt: "这张图不像是可直接识别的网格像素画。请切换到手动网格并先填写宽度和高度。",
     errorAutoGridAspectMismatch: "自动识别出的网格长宽比和输入图差异过大，已默认切换到手动网格。你仍然可以手动切回自动识别。",
+    errorAutoGridTooSmall: "自动识别出的网格尺寸过小，结果很可能不对，已默认切换到手动网格。你可以在已识别区域基础上继续微调。",
     errorManualGridRequired: "手动模式下必须同时填写网格宽度和网格高度。",
     errorCanvasContextUnavailable: "当前环境无法使用 Canvas 2D 上下文。",
     errorEncodingFailed: "输出 PNG 编码失败。",
     chartTitle: (width, height) => `拼豆图纸 - ${width} x ${height}`,
-    chartMetaLine: (colorSystemLabel, totalBeads) => `${colorSystemLabel} · ${totalBeads} 颗拼豆`,
+    chartMetaLine: (colorSystemLabel, totalBeads) => `${colorSystemLabel} · ${totalBeads} 颗豆豆`,
     detectionMode: {
       "raw-pixel-art": "原始像素画",
       "detected-gridlines": "检测到分隔线网格",
       "detected-blocks": "检测到连续色块网格",
       "detected-gapped-grid": "检测到带缝隙网格",
       "converted-from-image": "普通图片转像素图",
-      "raw-pixel-art+name-hint": "原始像素画 + 文件名提示校正",
-      "detected-gridlines+name-hint": "分隔线网格 + 文件名提示校正",
-      "detected-blocks+name-hint": "连续色块网格 + 文件名提示校正",
-      "detected-gapped-grid+name-hint": "带缝隙网格 + 文件名提示校正",
     },
   },
   "en-US": {
@@ -254,8 +258,11 @@ export const messages: Record<Locale, Messages> = {
     sourceLocalOnly: "Local image",
     sourceChooseImage: "Import image",
     sourceStayInTab: "",
+    sourceFocusView: "????",
+    sourceExitFocus: "??????",
     sourceChartBadge: "Chart",
     sourcePixelArtBadge: "Pixel Art",
+    sourceImageBadge: "Image",
     gridTitle: "Grid Strategy",
     gridSubtitle: "Auto-detect pixel art, or provide a manual grid and pixelate first.",
     colorSystemTitle: "Color System",
@@ -340,6 +347,7 @@ export const messages: Record<Locale, Messages> = {
     processingFailed: "Conversion failed.",
     errorNonPixelArt: "This image does not look like grid-based pixel art. Switch to Manual Grid and provide width and height first.",
     errorAutoGridAspectMismatch: "The auto-detected grid ratio differs too much from the input image, so the app switched to Manual Grid by default. You can still switch back to Auto Detect.",
+    errorAutoGridTooSmall: "The auto-detected grid is too small to trust, so the app switched to Manual Grid by default. You can continue from the detected board area.",
     errorManualGridRequired: "Manual mode requires both grid width and grid height.",
     errorCanvasContextUnavailable: "Canvas 2D context is not available in this environment.",
     errorEncodingFailed: "Failed to encode the output PNG.",
@@ -351,10 +359,6 @@ export const messages: Record<Locale, Messages> = {
       "detected-blocks": "Detected block grid",
       "detected-gapped-grid": "Detected gapped grid",
       "converted-from-image": "Converted from image",
-      "raw-pixel-art+name-hint": "Raw pixel art + filename hint",
-      "detected-gridlines+name-hint": "Gridline chart + filename hint",
-      "detected-blocks+name-hint": "Block grid + filename hint",
-      "detected-gapped-grid+name-hint": "Gapped grid + filename hint",
     },
   },
 };
@@ -362,3 +366,4 @@ export const messages: Record<Locale, Messages> = {
 export function getMessages(locale: Locale) {
   return messages[locale];
 }
+

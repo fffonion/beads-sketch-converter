@@ -6,6 +6,7 @@ pub(crate) struct Detection {
     pub(crate) bottom: usize,
     pub(crate) grid_width: usize,
     pub(crate) grid_height: usize,
+    pub(crate) confidence: f32,
 }
 
 #[derive(Clone, Copy)]

@@ -76,6 +76,7 @@ export function PixelEditorPanel({
   onPreferredModeChange,
   resultUrl,
   resultFileName,
+  resultReady = true,
   originalUniqueColors,
   reducedUniqueColors,
   disabledResultLabels,
@@ -139,6 +140,7 @@ export function PixelEditorPanel({
   onPreferredModeChange?: (mode: EditorPanelMode) => void;
   resultUrl: string;
   resultFileName: string;
+  resultReady?: boolean;
   originalUniqueColors: number;
   reducedUniqueColors: number;
   disabledResultLabels: string[];
@@ -307,16 +309,29 @@ export function PixelEditorPanel({
             </Tabs.Trigger>
           ))}
         </Tabs.List>
-        <a
-          className={clsx(
-            "shrink-0 rounded-t-[10px] px-4 py-2 text-sm font-semibold transition",
-            theme.primaryButton,
-          )}
-          href={resultUrl}
-          download={resultFileName}
-        >
-          {t.downloadPng}
-        </a>
+        {resultReady ? (
+          <a
+            className={clsx(
+              "shrink-0 rounded-t-[10px] px-4 py-2 text-sm font-semibold transition",
+              theme.primaryButton,
+            )}
+            href={resultUrl}
+            download={resultFileName}
+          >
+            {t.downloadPng}
+          </a>
+        ) : (
+          <button
+            className={clsx(
+              "shrink-0 rounded-t-[10px] px-4 py-2 text-sm font-semibold transition",
+              theme.disabledButton,
+            )}
+            disabled
+            type="button"
+          >
+            {t.downloadPng}
+          </button>
+        )}
       </div>
 
       <section
@@ -339,7 +354,7 @@ export function PixelEditorPanel({
                   />
                 ))}
                 <div className={clsx("hidden h-px xl:block", theme.divider)} />
-                <div className="flex basis-full gap-2 xl:contents">
+                <div className="flex flex-wrap gap-2 xl:contents">
                   <ToolIconButton
                     active={false}
                     disabled={!canUndo}
@@ -546,6 +561,31 @@ function PindouModePanel({
     square: t.pindouBeadShapeSquare ?? "方块",
     circle: t.pindouBeadShapeCircle ?? "圆圈",
   };
+  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.innerWidth > window.innerHeight;
+  });
+
+  useEffect(() => {
+    if (!focusOnly) {
+      return;
+    }
+
+    function syncLandscapeViewport() {
+      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
+    }
+
+    syncLandscapeViewport();
+    window.addEventListener("resize", syncLandscapeViewport);
+    return () => {
+      window.removeEventListener("resize", syncLandscapeViewport);
+    };
+  }, [focusOnly]);
+
+  const useLandscapeColorRail = isLandscapeViewport;
+  const focusColorRailWidth = 220;
 
   return (
     <section
@@ -742,36 +782,88 @@ function PindouModePanel({
         </div>
       )}
 
-        <CanvasEditorStage
-          cells={cells}
-          gridWidth={gridWidth}
-          gridHeight={gridHeight}
-          emptyPixelLabel={t.emptyPixel}
-          inputUrl={null}
-          overlayCropRect={null}
-          overlayEnabled={false}
-        isDark={isDark}
-        stageMode="pindou"
-        focusedLabel={focusedSketchLabel}
-        onFocusLabelChange={onFocusedSketchLabelChange}
-        paintActiveRef={paintActiveRef}
-        focusOnly={focusOnly}
-        flipHorizontal={pindouFlipHorizontal}
-        showPindouLabels={pindouShowLabels}
-        pindouBeadShape={pindouBeadShape}
-        pindouBoardTheme={pindouBoardTheme}
-        pindouZoom={pindouZoom}
-        onPindouZoomChange={onPindouZoomChange}
-        busy={busy}
-      />
-
       <div
         className={clsx(
-          "flex w-full min-w-0 self-stretch flex-wrap gap-2 overflow-auto pr-1",
-          focusOnly ? "mt-2" : "mt-4",
-          focusOnly ? "max-h-[168px] shrink-0 justify-center" : "max-h-[220px]",
+          "relative min-h-0 min-w-0 flex-1",
+          useLandscapeColorRail ? "pt-2" : "",
         )}
       >
+        {useLandscapeColorRail ? (
+          <div
+            className={clsx(
+              "absolute bottom-3 left-3 top-3 z-20 overflow-hidden rounded-[10px] border p-2 shadow-sm backdrop-blur",
+              theme.panel,
+            )}
+            style={{ width: `${focusColorRailWidth}px` }}
+          >
+            <div className="grid h-full grid-cols-2 content-start gap-2 overflow-y-auto pr-1">
+              {pindouColors.map((color) => {
+                const active = focusedSketchLabel === color.label;
+                return (
+                  <button
+                    key={color.label}
+                    className={clsx(
+                      "flex min-w-0 items-center gap-2 rounded-md border px-2 py-2 transition-colors",
+                      active ? theme.controlButtonActive : theme.pill,
+                    )}
+                    onClick={() => onFocusedSketchLabelChange(active ? null : color.label)}
+                    type="button"
+                    title={color.label}
+                  >
+                    <span
+                      className="h-4 w-4 shrink-0 rounded-full border border-black/10"
+                      style={{ backgroundColor: color.hex }}
+                    />
+                    <span className="min-w-0 truncate text-xs font-semibold">
+                      {color.label}
+                    </span>
+                    <span className={clsx("ml-auto shrink-0 text-[11px]", active ? "" : theme.cardMuted)}>
+                      {color.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        <div
+          className="flex h-full min-h-0 min-w-0"
+          style={useLandscapeColorRail ? { paddingLeft: `${focusColorRailWidth + 12}px` } : undefined}
+        >
+          <CanvasEditorStage
+            cells={cells}
+            gridWidth={gridWidth}
+            gridHeight={gridHeight}
+            emptyPixelLabel={t.emptyPixel}
+            inputUrl={null}
+            overlayCropRect={null}
+            overlayEnabled={false}
+            isDark={isDark}
+            stageMode="pindou"
+            focusedLabel={focusedSketchLabel}
+            onFocusLabelChange={onFocusedSketchLabelChange}
+            paintActiveRef={paintActiveRef}
+            focusOnly={focusOnly}
+            flipHorizontal={pindouFlipHorizontal}
+            showPindouLabels={pindouShowLabels}
+            pindouBeadShape={pindouBeadShape}
+            pindouBoardTheme={pindouBoardTheme}
+            pindouZoom={pindouZoom}
+            onPindouZoomChange={onPindouZoomChange}
+            busy={busy}
+          />
+        </div>
+      </div>
+
+      {!useLandscapeColorRail ? (
+        <div
+          className={clsx(
+            "flex w-full min-w-0 self-stretch flex-wrap gap-2 overflow-auto pr-1",
+            focusOnly ? "mt-2" : "mt-4",
+            focusOnly ? "max-h-[168px] shrink-0 justify-center" : "max-h-[220px]",
+          )}
+        >
         {pindouColors.map((color) => {
           const active = focusedSketchLabel === color.label;
           return (
@@ -796,7 +888,8 @@ function PindouModePanel({
             </button>
           );
         })}
-      </div>
+        </div>
+      ) : null}
       {!focusOnly ? <p className={clsx("mt-3 text-xs", theme.cardMuted)}>{t.pindouModeHint}</p> : null}
     </section>
   );

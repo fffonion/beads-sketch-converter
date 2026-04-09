@@ -7,7 +7,7 @@ use std::slice;
 use detector::{detect_chart_inner, detect_pixel_art_inner};
 use types::Detection;
 
-static mut RESULT: [i32; 7] = [0; 7];
+static mut RESULT: [i32; 8] = [0; 8];
 
 #[unsafe(no_mangle)]
 pub extern "C" fn alloc(size: usize) -> *mut u8 {
@@ -74,8 +74,9 @@ fn write_result(result: Option<Detection>) {
             RESULT[4] = detection.bottom as i32;
             RESULT[5] = detection.grid_width as i32;
             RESULT[6] = detection.grid_height as i32;
+            RESULT[7] = (detection.confidence * 1000.0).round() as i32;
         } else {
-            RESULT = [0; 7];
+            RESULT = [0; 8];
         }
     }
 }

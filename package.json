@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "bun run build:detecter && vite",
     "build:detecter": "node ./scripts/build-detecter.mjs",
-    "build": "tsc -b && vite build",
+    "build": "bun run build:detecter && tsc -b && vite build",
     "preview": "vite preview",
     "test": "bun test"
   },

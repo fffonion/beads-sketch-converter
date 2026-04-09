@@ -104,6 +104,10 @@ export function CanvasEditorStage({
   const [cursorPreview, setCursorPreview] = useState({ x: 0, y: 0, visible: false });
   const stageInset = typeof window !== "undefined" && window.innerWidth < 640 ? 16 : 24;
 
+  function syncAltPickState(nextActive: boolean) {
+    setAltPickActive((previous) => (previous === nextActive ? previous : nextActive));
+  }
+
   useEffect(() => {
     function syncViewport() {
       if (!stageViewportRef.current) {
@@ -187,7 +191,7 @@ export function CanvasEditorStage({
   const hoveredCell = hoveredCellIndex === null ? null : cells[hoveredCellIndex] ?? null;
   const pickPreviewHex = hoveredCell?.hex ?? (isDark ? "#1C1712" : "#F7F4EE");
   const pickPreviewLabel = hoveredCell?.label ?? emptyPixelLabel;
-  const pickPreviewTextColor = chooseCursorTextColor(pickPreviewHex);
+  const pickPreviewTextColor = isDark ? "#FFFFFF" : "#111111";
 
   useEffect(() => {
     panOffsetRef.current = panOffset;
@@ -226,33 +230,52 @@ export function CanvasEditorStage({
       }
 
       if (event.key === "Alt") {
-        setAltPickActive(true);
+        syncAltPickState(true);
       }
     }
 
     function handleKeyUp(event: KeyboardEvent) {
       if (event.code === "Space") {
         setSpacePanActive(false);
-        return;
       }
 
-      if (event.key === "Alt") {
-        setAltPickActive(false);
+      if (!event.altKey || event.key === "Alt" || event.code === "AltLeft" || event.code === "AltRight") {
+        syncAltPickState(false);
       }
     }
 
     function handleBlur() {
       setSpacePanActive(false);
-      setAltPickActive(false);
+      syncAltPickState(false);
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState !== "visible") {
+        syncAltPickState(false);
+      }
+    }
+
+    function handlePointerModifierSync(event: PointerEvent) {
+      syncAltPickState(event.altKey);
     }
 
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", handleBlur);
+    window.addEventListener("pointerdown", handlePointerModifierSync, true);
+    window.addEventListener("pointermove", handlePointerModifierSync, true);
+    window.addEventListener("pointerup", handlePointerModifierSync, true);
+    window.addEventListener("pointercancel", handlePointerModifierSync, true);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("pointerdown", handlePointerModifierSync, true);
+      window.removeEventListener("pointermove", handlePointerModifierSync, true);
+      window.removeEventListener("pointerup", handlePointerModifierSync, true);
+      window.removeEventListener("pointercancel", handlePointerModifierSync, true);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [stageMode, effectiveEditTool]);
 
@@ -702,8 +725,12 @@ export function CanvasEditorStage({
           onStageEngage?.();
         }
       }}
-      onPointerEnter={updateHoveredState}
+      onPointerEnter={(event) => {
+        syncAltPickState(event.altKey);
+        updateHoveredState(event);
+      }}
       onPointerMove={(event) => {
+        syncAltPickState(event.altKey);
         updateHoveredState(event);
         if (stageMode !== "edit" || effectivePanActive || effectiveEditTool === "zoom") {
           return;
@@ -713,6 +740,7 @@ export function CanvasEditorStage({
         }
       }}
       onPointerDown={(event) => {
+        syncAltPickState(event.altKey);
         if (stageMode === "edit") {
           event.currentTarget.focus();
           onStageEngage?.();
@@ -744,6 +772,7 @@ export function CanvasEditorStage({
         applyCellAt(cellIndex);
       }}
       onPointerUp={(event) => {
+        syncAltPickState(event.altKey);
         if (drawPointerIdRef.current === event.pointerId) {
           drawPointerIdRef.current = null;
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -752,6 +781,7 @@ export function CanvasEditorStage({
         }
       }}
       onPointerCancel={(event) => {
+        syncAltPickState(event.altKey);
         if (drawPointerIdRef.current === event.pointerId) {
           drawPointerIdRef.current = null;
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {

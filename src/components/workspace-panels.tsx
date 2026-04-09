@@ -200,15 +200,15 @@ export function WorkspacePanels({
   }
 
   return (
-    <section className="flex min-h-[78vh] min-w-0 flex-col overflow-visible sm:min-h-[72vh] xl:min-h-0 xl:overflow-hidden">
-      {result ? (
+    <section className="flex min-h-[78vh] min-w-0 flex-col overflow-visible sm:min-h-[72vh] lg:min-h-0 lg:overflow-hidden">
+      {result || busy ? (
         <PixelEditorPanel
           t={t}
           isDark={isDark}
           busy={busy}
-          cells={currentCells}
-          gridWidth={result.gridWidth}
-          gridHeight={result.gridHeight}
+          cells={result ? currentCells : []}
+          gridWidth={result?.gridWidth ?? 33}
+          gridHeight={result?.gridHeight ?? 33}
           inputUrl={inputUrl}
           overlayCropRect={cropRect}
           overlayEnabled={overlayEnabled}
@@ -240,10 +240,11 @@ export function WorkspacePanels({
           preferredMode={preferredEditorMode}
           preferredModeSeed={preferredEditorModeSeed}
           onPreferredModeChange={onPreferredEditorModeChange}
-          resultUrl={result.url}
-          resultFileName={result.fileName}
-          originalUniqueColors={result.originalUniqueColors}
-          reducedUniqueColors={result.reducedUniqueColors}
+          resultUrl={result?.url ?? ""}
+          resultFileName={result?.fileName ?? ""}
+          resultReady={Boolean(result)}
+          originalUniqueColors={result?.originalUniqueColors ?? 0}
+          reducedUniqueColors={result?.reducedUniqueColors ?? 0}
           disabledResultLabels={disabledResultLabels}
           matchedColors={matchedColorsBase}
           matchedCoveragePercent={matchedCoveragePercent}
