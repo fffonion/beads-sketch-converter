@@ -63,6 +63,28 @@ export function WorkspacePanels({
   onPindouTimerReset,
   pindouZoom,
   onPindouZoomChange,
+  chartExportTitle,
+  onChartExportTitleChange,
+  chartWatermarkText,
+  onChartWatermarkTextChange,
+  chartWatermarkImageDataUrl,
+  chartWatermarkImageName,
+  onChartWatermarkImageFile,
+  onChartWatermarkImageClear,
+  chartSaveMetadata,
+  onChartSaveMetadataChange,
+  chartIncludeGuides,
+  onChartIncludeGuidesChange,
+  chartIncludeBoardPattern,
+  onChartIncludeBoardPatternChange,
+  chartBoardTheme,
+  onChartBoardThemeChange,
+  chartIncludeLegend,
+  onChartIncludeLegendChange,
+  chartPreviewUrl,
+  chartPreviewBusy,
+  onSaveChart,
+  saveBusy,
 }: {
   t: Messages;
   inputUrl: string | null;
@@ -123,6 +145,28 @@ export function WorkspacePanels({
   onPindouTimerReset: () => void;
   pindouZoom: number;
   onPindouZoomChange: (value: number) => void;
+  chartExportTitle: string;
+  onChartExportTitleChange: (value: string) => void;
+  chartWatermarkText: string;
+  onChartWatermarkTextChange: (value: string) => void;
+  chartWatermarkImageDataUrl: string | null;
+  chartWatermarkImageName: string;
+  onChartWatermarkImageFile: (file: File | null) => void | Promise<void>;
+  onChartWatermarkImageClear: () => void;
+  chartSaveMetadata: boolean;
+  onChartSaveMetadataChange: (value: boolean) => void;
+  chartIncludeGuides: boolean;
+  onChartIncludeGuidesChange: (value: boolean) => void;
+  chartIncludeBoardPattern: boolean;
+  onChartIncludeBoardPatternChange: (value: boolean) => void;
+  chartBoardTheme: PindouBoardTheme;
+  onChartBoardThemeChange: (value: PindouBoardTheme) => void;
+  chartIncludeLegend: boolean;
+  onChartIncludeLegendChange: (value: boolean) => void;
+  chartPreviewUrl: string | null;
+  chartPreviewBusy: boolean;
+  onSaveChart: () => void | Promise<void>;
+  saveBusy: boolean;
 }) {
   const theme = getThemeClasses(isDark);
 
@@ -169,8 +213,6 @@ export function WorkspacePanels({
             preferredMode={preferredEditorMode}
             preferredModeSeed={preferredEditorModeSeed}
             onPreferredModeChange={onPreferredEditorModeChange}
-            resultUrl={result.url}
-            resultFileName={result.fileName}
             originalUniqueColors={result.originalUniqueColors}
             reducedUniqueColors={result.reducedUniqueColors}
             disabledResultLabels={disabledResultLabels}
@@ -193,6 +235,28 @@ export function WorkspacePanels({
             onPindouTimerReset={onPindouTimerReset}
             pindouZoom={pindouZoom}
             onPindouZoomChange={onPindouZoomChange}
+            chartExportTitle={chartExportTitle}
+            onChartExportTitleChange={onChartExportTitleChange}
+            chartWatermarkText={chartWatermarkText}
+            onChartWatermarkTextChange={onChartWatermarkTextChange}
+            chartWatermarkImageDataUrl={chartWatermarkImageDataUrl}
+            chartWatermarkImageName={chartWatermarkImageName}
+            onChartWatermarkImageFile={onChartWatermarkImageFile}
+            onChartWatermarkImageClear={onChartWatermarkImageClear}
+            chartSaveMetadata={chartSaveMetadata}
+            onChartSaveMetadataChange={onChartSaveMetadataChange}
+            chartIncludeGuides={chartIncludeGuides}
+            onChartIncludeGuidesChange={onChartIncludeGuidesChange}
+            chartIncludeBoardPattern={chartIncludeBoardPattern}
+            onChartIncludeBoardPatternChange={onChartIncludeBoardPatternChange}
+            chartBoardTheme={chartBoardTheme}
+            onChartBoardThemeChange={onChartBoardThemeChange}
+            chartIncludeLegend={chartIncludeLegend}
+            onChartIncludeLegendChange={onChartIncludeLegendChange}
+            chartPreviewUrl={chartPreviewUrl}
+            chartPreviewBusy={chartPreviewBusy}
+            onSaveChart={onSaveChart}
+            saveBusy={saveBusy}
           />
         ) : null}
       </section>
@@ -240,8 +304,6 @@ export function WorkspacePanels({
           preferredMode={preferredEditorMode}
           preferredModeSeed={preferredEditorModeSeed}
           onPreferredModeChange={onPreferredEditorModeChange}
-          resultUrl={result?.url ?? ""}
-          resultFileName={result?.fileName ?? ""}
           resultReady={Boolean(result)}
           originalUniqueColors={result?.originalUniqueColors ?? 0}
           reducedUniqueColors={result?.reducedUniqueColors ?? 0}
@@ -265,6 +327,28 @@ export function WorkspacePanels({
           onPindouTimerReset={onPindouTimerReset}
           pindouZoom={pindouZoom}
           onPindouZoomChange={onPindouZoomChange}
+          chartExportTitle={chartExportTitle}
+          onChartExportTitleChange={onChartExportTitleChange}
+          chartWatermarkText={chartWatermarkText}
+          onChartWatermarkTextChange={onChartWatermarkTextChange}
+          chartWatermarkImageDataUrl={chartWatermarkImageDataUrl}
+          chartWatermarkImageName={chartWatermarkImageName}
+          onChartWatermarkImageFile={onChartWatermarkImageFile}
+          onChartWatermarkImageClear={onChartWatermarkImageClear}
+          chartSaveMetadata={chartSaveMetadata}
+          onChartSaveMetadataChange={onChartSaveMetadataChange}
+          chartIncludeGuides={chartIncludeGuides}
+          onChartIncludeGuidesChange={onChartIncludeGuidesChange}
+          chartIncludeBoardPattern={chartIncludeBoardPattern}
+          onChartIncludeBoardPatternChange={onChartIncludeBoardPatternChange}
+          chartBoardTheme={chartBoardTheme}
+          onChartBoardThemeChange={onChartBoardThemeChange}
+          chartIncludeLegend={chartIncludeLegend}
+          onChartIncludeLegendChange={onChartIncludeLegendChange}
+          chartPreviewUrl={chartPreviewUrl}
+          chartPreviewBusy={chartPreviewBusy}
+          onSaveChart={onSaveChart}
+          saveBusy={saveBusy}
         />
       ) : (
         <section

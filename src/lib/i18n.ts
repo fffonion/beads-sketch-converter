@@ -60,6 +60,24 @@ export interface Messages {
   editorSubtitle: string;
   editorTabEdit: string;
   editorTabPindou: string;
+  editorTabChartSettings: string;
+  chartSettingsChartTitle: string;
+  chartSettingsChartTitlePlaceholder: string;
+  chartSettingsPreview: string;
+  chartSettingsPreviewEmpty: string;
+  chartSettingsWatermarkText: string;
+  chartSettingsWatermarkImage: string;
+  chartSettingsChooseWatermarkImage: string;
+  chartSettingsClearWatermarkImage: string;
+  chartSettingsNoWatermarkImage: string;
+  chartSettingsSaveMetadata: string;
+  chartSettingsSaveMetadataDescription: string;
+  chartSettingsIncludeGuides: string;
+  chartSettingsIncludeGuidesDescription: string;
+  chartSettingsIncludeBoardPattern: string;
+  chartSettingsIncludeBoardPatternDescription: string;
+  chartSettingsIncludeLegend: string;
+  chartSettingsIncludeLegendDescription: string;
   pindouModeHint: string;
   pindouFlipHorizontal?: string;
   pindouBeadShapeLabel?: string;
@@ -178,11 +196,29 @@ export const messages: Record<Locale, Messages> = {
     previewEmpty: "生成完成后，这里会显示图纸预览。",
     resultTitle: "结果",
     resultSubtitle: "浅灰分隔线，黑色外框，底部颜色统计。",
-    downloadPng: "保存图纸",
+    downloadPng: "导出图纸",
     editorTitle: "像素编辑",
     editorSubtitle: "点击格子可改色，或删除、补上任意像素。",
     editorTabEdit: "像素编辑",
     editorTabPindou: "拼豆模式",
+    editorTabChartSettings: "导出设置",
+    chartSettingsChartTitle: "图纸标题",
+    chartSettingsChartTitlePlaceholder: "拼豆图纸",
+    chartSettingsPreview: "预览图",
+    chartSettingsPreviewEmpty: "设置图纸后，这里会显示导出预览。",
+    chartSettingsWatermarkText: "水印文字",
+    chartSettingsWatermarkImage: "水印图片",
+    chartSettingsChooseWatermarkImage: "选择水印图片",
+    chartSettingsClearWatermarkImage: "移除水印图片",
+    chartSettingsNoWatermarkImage: "未选择水印图片",
+    chartSettingsSaveMetadata: "保存元数据",
+    chartSettingsSaveMetadataDescription: "开启后会把图纸数据写进 PNG，方便之后重新导入。",
+    chartSettingsIncludeGuides: "添加参考线",
+    chartSettingsIncludeGuidesDescription: "关闭后会同时隐藏 5/10 格参考线和坐标数字。",
+    chartSettingsIncludeBoardPattern: "添加底纹",
+    chartSettingsIncludeBoardPatternDescription: "导出图纸时使用拼豆模式同款底纹。",
+    chartSettingsIncludeLegend: "添加色卡",
+    chartSettingsIncludeLegendDescription: "控制图纸底部的颜色详情和数量统计。",
     pindouModeHint: "点击颜色或图纸格子，可单独高亮一种颜色。",
     pindouFlipHorizontal: "水平翻转",
     pindouBeadShapeLabel: "豆子形状",
@@ -295,11 +331,29 @@ export const messages: Record<Locale, Messages> = {
     previewEmpty: "The generated chart preview will appear here.",
     resultTitle: "Result",
     resultSubtitle: "Light gray separators, black frame, bottom legend.",
-    downloadPng: "Save Chart",
+    downloadPng: "Export Chart",
     editorTitle: "Pixel Editor",
     editorSubtitle: "Click cells to recolor them, or remove and add any pixel.",
     editorTabEdit: "Pixel Edit",
     editorTabPindou: "Pindou Mode",
+    editorTabChartSettings: "Export Settings",
+    chartSettingsChartTitle: "Chart Title",
+    chartSettingsChartTitlePlaceholder: "Bead Chart",
+    chartSettingsPreview: "Preview",
+    chartSettingsPreviewEmpty: "The exported chart preview appears here.",
+    chartSettingsWatermarkText: "Watermark Text",
+    chartSettingsWatermarkImage: "Watermark Image",
+    chartSettingsChooseWatermarkImage: "Choose Watermark Image",
+    chartSettingsClearWatermarkImage: "Remove Watermark Image",
+    chartSettingsNoWatermarkImage: "No watermark image selected",
+    chartSettingsSaveMetadata: "Save Metadata",
+    chartSettingsSaveMetadataDescription: "Embed chart data into the PNG so it can be imported directly later.",
+    chartSettingsIncludeGuides: "Show Guides",
+    chartSettingsIncludeGuidesDescription: "Turning this off also hides axis labels and 5/10-grid guide lines.",
+    chartSettingsIncludeBoardPattern: "Show Board Pattern",
+    chartSettingsIncludeBoardPatternDescription: "Use the same board tint style as Pindou mode when exporting.",
+    chartSettingsIncludeLegend: "Show Legend",
+    chartSettingsIncludeLegendDescription: "Controls the color list and counts at the bottom of the exported chart.",
     pindouModeHint: "Click a color or a grid cell to highlight a single color.",
     pindouFlipHorizontal: "Flip Horizontally",
     pindouBeadShapeLabel: "Bead Shape",

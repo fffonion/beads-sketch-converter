@@ -5,6 +5,7 @@ import {
   detectChartBoardWithWasm,
   type WasmAutoDetection,
 } from "./detecter";
+import { getPindouBoardThemeShades, type PindouBoardTheme } from "./pindou-board-theme";
 
 const GRID_SEPARATOR_COLOR = "#C9C4BC";
 const BOARD_FRAME_COLOR = "#111111";
@@ -78,6 +79,17 @@ export interface ProcessMessages {
   encodingFailed: string;
   chartTitle: (width: number, height: number) => string;
   chartMetaLine: (colorSystemLabel: string, totalBeads: number) => string;
+}
+
+export interface ChartExportSettings {
+  chartTitle?: string;
+  watermarkText?: string;
+  watermarkImageDataUrl?: string | null;
+  saveMetadata?: boolean;
+  includeGuides?: boolean;
+  includeBoardPattern?: boolean;
+  boardTheme?: PindouBoardTheme;
+  includeLegend?: boolean;
 }
 
 export interface ColorCount {
@@ -499,7 +511,7 @@ export async function processImageFile(
   );
   const colors = summarizeCells(normalizedCells, paletteDefinition);
   const totalBeads = colors.reduce((sum, color) => sum + color.count, 0);
-  const canvas = renderChart(
+  const canvas = await renderChart(
     normalizedCells,
     colors,
     gridWidth,
@@ -508,6 +520,7 @@ export async function processImageFile(
     processMessages.chartTitle(gridWidth, gridHeight),
     processMessages.chartMetaLine(paletteDefinition.label, totalBeads),
     processMessages.canvasContextUnavailable,
+    undefined,
   );
   const blob = await buildChartBlobWithMetadata(
     canvas,
@@ -584,6 +597,7 @@ export async function exportChartFromCells(options: {
   fileName: string;
   colorSystemId?: string;
   cellSize?: number;
+  chartSettings?: ChartExportSettings;
   messages?: Partial<ProcessMessages>;
 }) {
   const processMessages = {
@@ -599,15 +613,22 @@ export async function exportChartFromCells(options: {
   const normalizedCells = options.cells.map((cell) => normalizeEditableCell(cell));
   const colors = summarizeCells(normalizedCells, paletteDefinition);
   const totalBeads = colors.reduce((sum, color) => sum + color.count, 0);
-  const canvas = renderChart(
+  const fallbackTitle = processMessages.chartTitle(options.gridWidth, options.gridHeight);
+  const canvas = await renderChart(
     normalizedCells,
     colors,
     options.gridWidth,
     options.gridHeight,
     chooseCellSize(options.gridWidth, options.gridHeight, options.cellSize),
-    processMessages.chartTitle(options.gridWidth, options.gridHeight),
+    buildExportChartTitle(
+      options.chartSettings?.chartTitle,
+      options.gridWidth,
+      options.gridHeight,
+      fallbackTitle,
+    ),
     processMessages.chartMetaLine(paletteDefinition.label, totalBeads),
     processMessages.canvasContextUnavailable,
+    options.chartSettings,
   );
   const blob = await buildChartBlobWithMetadata(
     canvas,
@@ -620,6 +641,7 @@ export async function exportChartFromCells(options: {
       preferredEditorMode: "pindou",
     },
     processMessages.encodingFailed,
+    options.chartSettings?.saveMetadata ?? true,
   );
   return {
     blob,
@@ -641,8 +663,12 @@ async function buildChartBlobWithMetadata(
     preferredEditorMode: "edit" | "pindou";
   },
   encodingFailedMessage: string,
+  includeMetadata = true,
 ) {
   const baseBlob = await canvasToBlob(canvas, encodingFailedMessage);
+  if (!includeMetadata) {
+    return baseBlob;
+  }
   const metadata = buildEmbeddedChartMetadata(metadataInput);
   return embedChartMetadataInPngBlob(baseBlob, metadata);
 }
@@ -934,6 +960,20 @@ function defaultOutputName(fileName: string, gridWidth: number, gridHeight: numb
   void gridWidth;
   void gridHeight;
   return `【拼豆豆】${stem}.png`;
+}
+
+function buildExportChartTitle(
+  customTitle: string | undefined,
+  gridWidth: number,
+  gridHeight: number,
+  fallbackTitle: string,
+) {
+  const trimmedTitle = customTitle?.trim();
+  if (!trimmedTitle) {
+    return fallbackTitle;
+  }
+
+  return `${trimmedTitle} - ${gridWidth} x ${gridHeight}`;
 }
 
 async function loadFileAsRaster(
@@ -2008,7 +2048,60 @@ function drawExportAxisLabels(
   context.restore();
 }
 
-function renderChart(
+function drawExportBoardPattern(
+  context: CanvasRenderingContext2D,
+  boardX: number,
+  boardY: number,
+  gridWidth: number,
+  gridHeight: number,
+  cellSize: number,
+  cellGap: number,
+  boardTheme: PindouBoardTheme,
+) {
+  const shades = getPindouBoardThemeShades(boardTheme);
+  const pattern = [
+    [0, 1, 1, 0],
+    [1, 2, 2, 1],
+    [1, 2, 2, 1],
+    [0, 1, 1, 0],
+  ] as const;
+  const blockSpan = 5;
+
+  context.fillStyle = shades[1];
+  context.fillRect(boardX, boardY, gridWidth * cellSize, gridHeight * cellSize);
+
+  for (let blockRow = 0; blockRow * blockSpan < gridHeight; blockRow += 1) {
+    for (let blockColumn = 0; blockColumn * blockSpan < gridWidth; blockColumn += 1) {
+      const startColumn = blockColumn * blockSpan;
+      const startRow = blockRow * blockSpan;
+      const endColumn = Math.min(gridWidth, startColumn + blockSpan);
+      const endRow = Math.min(gridHeight, startRow + blockSpan);
+      const x = boardX + startColumn * cellSize;
+      const y = boardY + startRow * cellSize;
+      const width = (endColumn - startColumn) * cellSize - cellGap;
+      const height = (endRow - startRow) * cellSize - cellGap;
+      context.fillStyle = shades[pattern[blockRow % 4][blockColumn % 4]];
+      context.fillRect(x, y, width, height);
+    }
+  }
+}
+
+function getExportBoardPatternColor(
+  boardTheme: PindouBoardTheme,
+  column: number,
+  row: number,
+) {
+  const shades = getPindouBoardThemeShades(boardTheme);
+  const pattern = [
+    [0, 1, 1, 0],
+    [1, 2, 2, 1],
+    [1, 2, 2, 1],
+    [0, 1, 1, 0],
+  ] as const;
+  return shades[pattern[Math.floor(row / 5) % 4][Math.floor(column / 5) % 4]];
+}
+
+async function renderChart(
   cells: EditableCell[],
   colors: ColorCount[],
   gridWidth: number,
@@ -2017,10 +2110,15 @@ function renderChart(
   title: string,
   metaLine: string,
   canvasContextUnavailableMessage: string,
+  chartSettings?: ChartExportSettings,
 ) {
+  const includeGuides = chartSettings?.includeGuides ?? true;
+  const includeLegend = chartSettings?.includeLegend ?? true;
+  const includeBoardPattern = chartSettings?.includeBoardPattern ?? false;
+  const boardTheme = chartSettings?.boardTheme ?? "gray";
   const cellGap = Math.max(1, Math.floor(cellSize / 18));
   const frame = Math.max(4, Math.floor(cellSize / 7));
-  const axisGutter = Math.max(26, Math.floor(cellSize * 0.92));
+  const axisGutter = includeGuides ? Math.max(26, Math.floor(cellSize * 0.92)) : 0;
   const boardWidth = gridWidth * cellSize;
   const boardHeight = gridHeight * cellSize;
   const boardBlockWidth = boardWidth + frame * 2 + axisGutter;
@@ -2052,6 +2150,8 @@ function renderChart(
   const legendRows = Math.max(1, Math.ceil(colors.length / itemsPerRow));
   const legendHeight =
     legendRows * legendTileHeight + Math.max(0, legendRows - 1) * legendGap;
+  const legendSectionHeight = includeLegend ? legendHeight : 0;
+  const legendSectionGap = includeLegend ? titleGap : 0;
 
   const canvasWidth = Math.max(
     baseCanvasWidth,
@@ -2065,8 +2165,8 @@ function renderChart(
     metaRowHeight +
     titleGap +
     boardBlockHeight +
-    titleGap +
-    legendHeight +
+    legendSectionGap +
+    legendSectionHeight +
     canvasPadding;
 
   const canvas = document.createElement("canvas");
@@ -2114,13 +2214,31 @@ function renderChart(
   context.fillStyle = BOARD_FRAME_COLOR;
   context.fillRect(boardOuterX, boardOuterY, boardWidth + frame * 2, boardHeight + frame * 2);
 
+  if (includeBoardPattern) {
+    drawExportBoardPattern(
+      context,
+      boardInnerX,
+      boardInnerY,
+      gridWidth,
+      gridHeight,
+      cellSize,
+      cellGap,
+      boardTheme,
+    );
+  }
+
   for (let row = 0; row < gridHeight; row += 1) {
     for (let column = 0; column < gridWidth; column += 1) {
       const index = row * gridWidth + column;
       const x = boardInnerX + column * cellSize;
       const y = boardInnerY + row * cellSize;
       const cell = normalizeEditableCell(cells[index] ?? { label: null, hex: null });
-      const fillRgb: Rgb = cell.hex ? hexToRgb(cell.hex) : [243, 238, 229];
+      const fillRgb: Rgb =
+        cell.hex
+          ? hexToRgb(cell.hex)
+          : includeBoardPattern
+            ? hexToRgb(getExportBoardPatternColor(boardTheme, column, row))
+            : [243, 238, 229];
       context.fillStyle = rgbToCss(fillRgb);
       context.fillRect(x, y, cellSize, cellSize);
       context.strokeStyle = GRID_SEPARATOR_COLOR;
@@ -2129,26 +2247,28 @@ function renderChart(
     }
   }
 
-  drawExportGuideLines(
-    context,
-    boardInnerX,
-    boardInnerY,
-    boardWidth,
-    boardHeight,
-    gridWidth,
-    gridHeight,
-    cellSize,
-  );
-  drawExportAxisLabels(
-    context,
-    boardInnerX,
-    boardInnerY,
-    gridWidth,
-    gridHeight,
-    cellSize,
-    axisGutter,
-    axisLabelFontSize,
-  );
+  if (includeGuides) {
+    drawExportGuideLines(
+      context,
+      boardInnerX,
+      boardInnerY,
+      boardWidth,
+      boardHeight,
+      gridWidth,
+      gridHeight,
+      cellSize,
+    );
+    drawExportAxisLabels(
+      context,
+      boardInnerX,
+      boardInnerY,
+      gridWidth,
+      gridHeight,
+      cellSize,
+      axisGutter,
+      axisLabelFontSize,
+    );
+  }
 
   context.font = buildFont(labelFontSize, true, false);
   for (let row = 0; row < gridHeight; row += 1) {
@@ -2170,49 +2290,135 @@ function renderChart(
     }
   }
 
-  const legendTop = boardBlockY + boardBlockHeight + titleGap;
-  const columnsInLastRow = Math.min(colors.length, itemsPerRow);
-  const legendLeft =
-    (canvasWidth -
-      columnsInLastRow * legendTileWidth -
-      Math.max(0, columnsInLastRow - 1) * legendGap) /
-    2;
+  if (includeLegend) {
+    const legendTop = boardBlockY + boardBlockHeight + titleGap;
+    const columnsInLastRow = Math.min(colors.length, itemsPerRow);
+    const legendLeft =
+      (canvasWidth -
+        columnsInLastRow * legendTileWidth -
+        Math.max(0, columnsInLastRow - 1) * legendGap) /
+      2;
 
-  for (let itemIndex = 0; itemIndex < colors.length; itemIndex += 1) {
-    const item = colors[itemIndex];
-    const row = Math.floor(itemIndex / itemsPerRow);
-    const column = itemIndex % itemsPerRow;
-    const itemX = legendLeft + column * (legendTileWidth + legendGap);
-    const itemY = legendTop + row * (legendTileHeight + legendGap);
+    for (let itemIndex = 0; itemIndex < colors.length; itemIndex += 1) {
+      const item = colors[itemIndex];
+      const row = Math.floor(itemIndex / itemsPerRow);
+      const column = itemIndex % itemsPerRow;
+      const itemX = legendLeft + column * (legendTileWidth + legendGap);
+      const itemY = legendTop + row * (legendTileHeight + legendGap);
 
-    context.beginPath();
-    context.roundRect(itemX, itemY, legendTileWidth, legendSwatchHeight, Math.max(6, Math.floor(cellSize / 5)));
-    context.fillStyle = item.hex;
-    context.fill();
-    context.lineWidth = 2;
-    context.strokeStyle = BOARD_FRAME_COLOR;
-    context.stroke();
+      context.beginPath();
+      context.roundRect(itemX, itemY, legendTileWidth, legendSwatchHeight, Math.max(6, Math.floor(cellSize / 5)));
+      context.fillStyle = item.hex;
+      context.fill();
+      context.lineWidth = 2;
+      context.strokeStyle = BOARD_FRAME_COLOR;
+      context.stroke();
 
-    context.font = buildFont(legendLabelFontSize, true, false);
-    context.lineWidth = 2;
-    const swatchRgb = hexToRgb(item.hex);
-    const textFill = chooseTextColor(swatchRgb);
-    context.strokeStyle = textFill === "#FFFFFF" ? "#111111" : "#FFFFFF";
-    context.fillStyle = textFill;
-    context.strokeText(item.label, itemX + legendTileWidth / 2, itemY + legendSwatchHeight / 2);
-    context.fillText(item.label, itemX + legendTileWidth / 2, itemY + legendSwatchHeight / 2);
+      context.font = buildFont(legendLabelFontSize, true, false);
+      context.lineWidth = 2;
+      const swatchRgb = hexToRgb(item.hex);
+      const textFill = chooseTextColor(swatchRgb);
+      context.strokeStyle = textFill === "#FFFFFF" ? "#111111" : "#FFFFFF";
+      context.fillStyle = textFill;
+      context.strokeText(item.label, itemX + legendTileWidth / 2, itemY + legendSwatchHeight / 2);
+      context.fillText(item.label, itemX + legendTileWidth / 2, itemY + legendSwatchHeight / 2);
 
-    context.font = buildFont(legendCountFontSize, false, false);
-    context.fillStyle = "#2C2C2C";
-    context.strokeStyle = "transparent";
-    context.fillText(
-      String(item.count),
-      itemX + legendTileWidth / 2,
-      itemY + legendSwatchHeight + Math.max(10, Math.floor(cellSize / 5)),
-    );
+      context.font = buildFont(legendCountFontSize, false, false);
+      context.fillStyle = "#2C2C2C";
+      context.strokeStyle = "transparent";
+      context.fillText(
+        String(item.count),
+        itemX + legendTileWidth / 2,
+        itemY + legendSwatchHeight + Math.max(10, Math.floor(cellSize / 5)),
+      );
+    }
   }
 
+  await drawChartWatermark(
+    context,
+    canvasWidth,
+    canvasHeight,
+    canvasPadding,
+    boardBlockY,
+    chartSettings,
+  );
+
   return canvas;
+}
+
+async function drawChartWatermark(
+  context: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  canvasPadding: number,
+  contentTop: number,
+  chartSettings?: ChartExportSettings,
+) {
+  const watermarkText = chartSettings?.watermarkText?.trim() ?? "";
+  const watermarkImageDataUrl = chartSettings?.watermarkImageDataUrl ?? null;
+  if (!watermarkText && !watermarkImageDataUrl) {
+    return;
+  }
+
+  const regionX = canvasPadding;
+  const regionY = contentTop;
+  const regionWidth = Math.max(1, canvasWidth - canvasPadding * 2);
+  const regionHeight = Math.max(1, canvasHeight - contentTop - canvasPadding);
+  const tileWidth = Math.max(180, Math.min(320, Math.floor(regionWidth * 0.24)));
+  const tileHeight = Math.max(84, Math.floor(tileWidth * 0.46));
+  const imageSize = watermarkImageDataUrl ? Math.min(54, Math.floor(tileHeight * 0.56)) : 0;
+  const textFontSize = Math.max(13, Math.floor(tileWidth * 0.11));
+  const textGap = imageSize > 0 && watermarkText ? 12 : 0;
+  const repeatX = Math.max(160, Math.floor(tileWidth * 1.2));
+  const repeatY = Math.max(120, Math.floor(tileHeight * 1.4));
+  const image = watermarkImageDataUrl ? await loadChartDecorationImage(watermarkImageDataUrl) : null;
+  const textWidth = watermarkText ? estimateTextWidth(textFontSize, true, false, watermarkText) : 0;
+
+  context.save();
+  roundRectPath(context, regionX, regionY, regionWidth, regionHeight, Math.max(0, Math.floor(tileHeight * 0.08)));
+  context.clip();
+  context.translate(regionX + regionWidth / 2, regionY + regionHeight / 2);
+  context.rotate((-28 * Math.PI) / 180);
+  context.globalAlpha = 0.16;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#5E5346";
+  context.font = buildFont(textFontSize, true, false);
+
+  for (let y = -regionHeight; y <= regionHeight; y += repeatY) {
+    const rowOffset = Math.round((y / repeatY) % 2) === 0 ? 0 : Math.floor(repeatX / 2);
+    for (let x = -regionWidth; x <= regionWidth; x += repeatX) {
+      const centerX = x + rowOffset;
+      const centerY = y;
+      const imageWidth = image && imageSize > 0 ? Math.max(1, Math.round(image.width * Math.min(imageSize / image.width, imageSize / image.height))) : 0;
+      const imageHeight = image && imageSize > 0 ? Math.max(1, Math.round(image.height * Math.min(imageSize / image.width, imageSize / image.height))) : 0;
+      const groupWidth = imageWidth > 0 && textWidth > 0 ? imageWidth + textGap + textWidth : Math.max(imageWidth, textWidth);
+      const groupLeft = centerX - groupWidth / 2;
+
+      if (image && imageWidth > 0 && imageHeight > 0) {
+        const drawX = textWidth > 0 ? groupLeft : centerX - imageWidth / 2;
+        const drawY = centerY - imageHeight / 2;
+        context.drawImage(image, drawX, drawY, imageWidth, imageHeight);
+      }
+
+      if (watermarkText) {
+        const textX = imageWidth > 0 ? groupLeft + imageWidth + textGap + textWidth / 2 : centerX;
+        context.fillText(watermarkText, textX, centerY);
+      }
+    }
+  }
+
+  context.restore();
+}
+
+function loadChartDecorationImage(src: string) {
+  return new Promise<HTMLImageElement | null>((resolve) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = src;
+  });
 }
 
 function drawBrandLogo(
