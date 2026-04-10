@@ -1233,7 +1233,7 @@ export default function App() {
       if (!canDecodeSharedChartCode(landingChartCode)) {
         setLandingChartCodeInvalid(true);
       }
-    }, 1000);
+    }, 500);
 
     return () => {
       cancelled = true;

@@ -13,7 +13,7 @@ const releaseArtifactPath = join(
   "release",
   "detecter.wasm",
 );
-const rustToolchain = "1.94.1-x86_64-pc-windows-msvc";
+const rustToolchain = process.env.RUSTUP_TOOLCHAIN?.trim() || "1.94.1";
 
 if (await shouldRebuildDetecter()) {
   await runCommand("rustup", [
