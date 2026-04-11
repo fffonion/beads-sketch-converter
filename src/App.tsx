@@ -1,7 +1,9 @@
 ﻿import clsx from "clsx";
-import { ImageUp, X } from "lucide-react";
+import { ImageUp, LaptopMinimal, Moon, Sun, X } from "lucide-react";
+import QRCode from "qrcode";
 import { startTransition, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { BrandLogo } from "./components/brand-logo";
+import { BrandWordmark } from "./components/brand-wordmark";
 import { LanguageSwitch, ThemeSwitch } from "./components/controls";
 import { OriginalPreviewCard } from "./components/preview-cards";
 import { SidebarPanel } from "./components/sidebar-panel";
@@ -28,6 +30,7 @@ import {
   type EditTool,
   type GridAxis,
 } from "./lib/editor-utils";
+import { drawBrandWordmark, measureBrandWordmarkWidth } from "./lib/brand-wordmark";
 import { defaultLocale, getMessages, type Locale } from "./lib/i18n";
 import {
   pindouBoardThemes,
@@ -35,6 +38,7 @@ import {
   type PindouBoardTheme,
 } from "./lib/pindou-board-theme";
 import {
+  buildChartShareUrl,
   deserializeChartPayload,
   serializeChartPayload,
 } from "./lib/chart-serialization";
@@ -60,6 +64,7 @@ const pindouBoardThemeStorageKey = "pindou-convert-pindou-board-theme";
 const EMPTY_SELECTION_LABEL = "__EMPTY__";
 const APP_BRAND_TITLE = "拼豆豆";
 const APP_BRAND_TITLE_MOBILE = "拼豆豆";
+const CHART_SHARE_QR_SIZE = 1200;
 
 function readInitialLocale(): Locale {
   if (typeof window === "undefined") {
@@ -186,6 +191,210 @@ async function exitBrowserFullscreen() {
   }
 }
 
+function stripFileExtension(fileName: string) {
+  return fileName.replace(/\.[^.]+$/, "");
+}
+
+function normalizeDownloadBaseName(input: string) {
+  const normalized = input.trim().replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  return normalized || "pindou-chart";
+}
+
+function triggerBlobDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function loadCanvasImage(src: string) {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Failed to load image: ${src}`));
+    image.src = src;
+  });
+}
+
+async function canvasToBlob(canvas: HTMLCanvasElement) {
+  return await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("Failed to encode canvas."));
+        return;
+      }
+      resolve(blob);
+    }, "image/png");
+  });
+}
+
+function roundRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const effectiveRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + effectiveRadius, y);
+  context.arcTo(x + width, y, x + width, y + height, effectiveRadius);
+  context.arcTo(x + width, y + height, x, y + height, effectiveRadius);
+  context.arcTo(x, y + height, x, y, effectiveRadius);
+  context.arcTo(x, y, x + width, y, effectiveRadius);
+  context.closePath();
+}
+
+function drawBrandLogoOnCanvas(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+) {
+  const stroke = "rgba(33,24,17,0.88)";
+  const paperFill = "#F5E8D2";
+  const gridStroke = "#CDB79A";
+  const beadHole = "#F7F2E8";
+  const lineWidth = Math.max(1.4, size * 0.08);
+
+  const paperX = x + size * 0.06;
+  const paperY = y + size * 0.06;
+  const paperWidth = size * 0.66;
+  const paperHeight = size * 0.82;
+  const foldSize = size * 0.18;
+  const radius = Math.max(4, size * 0.08);
+
+  roundRectPath(context, paperX, paperY, paperWidth, paperHeight, radius);
+  context.fillStyle = paperFill;
+  context.fill();
+  context.lineWidth = lineWidth;
+  context.strokeStyle = stroke;
+  context.stroke();
+
+  context.beginPath();
+  context.moveTo(paperX + paperWidth - foldSize, paperY);
+  context.lineTo(paperX + paperWidth - foldSize, paperY + foldSize);
+  context.lineTo(paperX + paperWidth, paperY + foldSize);
+  context.strokeStyle = stroke;
+  context.stroke();
+
+  context.strokeStyle = gridStroke;
+  context.lineWidth = Math.max(1, size * 0.045);
+  const gridLeft = paperX + size * 0.12;
+  const gridTop = paperY + size * 0.18;
+  const gridWidth = paperWidth - size * 0.2;
+  const gridHeight = paperHeight - size * 0.28;
+  for (let index = 1; index <= 2; index += 1) {
+    const verticalX = gridLeft + (gridWidth / 3) * index;
+    const horizontalY = gridTop + (gridHeight / 3) * index;
+    context.beginPath();
+    context.moveTo(verticalX, gridTop);
+    context.lineTo(verticalX, gridTop + gridHeight);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(gridLeft, horizontalY);
+    context.lineTo(gridLeft + gridWidth, horizontalY);
+    context.stroke();
+  }
+
+  const beadRadius = size * 0.18;
+  const innerRadius = beadRadius * 0.42;
+  const beads: Array<[number, number, string]> = [
+    [x + size * 0.28, y + size * 0.72, "#D57D42"],
+    [x + size * 0.53, y + size * 0.56, "#8DAE63"],
+    [x + size * 0.77, y + size * 0.76, "#6E87C7"],
+  ];
+
+  for (const [centerX, centerY, fill] of beads) {
+    context.beginPath();
+    context.arc(centerX, centerY, beadRadius, 0, Math.PI * 2);
+    context.fillStyle = fill;
+    context.fill();
+    context.lineWidth = lineWidth;
+    context.strokeStyle = stroke;
+    context.stroke();
+
+    context.beginPath();
+    context.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
+    context.fillStyle = beadHole;
+    context.fill();
+    context.strokeStyle = stroke;
+    context.stroke();
+  }
+}
+
+async function buildChartShareQrBlob(shareUrl: string) {
+  const canvas = document.createElement("canvas");
+  canvas.width = CHART_SHARE_QR_SIZE;
+  canvas.height = CHART_SHARE_QR_SIZE;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas context is unavailable.");
+  }
+
+  const qrPadding = 84;
+  const renderedQrSize = CHART_SHARE_QR_SIZE - qrPadding * 2;
+  const qrDataUrl = await QRCode.toDataURL(shareUrl, {
+    errorCorrectionLevel: "H",
+    margin: 0,
+    width: renderedQrSize,
+    color: {
+      dark: "#111111",
+      light: "#FFFFFF",
+    },
+  });
+  const qrImage = await loadCanvasImage(qrDataUrl);
+
+  context.fillStyle = "#FFFFFF";
+  context.fillRect(0, 0, CHART_SHARE_QR_SIZE, CHART_SHARE_QR_SIZE);
+  context.imageSmoothingEnabled = false;
+  context.drawImage(qrImage, qrPadding, qrPadding, renderedQrSize, renderedQrSize);
+  context.imageSmoothingEnabled = true;
+
+  const badgeWidth = Math.round(CHART_SHARE_QR_SIZE * 0.34);
+  const badgeHeight = Math.round(CHART_SHARE_QR_SIZE * 0.135);
+  const badgeX = Math.round((CHART_SHARE_QR_SIZE - badgeWidth) / 2);
+  const badgeY = Math.round((CHART_SHARE_QR_SIZE - badgeHeight) / 2);
+  const badgeRadius = 30;
+
+  context.save();
+  context.shadowColor = "rgba(71, 48, 24, 0.18)";
+  context.shadowBlur = 22;
+  context.shadowOffsetY = 8;
+  roundRectPath(context, badgeX, badgeY, badgeWidth, badgeHeight, badgeRadius);
+  context.fillStyle = "#FFF8ED";
+  context.fill();
+  context.restore();
+
+  roundRectPath(context, badgeX, badgeY, badgeWidth, badgeHeight, badgeRadius);
+  context.lineWidth = 2;
+  context.strokeStyle = "rgba(99, 69, 41, 0.14)";
+  context.stroke();
+
+  const logoSize = Math.round(badgeHeight * 0.64);
+  const contentGap = Math.round(badgeHeight * 0.18);
+  const wordmarkHeight = Math.round(badgeHeight * 0.74);
+  const wordmarkWidth = measureBrandWordmarkWidth(wordmarkHeight);
+  const groupWidth = logoSize + contentGap + wordmarkWidth;
+  const groupX = badgeX + (badgeWidth - groupWidth) / 2;
+  const logoY = badgeY + (badgeHeight - logoSize) / 2;
+  drawBrandLogoOnCanvas(context, groupX, logoY, logoSize);
+  await drawBrandWordmark(
+    context,
+    groupX + logoSize + contentGap,
+    badgeY + badgeHeight / 2,
+    wordmarkHeight,
+  );
+
+  return await canvasToBlob(canvas);
+}
+
 function extractSharedChartCode(input: string) {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -276,6 +485,7 @@ export default function App() {
   const landingChartImportRunIdRef = useRef(0);
   const saveChartRef = useRef<(() => void) | null>(null);
   const chartPreviewUrlRef = useRef<string | null>(null);
+  const chartShareLinkCopiedTimeoutRef = useRef<number | null>(null);
   const chartShareCodeCopiedTimeoutRef = useRef<number | null>(null);
 
   const [locale, setLocale] = useState<Locale>(readInitialLocale);
@@ -345,7 +555,9 @@ export default function App() {
   const [savingChart, setSavingChart] = useState(false);
   const [chartPreviewUrl, setChartPreviewUrl] = useState<string | null>(null);
   const [chartPreviewBusy, setChartPreviewBusy] = useState(false);
+  const [chartShareLinkCopied, setChartShareLinkCopied] = useState(false);
   const [chartShareCodeCopied, setChartShareCodeCopied] = useState(false);
+  const [chartShareQrBusy, setChartShareQrBusy] = useState(false);
 
   const paletteOptions = getPaletteOptions(colorSystemId);
   const [selectedLabel, setSelectedLabel] = useState<string>(paletteOptions[0]?.label ?? "A1");
@@ -376,6 +588,7 @@ export default function App() {
         : file
           ? { kind: "image" as const, label: t.sourceImageBadge }
           : null;
+
   const editorBaseCells = useMemo(
     () =>
       editorDraftCells ??
@@ -441,6 +654,10 @@ export default function App() {
     renderedEditorCells,
     result,
   ]);
+  const chartShareUrl = useMemo(
+    () => (chartShareCode ? buildChartShareUrl(chartShareCode) : ""),
+    [chartShareCode],
+  );
 
   useEffect(() => {
     setChartShareCodeCopied(false);
@@ -451,7 +668,19 @@ export default function App() {
   }, [chartShareCode]);
 
   useEffect(() => {
+    setChartShareLinkCopied(false);
+    if (chartShareLinkCopiedTimeoutRef.current !== null) {
+      window.clearTimeout(chartShareLinkCopiedTimeoutRef.current);
+      chartShareLinkCopiedTimeoutRef.current = null;
+    }
+  }, [chartShareUrl]);
+
+  useEffect(() => {
     return () => {
+      if (chartShareLinkCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(chartShareLinkCopiedTimeoutRef.current);
+        chartShareLinkCopiedTimeoutRef.current = null;
+      }
       if (chartShareCodeCopiedTimeoutRef.current !== null) {
         window.clearTimeout(chartShareCodeCopiedTimeoutRef.current);
         chartShareCodeCopiedTimeoutRef.current = null;
@@ -1140,6 +1369,47 @@ export default function App() {
       }, 1800);
     } catch {
       // Keep the UI quiet if clipboard access is blocked.
+    }
+  }
+
+  async function handleCopyChartShareLink() {
+    if (!chartShareUrl) {
+      return;
+    }
+
+    try {
+      await copyPlainText(chartShareUrl);
+      setChartShareLinkCopied(true);
+      if (chartShareLinkCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(chartShareLinkCopiedTimeoutRef.current);
+      }
+      chartShareLinkCopiedTimeoutRef.current = window.setTimeout(() => {
+        setChartShareLinkCopied(false);
+        chartShareLinkCopiedTimeoutRef.current = null;
+      }, 1800);
+    } catch {
+      // Keep the UI quiet if clipboard access is blocked.
+    }
+  }
+
+  async function handleExportChartShareQr() {
+    if (!chartShareUrl || chartShareQrBusy) {
+      return;
+    }
+
+    setChartShareQrBusy(true);
+    try {
+      const qrBlob = await buildChartShareQrBlob(chartShareUrl);
+      const baseName = normalizeDownloadBaseName(
+        chartExportTitle || stripFileExtension(result?.fileName ?? ""),
+      );
+      triggerBlobDownload(qrBlob, `${baseName}-qr.png`);
+    } catch (processingError) {
+      setError(
+        processingError instanceof Error ? processingError.message : t.processingFailed,
+      );
+    } finally {
+      setChartShareQrBusy(false);
     }
   }
 
@@ -1884,9 +2154,13 @@ export default function App() {
             onChartIncludeQrCodeChange={setChartIncludeQrCode}
             chartPreviewUrl={chartPreviewUrl}
             chartShareCode={chartShareCode}
+            chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}
+            onCopyChartShareLink={handleCopyChartShareLink}
             onCopyChartShareCode={handleCopyChartShareCode}
             chartPreviewBusy={chartPreviewBusy}
+            chartShareQrBusy={chartShareQrBusy}
+            onExportChartShareQr={handleExportChartShareQr}
             onSaveChart={handleSaveChart}
             saveBusy={savingChart}
           />
@@ -1897,18 +2171,65 @@ export default function App() {
 
   return (
     <main className={clsx("min-h-screen transition-colors", theme.page)}>
-      <div className="mx-auto max-w-[1760px] px-4 pt-3 sm:pt-4 lg:px-6 lg:pt-6">
-        <div className={clsx("flex min-w-0 items-center gap-2 rounded-[10px] border px-3 py-2 backdrop-blur transition-colors sm:gap-3 sm:px-4", theme.controlShell)}>
-          <div className={clsx("flex h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border", theme.pill)}>
+      <div className="mx-auto max-w-[1760px] px-2 pt-3 sm:px-4 sm:pt-4 lg:px-6 lg:pt-6">
+        <div
+          data-header-root
+          className={clsx(
+            "flex min-h-[44px] min-w-0 flex-nowrap items-center gap-1.5 rounded-[10px] border px-2 py-2 backdrop-blur transition-colors sm:min-h-0 sm:gap-3 sm:px-4",
+            theme.controlShell,
+          )}
+        >
+          <div className={clsx("hidden h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border sm:flex", theme.pill)}>
             <BrandLogo className="h-9 w-9" />
           </div>
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-            <h1 className={clsx("min-w-0 truncate text-xl font-semibold leading-none sm:text-2xl", theme.cardTitle)}>
-              <span className="sm:hidden">{APP_BRAND_TITLE_MOBILE}</span>
-              <span className="hidden sm:inline">{APP_BRAND_TITLE}</span>
+          <div
+            data-header-brand
+            className="flex min-w-0 translate-x-1 -translate-y-0.5 items-center sm:translate-x-0 sm:flex-1 sm:-translate-y-0.5"
+          >
+            <h1 className="min-w-0 leading-none">
+              <span className="sr-only">{APP_BRAND_TITLE}</span>
+              <BrandWordmark
+                className="block h-auto w-[84px] max-w-none sm:h-10 sm:w-auto"
+                isDark={isDark}
+              />
             </h1>
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
+          <div
+            className={clsx(
+              "ml-auto flex shrink-0 items-center rounded-[10px] border px-1.5 py-1 backdrop-blur md:hidden",
+              theme.controlShell,
+            )}
+          >
+            <div className={clsx("flex items-center gap-1 rounded-[8px] p-0.5", theme.controlSegment)}>
+              <button
+                aria-label={t.themeLabel}
+                className="flex h-7 w-7 items-center justify-center rounded-[6px] border border-[#d8c2a3] bg-[#f3dec0] text-[#24170f] transition"
+                onClick={() =>
+                  setThemeMode(themeMode === "light" ? "dark" : themeMode === "dark" ? "system" : "light")
+                }
+                title={t.themeLabel}
+                type="button"
+              >
+                {themeMode === "light" ? (
+                  <Sun className="h-4 w-4" />
+                ) : themeMode === "dark" ? (
+                  <Moon className="h-4 w-4" />
+                ) : (
+                  <LaptopMinimal className="h-4 w-4" />
+                )}
+              </button>
+              <button
+                aria-label={t.languageLabel}
+                className="flex h-7 w-7 items-center justify-center rounded-[6px] border border-[#d8c2a3] bg-[#f3dec0] text-[11px] font-semibold text-[#24170f] transition"
+                onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}
+                title={t.languageLabel}
+                type="button"
+              >
+                {locale === "zh-CN" ? "中" : "En"}
+              </button>
+            </div>
+          </div>
+          <div data-header-controls-desktop className="ml-auto hidden shrink-0 items-center gap-1 md:flex">
             <ThemeSwitch
               themeLabel={t.themeLabel}
               themeMode={themeMode}
@@ -2129,9 +2450,13 @@ export default function App() {
             onChartIncludeQrCodeChange={setChartIncludeQrCode}
             chartPreviewUrl={chartPreviewUrl}
             chartShareCode={chartShareCode}
+            chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}
+            onCopyChartShareLink={handleCopyChartShareLink}
             onCopyChartShareCode={handleCopyChartShareCode}
             chartPreviewBusy={chartPreviewBusy}
+            chartShareQrBusy={chartShareQrBusy}
+            onExportChartShareQr={handleExportChartShareQr}
             onSaveChart={handleSaveChart}
             saveBusy={savingChart}
           />

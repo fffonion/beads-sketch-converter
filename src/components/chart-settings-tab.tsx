@@ -35,9 +35,13 @@ export function ChartSettingsTab({
   onChartIncludeQrCodeChange,
   chartPreviewUrl,
   chartShareCode,
+  chartShareLinkCopied,
   chartShareCodeCopied,
+  onCopyChartShareLink,
   onCopyChartShareCode,
   chartPreviewBusy,
+  chartShareQrBusy,
+  onExportChartShareQr,
   onSaveChart,
   saveBusy,
 }: {
@@ -67,9 +71,13 @@ export function ChartSettingsTab({
   onChartIncludeQrCodeChange: (value: boolean) => void;
   chartPreviewUrl: string | null;
   chartShareCode: string;
+  chartShareLinkCopied: boolean;
   chartShareCodeCopied: boolean;
+  onCopyChartShareLink: () => void | Promise<void>;
   onCopyChartShareCode: () => void | Promise<void>;
   chartPreviewBusy: boolean;
+  chartShareQrBusy: boolean;
+  onExportChartShareQr: () => void | Promise<void>;
   onSaveChart: () => void | Promise<void>;
   saveBusy: boolean;
 }) {
@@ -84,7 +92,7 @@ export function ChartSettingsTab({
     isDark ? "border-white/12 bg-white/[0.03]" : "border-stone-300 bg-white/78",
   );
   const chartPreviewClassName = clsx(
-    "relative flex min-h-[260px] flex-1 items-center justify-center overflow-hidden rounded-md sm:min-h-[320px] xl:min-h-0",
+    "relative flex min-h-[260px] items-center justify-center overflow-hidden rounded-md sm:min-h-[320px] xl:min-h-0 xl:flex-1",
     isDark ? "bg-white/[0.03]" : "bg-white/78",
   );
   const chartCodeFieldClassName = clsx(
@@ -237,7 +245,7 @@ export function ChartSettingsTab({
             />
           </div>
 
-          <div className={clsx(chartSectionClassName, "xl:mt-auto")}>
+          <div className={chartSectionClassName}>
             <SwitchRow
               id="chart-save-metadata"
               title={t.chartSettingsSaveMetadata}
@@ -261,17 +269,30 @@ export function ChartSettingsTab({
               <span className={clsx("text-sm font-semibold", theme.cardTitle)}>
                 {t.chartSettingsPreview}
               </span>
-              <button
-                className={clsx(
-                  "h-10 shrink-0 rounded-md border px-4 text-sm font-semibold transition",
-                  !saveBusy && !chartPreviewBusy ? theme.primaryButton : theme.disabledButton,
-                )}
-                disabled={saveBusy || chartPreviewBusy}
-                onClick={() => void onSaveChart()}
-                type="button"
-              >
-                {t.downloadPng}
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  className={clsx(
+                    "h-10 rounded-md border px-4 text-sm font-semibold transition",
+                    chartShareCode && !chartShareQrBusy ? theme.pill : theme.disabledButton,
+                  )}
+                  disabled={!chartShareCode || chartShareQrBusy}
+                  onClick={() => void onExportChartShareQr()}
+                  type="button"
+                >
+                  {t.chartSettingsExportQrCode}
+                </button>
+                <button
+                  className={clsx(
+                    "h-10 rounded-md border px-4 text-sm font-semibold transition",
+                    !saveBusy && !chartPreviewBusy ? theme.primaryButton : theme.disabledButton,
+                  )}
+                  disabled={saveBusy || chartPreviewBusy}
+                  onClick={() => void onSaveChart()}
+                  type="button"
+                >
+                  {t.downloadPng}
+                </button>
+              </div>
             </div>
             <div className={chartPreviewClassName}>
               {chartPreviewUrl ? (
@@ -307,21 +328,38 @@ export function ChartSettingsTab({
               <span className={clsx("text-sm font-semibold", theme.cardTitle)}>
                 {t.chartSettingsChartCode}
               </span>
-              <button
-                className={clsx(
-                  "h-10 shrink-0 rounded-md border px-4 text-sm font-semibold transition-all duration-200",
-                  chartShareCode
-                    ? chartShareCodeCopied
-                      ? clsx(theme.primaryButton, "scale-[1.03] shadow-[0_6px_18px_rgba(120,72,18,0.14)]")
-                      : theme.primaryButton
-                    : theme.disabledButton,
-                )}
-                disabled={!chartShareCode}
-                onClick={() => void onCopyChartShareCode()}
-                type="button"
-              >
-                {chartShareCodeCopied ? t.chartSettingsCopyChartCodeCopied : t.chartSettingsCopyChartCode}
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  className={clsx(
+                    "h-10 rounded-md border px-4 text-sm font-semibold transition-all duration-200",
+                    chartShareCode
+                      ? chartShareLinkCopied
+                        ? clsx(theme.primaryButton, "scale-[1.03] shadow-[0_6px_18px_rgba(120,72,18,0.14)]")
+                        : theme.pill
+                      : theme.disabledButton,
+                  )}
+                  disabled={!chartShareCode}
+                  onClick={() => void onCopyChartShareLink()}
+                  type="button"
+                >
+                  {chartShareLinkCopied ? t.chartSettingsCopyChartLinkCopied : t.chartSettingsCopyChartLink}
+                </button>
+                <button
+                  className={clsx(
+                    "h-10 rounded-md border px-4 text-sm font-semibold transition-all duration-200",
+                    chartShareCode
+                      ? chartShareCodeCopied
+                        ? clsx(theme.primaryButton, "scale-[1.03] shadow-[0_6px_18px_rgba(120,72,18,0.14)]")
+                        : theme.primaryButton
+                      : theme.disabledButton,
+                  )}
+                  disabled={!chartShareCode}
+                  onClick={() => void onCopyChartShareCode()}
+                  type="button"
+                >
+                  {chartShareCodeCopied ? t.chartSettingsCopyChartCodeCopied : t.chartSettingsCopyChartCode}
+                </button>
+              </div>
             </div>
             <div
               className={clsx(

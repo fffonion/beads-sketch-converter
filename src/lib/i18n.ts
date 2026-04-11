@@ -71,8 +71,11 @@ export interface Messages {
   chartSettingsPreviewEmpty: string;
   chartSettingsChartCode: string;
   chartSettingsChartCodePlaceholder: string;
+  chartSettingsCopyChartLink: string;
+  chartSettingsCopyChartLinkCopied: string;
   chartSettingsCopyChartCode: string;
   chartSettingsCopyChartCodeCopied: string;
+  chartSettingsExportQrCode: string;
   chartSettingsWatermarkText: string;
   chartSettingsWatermarkImage: string;
   chartSettingsChooseWatermarkImage: string;
@@ -168,9 +171,9 @@ export const messages: Record<Locale, Messages> = {
     themeDark: "深色",
     themeSystem: "跟随系统",
     sourceTitle: "原图",
-    sourceLandingTitle: "导入图片，或导入现有图纸",
+    sourceLandingTitle: "导入图片，或者现有图纸。",
     sourcePrivacyNote: "全部处理都在浏览器内完成，不会上传到服务器。",
-    sourceChartCodeTitle: "或者，导入图纸码",
+    sourceChartCodeTitle: "也可以导入图纸码",
     sourceChartCodePlaceholder: "",
     sourceImportChartCode: "导入图纸码",
     sourceLocalOnly: "本地图片",
@@ -227,8 +230,11 @@ export const messages: Record<Locale, Messages> = {
     chartSettingsPreviewEmpty: "设置图纸后，这里会显示导出预览。",
     chartSettingsChartCode: "图纸码",
     chartSettingsChartCodePlaceholder: "",
+    chartSettingsCopyChartLink: "复制链接",
+    chartSettingsCopyChartLinkCopied: "链接已复制",
     chartSettingsCopyChartCode: "复制图纸码",
     chartSettingsCopyChartCodeCopied: "复制成功",
+    chartSettingsExportQrCode: "导出二维码",
     chartSettingsWatermarkText: "水印文字",
     chartSettingsWatermarkImage: "水印图片",
     chartSettingsChooseWatermarkImage: "选择水印图片",
@@ -377,8 +383,11 @@ export const messages: Record<Locale, Messages> = {
     chartSettingsPreviewEmpty: "The exported chart preview appears here.",
     chartSettingsChartCode: "Chart Code",
     chartSettingsChartCodePlaceholder: "",
+    chartSettingsCopyChartLink: "Copy Link",
+    chartSettingsCopyChartLinkCopied: "Link Copied",
     chartSettingsCopyChartCode: "Copy Chart Code",
     chartSettingsCopyChartCodeCopied: "Copied",
+    chartSettingsExportQrCode: "Export QR Code",
     chartSettingsWatermarkText: "Watermark Text",
     chartSettingsWatermarkImage: "Watermark Image",
     chartSettingsChooseWatermarkImage: "Choose Watermark Image",

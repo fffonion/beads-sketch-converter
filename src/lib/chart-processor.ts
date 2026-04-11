@@ -18,6 +18,7 @@ import {
   ChartSerializationError,
   serializeChartPayload,
 } from "./chart-serialization";
+import { drawBrandWordmark, measureBrandWordmarkWidth } from "./brand-wordmark";
 import { sharedColorSystemDefinitions } from "./color-system-data";
 import { getPindouBoardThemeShades, type PindouBoardTheme } from "./pindou-board-theme";
 
@@ -26,7 +27,6 @@ const BOARD_FRAME_COLOR = "#111111";
 const CANVAS_BACKGROUND = "#F7F4EE";
 const OMITTED_BACKGROUND_HEX = "#FFFFFF";
 const MAX_DETECTION_EDGE = 768;
-const BRAND_NAME = "拼豆豆";
 const CHART_EDGE_SAMPLE_PROGRESS = [0.15, 0.2, 0.3, 0.35];
 const CHART_EDGE_SAMPLE_INSET = 0.18;
 
@@ -2107,12 +2107,12 @@ async function renderChart(
   context.textAlign = "left";
   context.textBaseline = "middle";
   const brandRowY = canvasPadding + brandRowHeight / 2;
-  const brandBlockWidth = estimateTextWidth(brandFontSize, true, true, BRAND_NAME) + logoSize + 18;
+  const wordmarkHeight = Math.max(logoSize * 0.9, brandFontSize + 8);
+  const wordmarkWidth = measureBrandWordmarkWidth(wordmarkHeight);
+  const brandBlockWidth = wordmarkWidth + logoSize + 18;
   const brandStartX = Math.round((canvasWidth - brandBlockWidth) / 2);
   drawBrandLogo(context, brandStartX, brandRowY - logoSize / 2, logoSize);
-  context.font = buildFont(brandFontSize, true, true);
-  context.fillStyle = "#1C1C1C";
-  context.fillText(BRAND_NAME, brandStartX + logoSize + 18, brandRowY);
+  await drawBrandWordmark(context, brandStartX + logoSize + 18, brandRowY, wordmarkHeight);
 
   context.textAlign = "center";
   context.font = buildFont(titleFontSize, true, true);

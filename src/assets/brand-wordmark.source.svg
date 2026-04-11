@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 345 157" fill="none">
+  <g
+    font-family="'YouYuan', 'Hiragino Sans GB', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
+    font-size="108"
+    font-weight="700"
+    dominant-baseline="text-before-edge"
+  >
+    <text x="13" y="27" fill="#98734A" fill-opacity="0.18">&#x62FC;&#x8C46;&#x8C46;</text>
+    <text x="9" y="23" fill="#24170F">&#x62FC;&#x8C46;&#x8C46;</text>
+  </g>
+  <rect x="139" y="17" width="14" height="14" rx="4" fill="#D57D42" stroke="#2F2116" stroke-width="2.6" />
+  <rect x="159" y="10" width="15" height="15" rx="4" fill="#8DAE63" stroke="#2F2116" stroke-width="2.6" />
+  <rect x="181" y="17" width="14" height="14" rx="4" fill="#6E87C7" stroke="#2F2116" stroke-width="2.6" />
+</svg>

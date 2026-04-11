@@ -1,4 +1,4 @@
-import * as Label from "@radix-ui/react-label";
+﻿import * as Label from "@radix-ui/react-label";
 import * as Slider from "@radix-ui/react-slider";
 import * as Switch from "@radix-ui/react-switch";
 import clsx from "clsx";
@@ -23,7 +23,7 @@ export function ThemeSwitch({
   return (
     <div
       aria-label={themeLabel}
-      className={clsx("flex items-center gap-1 rounded-[10px] border px-1.5 py-1 backdrop-blur", theme.controlShell)}
+      className={clsx("flex h-11 items-center gap-1 rounded-[10px] border px-1.5 py-1 backdrop-blur", theme.controlShell)}
       title={themeLabel}
     >
       <div className={clsx("grid grid-cols-3 rounded-[8px] p-0.5", theme.controlSegment)}>
@@ -35,7 +35,7 @@ export function ThemeSwitch({
           <button
             key={value}
             className={clsx(
-              "flex h-7 w-7 items-center justify-center rounded-[6px] transition sm:h-7 sm:w-7",
+              "flex h-7 w-7 items-center justify-center rounded-[6px] transition",
               themeMode === value ? theme.controlButtonActive : theme.controlButtonIdle,
             )}
             onClick={() => setThemeMode(value)}
@@ -43,7 +43,7 @@ export function ThemeSwitch({
             title={value}
             type="button"
           >
-            <Icon className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <Icon className="h-4 w-4" />
           </button>
         ))}
       </div>
@@ -71,30 +71,32 @@ export function LanguageSwitch({
   return (
     <div
       aria-label={languageLabel}
-      className={clsx("flex items-center gap-1 rounded-[10px] border px-1.5 py-1 backdrop-blur", theme.controlShell)}
+      className={clsx("flex h-11 items-center gap-1 rounded-[10px] border px-1.5 py-1 backdrop-blur", theme.controlShell)}
       title={languageLabel}
     >
       <Languages className={clsx("h-3.5 w-3.5 shrink-0", theme.controlLabel)} />
       <div className={clsx("grid grid-cols-2 rounded-[8px] p-0.5", theme.controlSegment)}>
         <button
           className={clsx(
-            "min-w-[34px] rounded-[6px] px-1.5 py-1 text-[11px] font-semibold transition sm:min-w-[38px] sm:text-xs",
+            "min-w-[38px] rounded-[6px] px-1.5 py-1 text-xs font-semibold transition",
             locale === "zh-CN" ? theme.controlButtonActive : theme.controlButtonIdle,
           )}
           onClick={() => setLocale("zh-CN")}
           type="button"
         >
-          中
+          <span className="sm:hidden">中</span>
+          <span className="hidden sm:inline">{chineseLabel}</span>
         </button>
         <button
           className={clsx(
-            "min-w-[34px] rounded-[6px] px-1.5 py-1 text-[11px] font-semibold transition sm:min-w-[38px] sm:text-xs",
+            "min-w-[38px] rounded-[6px] px-1.5 py-1 text-xs font-semibold transition",
             locale === "en-US" ? theme.controlButtonActive : theme.controlButtonIdle,
           )}
           onClick={() => setLocale("en-US")}
           type="button"
         >
-          En
+          <span className="sm:hidden">En</span>
+          <span className="hidden sm:inline">{englishLabel}</span>
         </button>
       </div>
     </div>
@@ -369,3 +371,5 @@ export function CollapsibleSection({
     </section>
   );
 }
+
+

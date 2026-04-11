@@ -88,9 +88,13 @@ export function WorkspacePanels({
   onChartIncludeQrCodeChange,
   chartPreviewUrl,
   chartShareCode,
+  chartShareLinkCopied,
   chartShareCodeCopied,
+  onCopyChartShareLink,
   onCopyChartShareCode,
   chartPreviewBusy,
+  chartShareQrBusy,
+  onExportChartShareQr,
   onSaveChart,
   saveBusy,
 }: {
@@ -178,9 +182,13 @@ export function WorkspacePanels({
   onChartIncludeQrCodeChange: (value: boolean) => void;
   chartPreviewUrl: string | null;
   chartShareCode: string;
+  chartShareLinkCopied: boolean;
   chartShareCodeCopied: boolean;
+  onCopyChartShareLink: () => void | Promise<void>;
   onCopyChartShareCode: () => void | Promise<void>;
   chartPreviewBusy: boolean;
+  chartShareQrBusy: boolean;
+  onExportChartShareQr: () => void | Promise<void>;
   onSaveChart: () => void | Promise<void>;
   saveBusy: boolean;
 }) {
@@ -276,9 +284,13 @@ export function WorkspacePanels({
             onChartIncludeQrCodeChange={onChartIncludeQrCodeChange}
             chartPreviewUrl={chartPreviewUrl}
             chartShareCode={chartShareCode}
+            chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}
+            onCopyChartShareLink={onCopyChartShareLink}
             onCopyChartShareCode={onCopyChartShareCode}
             chartPreviewBusy={chartPreviewBusy}
+            chartShareQrBusy={chartShareQrBusy}
+            onExportChartShareQr={onExportChartShareQr}
             onSaveChart={onSaveChart}
             saveBusy={saveBusy}
           />
@@ -383,9 +395,13 @@ export function WorkspacePanels({
           onChartIncludeQrCodeChange={onChartIncludeQrCodeChange}
           chartPreviewUrl={chartPreviewUrl}
           chartShareCode={chartShareCode}
+          chartShareLinkCopied={chartShareLinkCopied}
           chartShareCodeCopied={chartShareCodeCopied}
+          onCopyChartShareLink={onCopyChartShareLink}
           onCopyChartShareCode={onCopyChartShareCode}
           chartPreviewBusy={chartPreviewBusy}
+          chartShareQrBusy={chartShareQrBusy}
+          onExportChartShareQr={onExportChartShareQr}
           onSaveChart={onSaveChart}
           saveBusy={saveBusy}
         />
