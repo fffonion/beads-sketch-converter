@@ -60,6 +60,12 @@ import type { EditorPanelMode } from "./components/pixel-editor-panel";
 
 type GridMode = "auto" | "manual";
 
+interface EditorSnapshot {
+  cells: EditableCell[];
+  gridWidth: number;
+  gridHeight: number;
+}
+
 const localeStorageKey = "pindou-convert-locale";
 const themeStorageKey = "pindou-convert-theme";
 const pindouBeadShapeStorageKey = "pindou-convert-pindou-bead-shape";
@@ -476,7 +482,7 @@ export default function App() {
   const paintActiveRef = useRef(false);
   const sourceMetaRunIdRef = useRef(0);
   const chartPreviewRunIdRef = useRef(0);
-  const editorHistoryRef = useRef<EditableCell[][]>([]);
+  const editorHistoryRef = useRef<EditorSnapshot[]>([]);
   const editorHistoryIndexRef = useRef(-1);
   const editorDraftRef = useRef<EditableCell[] | null>(null);
   const inputUrlRef = useRef<string | null>(null);
@@ -528,7 +534,7 @@ export default function App() {
   const [fillTolerance, setFillTolerance] = useState(16);
   const [overlayEnabled, setOverlayEnabled] = useState(false);
   const [disabledResultLabels, setDisabledResultLabels] = useState<string[]>([]);
-  const [editorHistory, setEditorHistory] = useState<EditableCell[][]>([]);
+  const [editorHistory, setEditorHistory] = useState<EditorSnapshot[]>([]);
   const [editorHistoryIndex, setEditorHistoryIndex] = useState(-1);
   const [editorDraftCells, setEditorDraftCells] = useState<EditableCell[] | null>(null);
   const [sourceFocusViewOpen, setSourceFocusViewOpen] = useState(false);
@@ -594,12 +600,25 @@ export default function App() {
           ? { kind: "image" as const, label: t.sourceImageBadge }
           : null;
 
+  const currentEditorSnapshot = useMemo<EditorSnapshot | null>(() => {
+    if (editorHistoryIndex >= 0) {
+      return editorHistory[editorHistoryIndex] ?? null;
+    }
+    if (!result) {
+      return null;
+    }
+    return {
+      cells: result.cells,
+      gridWidth: result.gridWidth,
+      gridHeight: result.gridHeight,
+    };
+  }, [editorHistory, editorHistoryIndex, result]);
   const editorBaseCells = useMemo(
-    () =>
-      editorDraftCells ??
-      (editorHistoryIndex >= 0 ? editorHistory[editorHistoryIndex] ?? [] : result?.cells ?? []),
-    [editorDraftCells, editorHistoryIndex, editorHistory, result?.cells],
+    () => editorDraftCells ?? currentEditorSnapshot?.cells ?? [],
+    [currentEditorSnapshot, editorDraftCells],
   );
+  const editorGridWidth = currentEditorSnapshot?.gridWidth ?? result?.gridWidth ?? 0;
+  const editorGridHeight = currentEditorSnapshot?.gridHeight ?? result?.gridHeight ?? 0;
   const renderedEditorCells = useMemo(
     () =>
       getRenderedEditableCells(
@@ -626,7 +645,7 @@ export default function App() {
     [baseMatchedColors, disabledResultLabels],
   );
   const chartShareCode = useMemo(() => {
-    if (!result) {
+    if (!result || editorGridWidth <= 0 || editorGridHeight <= 0) {
       return "";
     }
 
@@ -634,8 +653,8 @@ export default function App() {
       return serializeChartPayload(
         {
           colorSystemId,
-          gridWidth: result.gridWidth,
-          gridHeight: result.gridHeight,
+          gridWidth: editorGridWidth,
+          gridHeight: editorGridHeight,
           editingLocked: chartLockEditing,
           title: chartExportTitle.trim(),
           cells: renderedEditorCells.map((cell) =>
@@ -656,6 +675,8 @@ export default function App() {
     chartExportTitle,
     chartLockEditing,
     colorSystemId,
+    editorGridHeight,
+    editorGridWidth,
     renderedEditorCells,
     result,
   ]);
@@ -1040,6 +1061,8 @@ export default function App() {
         return {
           ...previous,
           ...exported,
+          gridWidth: targetGridWidth,
+          gridHeight: targetGridHeight,
           cells: renderedCells,
           url,
         };
@@ -1061,19 +1084,25 @@ export default function App() {
   }
 
   async function handleCanvasCropConfirm() {
-    if (!result || result.editingLocked || !canvasCropSelection) {
+    if (
+      !result ||
+      result.editingLocked ||
+      !canvasCropSelection ||
+      editorGridWidth <= 0 ||
+      editorGridHeight <= 0
+    ) {
       exitCanvasCropMode();
       return;
     }
-    if (isFullCanvasCropRect(canvasCropSelection, result.gridWidth, result.gridHeight)) {
+    if (isFullCanvasCropRect(canvasCropSelection, editorGridWidth, editorGridHeight)) {
       exitCanvasCropMode();
       return;
     }
 
     const cropped = cropEditableCells(
       editorBaseCells,
-      result.gridWidth,
-      result.gridHeight,
+      editorGridWidth,
+      editorGridHeight,
       canvasCropSelection,
     );
     const applied = await refreshEditedChart(
@@ -1088,14 +1117,38 @@ export default function App() {
       return;
     }
 
-    resetEditorHistory(cropped.cells);
+    commitEditorSnapshot(
+      cropped.cells,
+      disabledResultLabelsRef.current,
+      {
+        gridWidth: cropped.gridWidth,
+        gridHeight: cropped.gridHeight,
+      },
+      {
+        skipRefresh: true,
+      },
+    );
     exitCanvasCropMode();
   }
 
-  function resetEditorHistory(cells: EditableCell[]) {
+  function createEditorSnapshot(
+    cells: EditableCell[],
+    nextGrid: { gridWidth: number; gridHeight: number },
+  ): EditorSnapshot {
+    return {
+      cells: cloneEditableCells(cells),
+      gridWidth: nextGrid.gridWidth,
+      gridHeight: nextGrid.gridHeight,
+    };
+  }
+
+  function resetEditorHistory(
+    cells: EditableCell[],
+    nextGrid: { gridWidth: number; gridHeight: number },
+  ) {
     editorDraftRef.current = null;
     setEditorDraftCells(null);
-    const snapshot = cloneEditableCells(cells);
+    const snapshot = createEditorSnapshot(cells, nextGrid);
     editorHistoryRef.current = [snapshot];
     editorHistoryIndexRef.current = 0;
     setEditorHistory([snapshot]);
@@ -1105,10 +1158,18 @@ export default function App() {
   function commitEditorSnapshot(
     nextCells: EditableCell[],
     disabledLabelsOverride?: string[],
+    nextGrid?: { gridWidth: number; gridHeight: number },
+    options?: { skipRefresh?: boolean },
   ) {
     editorDraftRef.current = null;
     setEditorDraftCells(null);
-    const snapshot = cloneEditableCells(nextCells);
+    const snapshot = createEditorSnapshot(
+      nextCells,
+      nextGrid ?? {
+        gridWidth: editorGridWidth,
+        gridHeight: editorGridHeight,
+      },
+    );
     const base = editorHistoryRef.current.slice(0, editorHistoryIndexRef.current + 1);
     base.push(snapshot);
     editorHistoryRef.current = base;
@@ -1119,7 +1180,16 @@ export default function App() {
       disabledResultLabelsRef.current = disabledLabelsOverride;
       setDisabledResultLabels(disabledLabelsOverride);
     }
-    void refreshEditedChart(snapshot, disabledLabelsOverride);
+    if (!options?.skipRefresh) {
+      void refreshEditedChart(
+        snapshot.cells,
+        disabledLabelsOverride,
+        {
+          gridWidth: snapshot.gridWidth,
+          gridHeight: snapshot.gridHeight,
+        },
+      );
+    }
   }
 
   function stageEditorDraft(nextCells: EditableCell[]) {
@@ -1150,7 +1220,14 @@ export default function App() {
     }
     editorHistoryIndexRef.current = nextIndex;
     setEditorHistoryIndex(nextIndex);
-    void refreshEditedChart(cloneEditableCells(snapshot));
+    void refreshEditedChart(
+      cloneEditableCells(snapshot.cells),
+      undefined,
+      {
+        gridWidth: snapshot.gridWidth,
+        gridHeight: snapshot.gridHeight,
+      },
+    );
   }
 
   function handleRedo() {
@@ -1170,7 +1247,14 @@ export default function App() {
     }
     editorHistoryIndexRef.current = nextIndex;
     setEditorHistoryIndex(nextIndex);
-    void refreshEditedChart(cloneEditableCells(snapshot));
+    void refreshEditedChart(
+      cloneEditableCells(snapshot.cells),
+      undefined,
+      {
+        gridWidth: snapshot.gridWidth,
+        gridHeight: snapshot.gridHeight,
+      },
+    );
   }
 
   function applyDisabledResultLabels(nextDisabledLabels: string[]) {
@@ -1181,7 +1265,14 @@ export default function App() {
     setDisabledResultLabels(nextDisabledLabels);
 
     if (editorBaseCells.length > 0) {
-      void refreshEditedChart(cloneEditableCells(editorBaseCells), nextDisabledLabels);
+      void refreshEditedChart(
+        cloneEditableCells(editorBaseCells),
+        nextDisabledLabels,
+        {
+          gridWidth: editorGridWidth,
+          gridHeight: editorGridHeight,
+        },
+      );
     }
   }
 
@@ -1225,7 +1316,13 @@ export default function App() {
   }
 
   function applyCellEdit(index: number, toolOverride?: EditTool) {
-    if (!result || result.editingLocked || !editorBaseCells.length) {
+    if (
+      !result ||
+      result.editingLocked ||
+      !editorBaseCells.length ||
+      editorGridWidth <= 0 ||
+      editorGridHeight <= 0
+    ) {
       return;
     }
 
@@ -1273,16 +1370,16 @@ export default function App() {
       activeTool === "fill"
         ? floodFillCells(
             editorBaseCells,
-            result.gridWidth,
-            result.gridHeight,
+            editorGridWidth,
+            editorGridHeight,
             index,
             replacement,
             fillTolerance,
           )
         : replaceBrushArea(
             editorBaseCells,
-            result.gridWidth,
-            result.gridHeight,
+            editorGridWidth,
+            editorGridHeight,
             index,
             replacement,
             brushSize,
@@ -1598,8 +1695,8 @@ export default function App() {
         try {
           const exported = await exportChartFromCells({
             cells: renderedEditorCells,
-            gridWidth: result.gridWidth,
-            gridHeight: result.gridHeight,
+            gridWidth: editorGridWidth,
+            gridHeight: editorGridHeight,
             fileName: result.fileName,
             colorSystemId,
             chartSettings: buildChartExportSettings(),
@@ -1654,6 +1751,8 @@ export default function App() {
     busy,
     chartEditingLocked,
     colorSystemId,
+    editorGridHeight,
+    editorGridWidth,
     editorPanelMode,
     renderedEditorCells,
     result,
@@ -1688,8 +1787,8 @@ export default function App() {
     try {
       const exported = await exportChartFromCells({
         cells: renderedEditorCells,
-        gridWidth: result.gridWidth,
-        gridHeight: result.gridHeight,
+        gridWidth: editorGridWidth,
+        gridHeight: editorGridHeight,
         fileName: result.fileName,
         colorSystemId,
         chartSettings: buildChartExportSettings(),
@@ -2066,7 +2165,10 @@ export default function App() {
               return { ...processed, url };
             });
           });
-          resetEditorHistory(processed.cells);
+          resetEditorHistory(processed.cells, {
+            gridWidth: processed.gridWidth,
+            gridHeight: processed.gridHeight,
+          });
 
           if (processed.colors[0]?.label) {
             const processedPaletteOptions = getPaletteOptions(processed.colorSystemId);
@@ -2170,6 +2272,8 @@ export default function App() {
             onColorSystemIdChange={setColorSystemId}
             paletteOptions={paletteOptions}
             currentCells={renderedEditorCells}
+            editorGridWidth={editorGridWidth}
+            editorGridHeight={editorGridHeight}
             onApplyCell={applyCellEdit}
             canvasCropSelection={canvasCropSelection}
             onCanvasCropSelectionChange={setCanvasCropSelection}
@@ -2471,6 +2575,8 @@ export default function App() {
             onColorSystemIdChange={setColorSystemId}
             paletteOptions={paletteOptions}
             currentCells={renderedEditorCells}
+            editorGridWidth={editorGridWidth}
+            editorGridHeight={editorGridHeight}
             onApplyCell={applyCellEdit}
             canvasCropSelection={canvasCropSelection}
             onCanvasCropSelectionChange={setCanvasCropSelection}

@@ -38,6 +38,8 @@ export function WorkspacePanels({
   onColorSystemIdChange,
   paletteOptions,
   currentCells,
+  editorGridWidth,
+  editorGridHeight,
   onApplyCell,
   canvasCropSelection,
   onCanvasCropSelectionChange,
@@ -133,6 +135,8 @@ export function WorkspacePanels({
   onColorSystemIdChange: (value: string) => void;
   paletteOptions: Array<{ label: string; hex: string }>;
   currentCells: ProcessResult["cells"];
+  editorGridWidth: number;
+  editorGridHeight: number;
   onApplyCell: (
     index: number,
     toolOverride?: EditTool,
@@ -212,8 +216,8 @@ export function WorkspacePanels({
             isDark={isDark}
             busy={busy}
             cells={currentCells}
-            gridWidth={result.gridWidth}
-            gridHeight={result.gridHeight}
+            gridWidth={editorGridWidth}
+            gridHeight={editorGridHeight}
             inputUrl={inputUrl}
             overlayCropRect={cropRect}
             overlayEnabled={overlayEnabled}
@@ -327,8 +331,8 @@ export function WorkspacePanels({
           isDark={isDark}
           busy={busy}
           cells={result ? currentCells : []}
-          gridWidth={result?.gridWidth ?? 33}
-          gridHeight={result?.gridHeight ?? 33}
+          gridWidth={result ? editorGridWidth : 33}
+          gridHeight={result ? editorGridHeight : 33}
           inputUrl={inputUrl}
           overlayCropRect={cropRect}
           overlayEnabled={overlayEnabled}
