@@ -5,11 +5,16 @@ import type { EditableCell, NormalizedCropRect } from "../lib/chart-processor";
 import { getPindouBoardThemeShades, type PindouBeadShape, type PindouBoardTheme } from "../lib/pindou-board-theme";
 import { getThemeClasses } from "../lib/theme";
 
-type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom";
+import {
+  createCanvasCropRectFromCellIndices,
+  type CanvasCropRect,
+  type EditTool,
+} from "../lib/editor-utils";
+
 type EditorPanelMode = "edit" | "pindou";
 const PINDOU_STAGE_PADDING_CELLS = 5;
 
-export function CanvasEditorStage({
+export function CanvasStage({
   cells,
   gridWidth,
   gridHeight,
@@ -22,9 +27,11 @@ export function CanvasEditorStage({
   editTool = "paint",
   brushSize = 1,
   selectedHex = null,
+  canvasCropSelection = null,
   focusedLabel,
   onFocusLabelChange,
   onApplyCell,
+  onCanvasCropSelectionChange,
   paintActiveRef,
   focusOnly = false,
   flipHorizontal = false,
@@ -54,9 +61,11 @@ export function CanvasEditorStage({
   editTool?: EditTool;
   brushSize?: number;
   selectedHex?: string | null;
+  canvasCropSelection?: CanvasCropRect | null;
   focusedLabel?: string | null;
   onFocusLabelChange?: (label: string | null) => void;
   onApplyCell?: (index: number, toolOverride?: EditTool) => void;
+  onCanvasCropSelectionChange?: (cropRect: CanvasCropRect | null) => void;
   paintActiveRef: MutableRefObject<boolean>;
   focusOnly?: boolean;
   flipHorizontal?: boolean;
@@ -98,6 +107,10 @@ export function CanvasEditorStage({
     cellIndex: number | null;
   } | null>(null);
   const drawPointerIdRef = useRef<number | null>(null);
+  const cropPointerStateRef = useRef<{
+    pointerId: number;
+    anchorCellIndex: number;
+  } | null>(null);
   const lastAppliedCellIndexRef = useRef<number | null>(null);
   const suppressTapUntilRef = useRef(0);
 
@@ -191,6 +204,7 @@ export function CanvasEditorStage({
     totalStageHeight > 0;
   const effectiveEditTool =
     stageMode === "edit" && altPickActive && !spacePanActive ? "pick" : editTool;
+  const cropToolActive = stageMode === "edit" && effectiveEditTool === "crop";
   const panToolActive = stageMode === "edit" && effectiveEditTool === "pan";
   const effectivePanActive = stageMode === "edit" ? panToolActive || spacePanActive : false;
   const zoomToolActive = stageMode === "edit" && effectiveEditTool === "zoom";
@@ -209,6 +223,36 @@ export function CanvasEditorStage({
   const pickPreviewHex = hoveredCell?.hex ?? (isDark ? "#1C1712" : "#F7F4EE");
   const pickPreviewLabel = hoveredCell?.label ?? emptyPixelLabel;
   const pickPreviewTextColor = isDark ? "#FFFFFF" : "#111111";
+  const canvasCropDisplayRect = useMemo(() => {
+    if (stageMode !== "edit" || !canvasCropSelection) {
+      return null;
+    }
+
+    const displayColumn = flipHorizontal
+      ? gridWidth - canvasCropSelection.left - canvasCropSelection.width
+      : canvasCropSelection.left;
+
+    return {
+      x: leftGutter + displayColumn * stagePitch,
+      y: topGutter + canvasCropSelection.top * stagePitch,
+      width:
+        canvasCropSelection.width * scaledCellSize +
+        Math.max(0, canvasCropSelection.width - 1) * scaledGap,
+      height:
+        canvasCropSelection.height * scaledCellSize +
+        Math.max(0, canvasCropSelection.height - 1) * scaledGap,
+    };
+  }, [
+    canvasCropSelection,
+    flipHorizontal,
+    gridWidth,
+    leftGutter,
+    scaledCellSize,
+    scaledGap,
+    stageMode,
+    stagePitch,
+    topGutter,
+  ]);
 
   useEffect(() => {
     panOffsetRef.current = panOffset;
@@ -221,6 +265,7 @@ export function CanvasEditorStage({
   useEffect(() => {
     function clearStroke() {
       drawPointerIdRef.current = null;
+      cropPointerStateRef.current = null;
       lastAppliedCellIndexRef.current = null;
     }
     window.addEventListener("pointerup", clearStroke);
@@ -311,6 +356,26 @@ export function CanvasEditorStage({
       gridWidth,
       gridHeight,
       flipHorizontal,
+    );
+  const resolveCropCellIndex = (clientX: number, clientY: number) =>
+    resolveStageCellIndexFromClientPoint(
+      clientX,
+      clientY,
+      stageSurfaceRef.current,
+      leftGutter,
+      topGutter,
+      scaledStageWidth,
+      scaledStageHeight,
+      stagePitch,
+      scaledCellSize,
+      pindouPaddingCells,
+      gridWidth,
+      gridHeight,
+      flipHorizontal,
+      {
+        snapToGrid: true,
+        clampToBounds: true,
+      },
     );
 
   useEffect(() => {
@@ -781,6 +846,7 @@ export function CanvasEditorStage({
         embeddedInPanel ? "mt-0" : focusOnly ? "mt-0" : "mt-4",
         "overflow-hidden",
         showBrushCursor || showFillCursor || showPickCursor ? "cursor-none" : "",
+        cropToolActive && !spacePanActive ? "cursor-crosshair" : "",
         zoomToolActive && !spacePanActive ? "cursor-zoom-in" : "",
         canPanStage && (stageMode === "pindou" || effectivePanActive)
           ? isPanning
@@ -805,6 +871,24 @@ export function CanvasEditorStage({
       onPointerMove={(event) => {
         syncAltPickState(event.altKey);
         updateHoveredState(event);
+        const cropPointerState = cropPointerStateRef.current;
+        if (cropPointerState && cropPointerState.pointerId === event.pointerId) {
+          const cropCellIndex = resolveCropCellIndex(event.clientX, event.clientY);
+          if (cropCellIndex === null) {
+            return;
+          }
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          onCanvasCropSelectionChange?.(
+            createCanvasCropRectFromCellIndices(
+              cropPointerState.anchorCellIndex,
+              cropCellIndex,
+              gridWidth,
+            ),
+          );
+          return;
+        }
         if (stageMode !== "edit" || effectivePanActive || effectiveEditTool === "zoom") {
           return;
         }
@@ -826,7 +910,6 @@ export function CanvasEditorStage({
           return;
         }
 
-        const cellIndex = resolveCellIndex(event.clientX, event.clientY);
         if (effectiveEditTool === "zoom") {
           if (spacePanActive) {
             return;
@@ -834,6 +917,24 @@ export function CanvasEditorStage({
           onEditZoomChange?.(clampEditorZoom(editZoom + (event.button === 2 || event.shiftKey ? -0.2 : 0.2)));
           return;
         }
+        if (cropToolActive) {
+          const cropCellIndex = resolveCropCellIndex(event.clientX, event.clientY);
+          if (effectivePanActive || cropCellIndex === null) {
+            return;
+          }
+          if (event.currentTarget.setPointerCapture) {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }
+          cropPointerStateRef.current = {
+            pointerId: event.pointerId,
+            anchorCellIndex: cropCellIndex,
+          };
+          onCanvasCropSelectionChange?.(
+            createCanvasCropRectFromCellIndices(cropCellIndex, cropCellIndex, gridWidth),
+          );
+          return;
+        }
+        const cellIndex = resolveCellIndex(event.clientX, event.clientY);
         if (effectivePanActive || cellIndex === null) {
           return;
         }
@@ -846,6 +947,12 @@ export function CanvasEditorStage({
       }}
       onPointerUp={(event) => {
         syncAltPickState(event.altKey);
+        if (cropPointerStateRef.current?.pointerId === event.pointerId) {
+          cropPointerStateRef.current = null;
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }
         if (drawPointerIdRef.current === event.pointerId) {
           drawPointerIdRef.current = null;
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -855,6 +962,12 @@ export function CanvasEditorStage({
       }}
       onPointerCancel={(event) => {
         syncAltPickState(event.altKey);
+        if (cropPointerStateRef.current?.pointerId === event.pointerId) {
+          cropPointerStateRef.current = null;
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }
         if (drawPointerIdRef.current === event.pointerId) {
           drawPointerIdRef.current = null;
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -1014,6 +1127,75 @@ export function CanvasEditorStage({
           }}
         >
           <canvas ref={stageCanvasRef} className="block" />
+          {canvasCropDisplayRect ? (
+            <div className="pointer-events-none absolute inset-0 z-30">
+              <div
+                className="absolute"
+                style={{
+                  left: `${leftGutter}px`,
+                  top: `${topGutter}px`,
+                  width: `${scaledStageWidth}px`,
+                  height: `${canvasCropDisplayRect.y - topGutter}px`,
+                  backgroundColor: isDark ? "rgba(17,17,17,0.48)" : "rgba(17,17,17,0.16)",
+                }}
+              />
+              <div
+                className="absolute"
+                style={{
+                  left: `${leftGutter}px`,
+                  top: `${canvasCropDisplayRect.y}px`,
+                  width: `${canvasCropDisplayRect.x - leftGutter}px`,
+                  height: `${canvasCropDisplayRect.height}px`,
+                  backgroundColor: isDark ? "rgba(17,17,17,0.48)" : "rgba(17,17,17,0.16)",
+                }}
+              />
+              <div
+                className="absolute"
+                style={{
+                  left: `${canvasCropDisplayRect.x + canvasCropDisplayRect.width}px`,
+                  top: `${canvasCropDisplayRect.y}px`,
+                  width: `${leftGutter + scaledStageWidth - canvasCropDisplayRect.x - canvasCropDisplayRect.width}px`,
+                  height: `${canvasCropDisplayRect.height}px`,
+                  backgroundColor: isDark ? "rgba(17,17,17,0.48)" : "rgba(17,17,17,0.16)",
+                }}
+              />
+              <div
+                className="absolute"
+                style={{
+                  left: `${leftGutter}px`,
+                  top: `${canvasCropDisplayRect.y + canvasCropDisplayRect.height}px`,
+                  width: `${scaledStageWidth}px`,
+                  height: `${topGutter + scaledStageHeight - canvasCropDisplayRect.y - canvasCropDisplayRect.height}px`,
+                  backgroundColor: isDark ? "rgba(17,17,17,0.48)" : "rgba(17,17,17,0.16)",
+                }}
+              />
+              <div
+                className="absolute rounded-[6px] border-2 shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
+                style={{
+                  left: `${canvasCropDisplayRect.x}px`,
+                  top: `${canvasCropDisplayRect.y}px`,
+                  width: `${canvasCropDisplayRect.width}px`,
+                  height: `${canvasCropDisplayRect.height}px`,
+                  borderColor: isDark ? "rgba(255,215,120,0.96)" : "rgba(133,77,14,0.96)",
+                  boxShadow: isDark
+                    ? "inset 0 0 0 1px rgba(255,255,255,0.18)"
+                    : "inset 0 0 0 1px rgba(255,255,255,0.42)",
+                }}
+              />
+              <div
+                className={clsx(
+                  "absolute rounded-md px-2 py-1 text-[11px] font-semibold shadow-sm backdrop-blur-sm sm:text-xs",
+                  isDark ? "bg-stone-950/88 text-amber-100" : "bg-white/92 text-stone-800",
+                )}
+                style={{
+                  left: `${canvasCropDisplayRect.x + 8}px`,
+                  top: `${Math.max(topGutter + 8, canvasCropDisplayRect.y + 8)}px`,
+                }}
+              >
+                {canvasCropSelection?.width ?? 0} x {canvasCropSelection?.height ?? 0}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -1095,33 +1277,61 @@ function resolveStageCellIndexFromClientPoint(
   gridWidth: number,
   gridHeight: number,
   flipHorizontal: boolean,
+  options?: {
+    snapToGrid?: boolean;
+    clampToBounds?: boolean;
+  },
 ) {
   if (!stageSurface) {
     return null;
   }
 
   const rect = stageSurface.getBoundingClientRect();
-  const x = clientX - rect.left - leftGutter;
-  const y = clientY - rect.top - topGutter;
-  if (x < 0 || y < 0 || x >= scaledStageWidth || y >= scaledStageHeight) {
-    return null;
-  }
-
-  const displayColumn = Math.floor(x / stagePitch);
-  const displayRow = Math.floor(y / stagePitch);
+  const snapToGrid = options?.snapToGrid ?? false;
+  const clampToBounds = options?.clampToBounds ?? false;
+  const rawX = clientX - rect.left - leftGutter;
+  const rawY = clientY - rect.top - topGutter;
   if (
-    displayColumn < pindouPaddingCells ||
-    displayColumn >= pindouPaddingCells + gridWidth ||
-    displayRow < pindouPaddingCells ||
-    displayRow >= pindouPaddingCells + gridHeight
+    !snapToGrid &&
+    (rawX < 0 || rawY < 0 || rawX >= scaledStageWidth || rawY >= scaledStageHeight)
   ) {
     return null;
   }
 
-  const offsetX = x - displayColumn * stagePitch;
-  const offsetY = y - displayRow * stagePitch;
-  if (offsetX > scaledCellSize || offsetY > scaledCellSize) {
+  const x = clampToBounds
+    ? Math.max(0, Math.min(scaledStageWidth - 0.001, rawX))
+    : rawX;
+  const y = clampToBounds
+    ? Math.max(0, Math.min(scaledStageHeight - 0.001, rawY))
+    : rawY;
+  if (x < 0 || y < 0 || x >= scaledStageWidth || y >= scaledStageHeight) {
     return null;
+  }
+
+  const minDisplayColumn = pindouPaddingCells;
+  const maxDisplayColumn = pindouPaddingCells + gridWidth - 1;
+  const minDisplayRow = pindouPaddingCells;
+  const maxDisplayRow = pindouPaddingCells + gridHeight - 1;
+  let displayColumn = Math.floor(x / stagePitch);
+  let displayRow = Math.floor(y / stagePitch);
+  if (snapToGrid) {
+    displayColumn = Math.max(minDisplayColumn, Math.min(maxDisplayColumn, displayColumn));
+    displayRow = Math.max(minDisplayRow, Math.min(maxDisplayRow, displayRow));
+  } else {
+    if (
+      displayColumn < minDisplayColumn ||
+      displayColumn > maxDisplayColumn ||
+      displayRow < minDisplayRow ||
+      displayRow > maxDisplayRow
+    ) {
+      return null;
+    }
+
+    const offsetX = x - displayColumn * stagePitch;
+    const offsetY = y - displayRow * stagePitch;
+    if (offsetX > scaledCellSize || offsetY > scaledCellSize) {
+      return null;
+    }
   }
 
   const row = displayRow - pindouPaddingCells;
@@ -1275,7 +1485,7 @@ function drawPindouBead(
   context.strokeStyle = isDark ? "rgba(255,255,255,0.12)" : "rgba(17,17,17,0.08)";
 
   if (beadShape === "circle") {
-    const inset = Math.max(0.18, size * 0.028);
+    const inset = Math.max(0.04, size * 0.007);
     const radius = Math.max(1, (size - inset * 2) / 2);
     const centerX = x + size / 2;
     const centerY = y + size / 2;

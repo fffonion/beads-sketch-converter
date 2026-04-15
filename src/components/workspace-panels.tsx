@@ -2,6 +2,7 @@
 import type { MutableRefObject } from "react";
 import type { Messages } from "../lib/i18n";
 import type { NormalizedCropRect, ProcessResult } from "../lib/chart-processor";
+import type { CanvasCropRect, EditTool } from "../lib/editor-utils";
 import type { PindouBeadShape, PindouBoardTheme } from "../lib/pindou-board-theme";
 import { getThemeClasses } from "../lib/theme";
 import { PixelEditorPanel, type EditorPanelMode } from "./pixel-editor-panel";
@@ -38,6 +39,10 @@ export function WorkspacePanels({
   paletteOptions,
   currentCells,
   onApplyCell,
+  canvasCropSelection,
+  onCanvasCropSelectionChange,
+  onCanvasCropConfirm,
+  onCanvasCropCancel,
   onUndo,
   onRedo,
   canUndo,
@@ -104,8 +109,8 @@ export function WorkspacePanels({
   result: (ProcessResult & { url: string }) | null;
   busy: boolean;
   isDark: boolean;
-  editTool: "paint" | "erase" | "pick" | "fill" | "pan" | "zoom";
-  onEditToolChange: (tool: "paint" | "erase" | "pick" | "fill" | "pan" | "zoom") => void;
+  editTool: EditTool;
+  onEditToolChange: (tool: EditTool) => void;
   editZoom: number;
   onEditZoomChange: (value: number) => void;
   editFlipHorizontal: boolean;
@@ -130,8 +135,12 @@ export function WorkspacePanels({
   currentCells: ProcessResult["cells"];
   onApplyCell: (
     index: number,
-    toolOverride?: "paint" | "erase" | "pick" | "fill" | "pan" | "zoom",
+    toolOverride?: EditTool,
   ) => void;
+  canvasCropSelection: CanvasCropRect | null;
+  onCanvasCropSelectionChange: (cropRect: CanvasCropRect | null) => void;
+  onCanvasCropConfirm: () => void | Promise<void>;
+  onCanvasCropCancel: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -226,6 +235,10 @@ export function WorkspacePanels({
             paletteOptions={paletteOptions}
             onSelectedLabelChange={onSelectedLabelChange}
             onApplyCell={onApplyCell}
+            canvasCropSelection={canvasCropSelection}
+            onCanvasCropSelectionChange={onCanvasCropSelectionChange}
+            onCanvasCropConfirm={onCanvasCropConfirm}
+            onCanvasCropCancel={onCanvasCropCancel}
             onUndo={onUndo}
             onRedo={onRedo}
             canUndo={canUndo}
@@ -337,6 +350,10 @@ export function WorkspacePanels({
           paletteOptions={paletteOptions}
           onSelectedLabelChange={onSelectedLabelChange}
           onApplyCell={onApplyCell}
+          canvasCropSelection={canvasCropSelection}
+          onCanvasCropSelectionChange={onCanvasCropSelectionChange}
+          onCanvasCropConfirm={onCanvasCropConfirm}
+          onCanvasCropCancel={onCanvasCropCancel}
           onUndo={onUndo}
           onRedo={onRedo}
           canUndo={canUndo}

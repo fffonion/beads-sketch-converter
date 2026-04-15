@@ -15,11 +15,13 @@ import {
   cellsEqual,
   cloneEditableCells,
   combineNormalizedCropRects,
+  cropEditableCells,
   floodFillCells,
   getActiveAspectRatio,
   getMatchedCoveragePercent,
   getRenderedEditableCells,
   hasLargeAspectRatioMismatch,
+  isFullCanvasCropRect,
   loadImageMetadata,
   mergeDisplayMatchedColors,
   readFileAsDataUrl,
@@ -27,6 +29,7 @@ import {
   replaceLabelAcrossCells,
   summarizeMatchedColors,
   waitForNextPaint,
+  type CanvasCropRect,
   type EditTool,
   type GridAxis,
 } from "./lib/editor-utils";
@@ -483,6 +486,7 @@ export default function App() {
   const sourceFocusOverlayRef = useRef<HTMLDivElement | null>(null);
   const landingDragDepthRef = useRef(0);
   const landingChartImportRunIdRef = useRef(0);
+  const lastNonCropEditToolRef = useRef<EditTool>("pan");
   const saveChartRef = useRef<(() => void) | null>(null);
   const chartPreviewUrlRef = useRef<string | null>(null);
   const chartShareLinkCopiedTimeoutRef = useRef<number | null>(null);
@@ -517,6 +521,7 @@ export default function App() {
   const [preSharpen, setPreSharpen] = useState(true);
   const [preSharpenStrength, setPreSharpenStrength] = useState(20);
   const [editTool, setEditTool] = useState<EditTool>("pan");
+  const [canvasCropSelection, setCanvasCropSelection] = useState<CanvasCropRect | null>(null);
   const [editZoom, setEditZoom] = useState(1);
   const [editFlipHorizontal, setEditFlipHorizontal] = useState(false);
   const [brushSize, setBrushSize] = useState(1);
@@ -780,6 +785,28 @@ export default function App() {
     setReduceColors(nextReduceColors);
   }
 
+  function handleEditToolChange(nextTool: EditTool) {
+    paintActiveRef.current = false;
+    if (nextTool === "crop") {
+      setCanvasCropSelection(null);
+    } else {
+      lastNonCropEditToolRef.current = nextTool;
+      if (editTool === "crop") {
+        setCanvasCropSelection(null);
+      }
+    }
+    setEditTool(nextTool);
+  }
+
+  function exitCanvasCropMode() {
+    setCanvasCropSelection(null);
+    setEditTool(lastNonCropEditToolRef.current === "crop" ? "pan" : lastNonCropEditToolRef.current);
+  }
+
+  function handleCanvasCropCancel() {
+    exitCanvasCropMode();
+  }
+
   function handleGridModeChange(nextGridMode: GridMode) {
     if (nextGridMode === gridMode) {
       return;
@@ -861,7 +888,7 @@ export default function App() {
     setPindouTimerRunning(false);
     setPindouTimerElapsedMs(0);
     pindouTimerStartedAtRef.current = null;
-    setEditTool("pan");
+    handleEditToolChange("pan");
     setEditZoom(1);
     setDisabledResultLabels([]);
     disabledResultLabelsRef.current = [];
@@ -958,9 +985,10 @@ export default function App() {
   async function refreshEditedChart(
     nextCells: EditableCell[],
     disabledLabelsOverride?: string[],
+    nextGrid?: { gridWidth: number; gridHeight: number },
   ) {
     if (!result || result.editingLocked) {
-      return;
+      return false;
     }
 
     const runId = runIdRef.current + 1;
@@ -969,6 +997,8 @@ export default function App() {
     setError(null);
 
     try {
+      const targetGridWidth = nextGrid?.gridWidth ?? result.gridWidth;
+      const targetGridHeight = nextGrid?.gridHeight ?? result.gridHeight;
       const renderedCells = applyDisabledColorReplacements(
         nextCells,
         disabledLabelsOverride ?? disabledResultLabels,
@@ -976,8 +1006,8 @@ export default function App() {
       );
       const exported = await exportChartFromCells({
         cells: renderedCells,
-        gridWidth: result.gridWidth,
-        gridHeight: result.gridHeight,
+        gridWidth: targetGridWidth,
+        gridHeight: targetGridHeight,
         fileName: result.fileName,
         colorSystemId,
         chartSettings: {
@@ -1014,18 +1044,52 @@ export default function App() {
           url,
         };
       });
+      return true;
     } catch (processingError) {
       if (runIdRef.current !== runId) {
-        return;
+        return false;
       }
       setError(
         processingError instanceof Error ? processingError.message : t.processingFailed,
       );
+      return false;
     } finally {
       if (runIdRef.current === runId) {
         setBusy(false);
       }
     }
+  }
+
+  async function handleCanvasCropConfirm() {
+    if (!result || result.editingLocked || !canvasCropSelection) {
+      exitCanvasCropMode();
+      return;
+    }
+    if (isFullCanvasCropRect(canvasCropSelection, result.gridWidth, result.gridHeight)) {
+      exitCanvasCropMode();
+      return;
+    }
+
+    const cropped = cropEditableCells(
+      editorBaseCells,
+      result.gridWidth,
+      result.gridHeight,
+      canvasCropSelection,
+    );
+    const applied = await refreshEditedChart(
+      cropped.cells,
+      disabledResultLabelsRef.current,
+      {
+        gridWidth: cropped.gridWidth,
+        gridHeight: cropped.gridHeight,
+      },
+    );
+    if (!applied) {
+      return;
+    }
+
+    resetEditorHistory(cropped.cells);
+    exitCanvasCropMode();
   }
 
   function resetEditorHistory(cells: EditableCell[]) {
@@ -1172,18 +1236,18 @@ export default function App() {
       if (picked?.label) {
         setSelectedLabel(picked.label);
         if (!toolOverride) {
-          setEditTool("paint");
+          handleEditToolChange("paint");
         }
       } else if (!toolOverride) {
         setSelectedLabel(EMPTY_SELECTION_LABEL);
-        setEditTool("erase");
+        handleEditToolChange("erase");
       } else {
         setSelectedLabel(EMPTY_SELECTION_LABEL);
       }
       return;
     }
 
-    if (activeTool === "pan" || activeTool === "zoom") {
+    if (activeTool === "pan" || activeTool === "zoom" || activeTool === "crop") {
       return;
     }
 
@@ -1845,6 +1909,7 @@ export default function App() {
       setBusy(false);
       setError(null);
       setDisabledResultLabels([]);
+      setCanvasCropSelection(null);
       editorHistoryRef.current = [];
       editorHistoryIndexRef.current = -1;
       editorDraftRef.current = null;
@@ -1872,6 +1937,7 @@ export default function App() {
       setError(t.manualGridValidation);
       setBusy(false);
       setDisabledResultLabels([]);
+      setCanvasCropSelection(null);
       editorHistoryRef.current = [];
       editorHistoryIndexRef.current = -1;
       editorDraftRef.current = null;
@@ -1942,6 +2008,7 @@ export default function App() {
               return null;
             });
             setDisabledResultLabels([]);
+            setCanvasCropSelection(null);
             editorHistoryRef.current = [];
             editorHistoryIndexRef.current = -1;
             editorDraftRef.current = null;
@@ -1966,6 +2033,7 @@ export default function App() {
               return null;
             });
             setDisabledResultLabels([]);
+            setCanvasCropSelection(null);
             editorHistoryRef.current = [];
             editorHistoryIndexRef.current = -1;
             editorDraftRef.current = null;
@@ -1978,6 +2046,7 @@ export default function App() {
 
           const url = URL.createObjectURL(processed.blob);
           setDisabledResultLabels([]);
+          setCanvasCropSelection(null);
           if (!reduceColorsTouched && reduceColors !== processed.effectiveReduceColors) {
             setReduceColors(processed.effectiveReduceColors);
           }
@@ -2028,6 +2097,7 @@ export default function App() {
             return null;
           });
           setDisabledResultLabels([]);
+          setCanvasCropSelection(null);
           editorHistoryRef.current = [];
           editorHistoryIndexRef.current = -1;
           editorDraftRef.current = null;
@@ -2077,7 +2147,7 @@ export default function App() {
             busy={busy}
             isDark={isDark}
             editTool={editTool}
-            onEditToolChange={setEditTool}
+            onEditToolChange={handleEditToolChange}
             editZoom={editZoom}
             onEditZoomChange={setEditZoom}
             editFlipHorizontal={editFlipHorizontal}
@@ -2101,6 +2171,10 @@ export default function App() {
             paletteOptions={paletteOptions}
             currentCells={renderedEditorCells}
             onApplyCell={applyCellEdit}
+            canvasCropSelection={canvasCropSelection}
+            onCanvasCropSelectionChange={setCanvasCropSelection}
+            onCanvasCropConfirm={handleCanvasCropConfirm}
+            onCanvasCropCancel={handleCanvasCropCancel}
             onUndo={handleUndo}
             onRedo={handleRedo}
             canUndo={editorHistoryIndex > 0}
@@ -2374,7 +2448,7 @@ export default function App() {
             busy={busy}
             isDark={isDark}
             editTool={editTool}
-            onEditToolChange={setEditTool}
+            onEditToolChange={handleEditToolChange}
             editZoom={editZoom}
             onEditZoomChange={setEditZoom}
             editFlipHorizontal={editFlipHorizontal}
@@ -2398,6 +2472,10 @@ export default function App() {
             paletteOptions={paletteOptions}
             currentCells={renderedEditorCells}
             onApplyCell={applyCellEdit}
+            canvasCropSelection={canvasCropSelection}
+            onCanvasCropSelectionChange={setCanvasCropSelection}
+            onCanvasCropConfirm={handleCanvasCropConfirm}
+            onCanvasCropCancel={handleCanvasCropCancel}
             onUndo={handleUndo}
             onRedo={handleRedo}
             canUndo={editorHistoryIndex > 0}

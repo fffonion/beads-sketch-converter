@@ -1,6 +1,8 @@
 ﻿import * as Tabs from "@radix-ui/react-tabs";
 import clsx from "clsx";
 import {
+  Check,
+  Crop,
   Eraser,
   Hand,
   Eye,
@@ -21,9 +23,10 @@ import {
   SlidersHorizontal,
   Type as TypeIcon,
   Undo2,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
-import { CanvasEditorStage, clampEditorZoom, clampPindouZoom } from "./canvas-editor-stage";
+import { CanvasStage, clampEditorZoom, clampPindouZoom } from "./canvas-stage";
 import { ChartSettingsTab } from "./chart-settings-tab";
 import { SwitchRow } from "./controls";
 import {
@@ -44,10 +47,11 @@ import {
 import { EditResultSummary } from "./pixel-editor-result-summary";
 import type { Messages } from "../lib/i18n";
 import { type EditableCell, type NormalizedCropRect } from "../lib/chart-processor";
+import { isFullCanvasCropRect, type CanvasCropRect } from "../lib/editor-utils";
 import { type PindouBeadShape, type PindouBoardTheme } from "../lib/pindou-board-theme";
 import { getThemeClasses } from "../lib/theme";
 
-type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom";
+type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom" | "crop";
 export type EditorPanelMode = "edit" | "pindou" | "chart";
 const EMPTY_SELECTION_LABEL = "__EMPTY__";
 
@@ -79,6 +83,10 @@ export function PixelEditorPanel({
   paletteOptions,
   onSelectedLabelChange,
   onApplyCell,
+  canvasCropSelection,
+  onCanvasCropSelectionChange,
+  onCanvasCropConfirm,
+  onCanvasCropCancel,
   onUndo,
   onRedo,
   canUndo,
@@ -175,6 +183,10 @@ export function PixelEditorPanel({
   paletteOptions: Array<{ label: string; hex: string }>;
   onSelectedLabelChange: (label: string) => void;
   onApplyCell: (index: number, toolOverride?: EditTool) => void;
+  canvasCropSelection: CanvasCropRect | null;
+  onCanvasCropSelectionChange: (cropRect: CanvasCropRect | null) => void;
+  onCanvasCropConfirm: () => void | Promise<void>;
+  onCanvasCropCancel: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -286,6 +298,7 @@ export function PixelEditorPanel({
   }> = [
     { id: "pan", label: panLabel, icon: Hand },
     { id: "zoom", label: zoomLabel, icon: Search },
+    { id: "crop", label: t.toolCrop, icon: Crop },
     { id: "paint", label: t.toolPaint, icon: Pencil },
     { id: "erase", label: t.toolErase, icon: Eraser },
     { id: "pick", label: t.toolPick, icon: Pipette },
@@ -479,6 +492,11 @@ export function PixelEditorPanel({
                   onFillToleranceChange={onFillToleranceChange}
                   onEditToolChange={onEditToolChange}
                   onSelectedLabelChange={onSelectedLabelChange}
+                  canvasCropSelection={canvasCropSelection}
+                  gridWidth={gridWidth}
+                  gridHeight={gridHeight}
+                  onCanvasCropConfirm={onCanvasCropConfirm}
+                  onCanvasCropCancel={onCanvasCropCancel}
                   showFlipButton={false}
                 />
               </div>
@@ -535,7 +553,7 @@ export function PixelEditorPanel({
               </section>
 
               <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
-                <CanvasEditorStage
+                <CanvasStage
                   cells={cells}
                   gridWidth={gridWidth}
                   gridHeight={gridHeight}
@@ -552,6 +570,8 @@ export function PixelEditorPanel({
                   flipHorizontal={editFlipHorizontal}
                   selectedHex={selectedHex}
                   onApplyCell={onApplyCell}
+                  canvasCropSelection={canvasCropSelection}
+                  onCanvasCropSelectionChange={onCanvasCropSelectionChange}
                   paintActiveRef={paintActiveRef}
                   busy={busy}
                   embeddedInPanel
@@ -1376,7 +1396,7 @@ function PindouModePanel({
             </aside>
 
             <div className="flex h-full min-h-0 min-w-0 flex-1">
-              <CanvasEditorStage
+              <CanvasStage
                 cells={cells}
                 gridWidth={gridWidth}
                 gridHeight={gridHeight}
@@ -1405,7 +1425,7 @@ function PindouModePanel({
           </div>
         ) : (
           <div className="relative flex h-full min-h-0 min-w-0">
-            <CanvasEditorStage
+            <CanvasStage
               cells={cells}
               gridWidth={gridWidth}
               gridHeight={gridHeight}
@@ -1521,6 +1541,11 @@ function ContextToolStrip({
   onFillToleranceChange,
   onEditToolChange,
   onSelectedLabelChange,
+  canvasCropSelection,
+  gridWidth,
+  gridHeight,
+  onCanvasCropConfirm,
+  onCanvasCropCancel,
   showFlipButton = true,
 }: {
   t: Messages;
@@ -1539,6 +1564,11 @@ function ContextToolStrip({
   onFillToleranceChange: (value: number) => void;
   onEditToolChange: (tool: EditTool) => void;
   onSelectedLabelChange: (label: string) => void;
+  canvasCropSelection: CanvasCropRect | null;
+  gridWidth: number;
+  gridHeight: number;
+  onCanvasCropConfirm: () => void | Promise<void>;
+  onCanvasCropCancel: () => void;
   showFlipButton?: boolean;
 }) {
   const theme = getThemeClasses(isDark);
@@ -1559,6 +1589,8 @@ function ContextToolStrip({
   const showBrushSize = editTool === "paint" || editTool === "erase";
   const showFillThreshold = editTool === "fill";
   const showZoomControls = editTool === "zoom";
+  const showCropActions = editTool === "crop";
+  const canConfirmCanvasCrop = !isFullCanvasCropRect(canvasCropSelection, gridWidth, gridHeight);
   const filteredPaletteOptions = useMemo(() => {
     const query = filterText.trim().toUpperCase();
     const source = [
@@ -1625,6 +1657,36 @@ function ContextToolStrip({
         ref={rowRef}
         className="flex min-h-10 min-w-0 flex-wrap items-center gap-2 overflow-visible sm:flex-nowrap"
       >
+        {showCropActions ? (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <button
+              className={clsx(
+                "inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-semibold transition",
+                theme.pill,
+              )}
+              onClick={onCanvasCropCancel}
+              type="button"
+            >
+              <X className="h-4 w-4" />
+              <span>{t.canvasCropCancel}</span>
+            </button>
+            <button
+              className={clsx(
+                "inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-semibold transition",
+                canConfirmCanvasCrop ? theme.primaryButton : theme.disabledButton,
+              )}
+              disabled={!canConfirmCanvasCrop}
+              onClick={() => {
+                void onCanvasCropConfirm();
+              }}
+              type="button"
+            >
+              <Check className="h-4 w-4" />
+              <span>{t.canvasCropConfirm}</span>
+            </button>
+            <span className={clsx("text-xs", theme.cardMuted)}>{t.canvasCropHint}</span>
+          </div>
+        ) : null}
         {showPalette ? (
           <ColorPickerPopup
             t={t}

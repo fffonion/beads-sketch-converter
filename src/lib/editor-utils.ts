@@ -1,7 +1,14 @@
 ﻿import { measureHexDistance255, type EditableCell, type NormalizedCropRect } from "./chart-processor";
 
 export type GridAxis = "width" | "height";
-export type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom";
+export type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom" | "crop";
+
+export interface CanvasCropRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
 
 export function waitForNextPaint() {
   return new Promise<void>((resolve) => {
@@ -323,6 +330,104 @@ export function floodFillCells(
   }
 
   return nextCells;
+}
+
+export function createCanvasCropRectFromCellIndices(
+  anchorIndex: number,
+  focusIndex: number,
+  gridWidth: number,
+): CanvasCropRect {
+  const anchorColumn = anchorIndex % gridWidth;
+  const anchorRow = Math.floor(anchorIndex / gridWidth);
+  const focusColumn = focusIndex % gridWidth;
+  const focusRow = Math.floor(focusIndex / gridWidth);
+  const left = Math.min(anchorColumn, focusColumn);
+  const right = Math.max(anchorColumn, focusColumn);
+  const top = Math.min(anchorRow, focusRow);
+  const bottom = Math.max(anchorRow, focusRow);
+
+  return {
+    left,
+    top,
+    width: right - left + 1,
+    height: bottom - top + 1,
+  };
+}
+
+export function clampCanvasCropRect(
+  cropRect: CanvasCropRect,
+  gridWidth: number,
+  gridHeight: number,
+) {
+  if (gridWidth <= 0 || gridHeight <= 0) {
+    return null;
+  }
+
+  const left = Math.max(0, Math.min(gridWidth - 1, Math.floor(cropRect.left)));
+  const top = Math.max(0, Math.min(gridHeight - 1, Math.floor(cropRect.top)));
+  const maxWidth = gridWidth - left;
+  const maxHeight = gridHeight - top;
+  const width = Math.max(1, Math.min(maxWidth, Math.floor(cropRect.width)));
+  const height = Math.max(1, Math.min(maxHeight, Math.floor(cropRect.height)));
+
+  return { left, top, width, height };
+}
+
+export function isFullCanvasCropRect(
+  cropRect: CanvasCropRect | null,
+  gridWidth: number,
+  gridHeight: number,
+) {
+  if (!cropRect) {
+    return true;
+  }
+
+  return (
+    cropRect.left === 0 &&
+    cropRect.top === 0 &&
+    cropRect.width === gridWidth &&
+    cropRect.height === gridHeight
+  );
+}
+
+export function cropEditableCells(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  cropRect: CanvasCropRect,
+) {
+  const normalizedCropRect = clampCanvasCropRect(cropRect, gridWidth, gridHeight);
+  if (!normalizedCropRect) {
+    return {
+      cells: cloneEditableCells(cells),
+      gridWidth,
+      gridHeight,
+    };
+  }
+
+  if (isFullCanvasCropRect(normalizedCropRect, gridWidth, gridHeight)) {
+    return {
+      cells: cloneEditableCells(cells),
+      gridWidth,
+      gridHeight,
+    };
+  }
+
+  const nextCells: EditableCell[] = [];
+  for (let row = 0; row < normalizedCropRect.height; row += 1) {
+    const sourceRow = normalizedCropRect.top + row;
+    for (let column = 0; column < normalizedCropRect.width; column += 1) {
+      const sourceColumn = normalizedCropRect.left + column;
+      const sourceIndex = sourceRow * gridWidth + sourceColumn;
+      nextCells.push({ ...(cells[sourceIndex] ?? { label: null, hex: null, source: null }) });
+    }
+  }
+
+  return {
+    cells: nextCells,
+    gridWidth: normalizedCropRect.width,
+    gridHeight: normalizedCropRect.height,
+  };
 }
 
 export function summarizeMatchedColors(

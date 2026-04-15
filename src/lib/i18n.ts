@@ -115,8 +115,12 @@ export interface Messages {
   toolErase: string;
   toolPick: string;
   toolFill: string;
+  toolCrop: string;
   toolPan?: string;
   toolZoom?: string;
+  canvasCropCancel: string;
+  canvasCropConfirm: string;
+  canvasCropHint: string;
   toolUndo: string;
   toolRedo: string;
   selectedColor: string;
@@ -270,8 +274,12 @@ export const messages: Record<Locale, Messages> = {
     toolErase: "橡皮",
     toolPick: "吸管",
     toolFill: "填充",
+    toolCrop: "裁切画布",
     toolUndo: "撤销",
     toolRedo: "重做",
+    canvasCropCancel: "取消",
+    canvasCropConfirm: "确认裁切",
+    canvasCropHint: "拖拽选择画布范围，裁切会自动吸附到像素格。",
     selectedColor: "当前颜色",
     emptyPixel: "空像素",
     paletteTitle: "调色板",
@@ -425,8 +433,12 @@ export const messages: Record<Locale, Messages> = {
     toolErase: "Erase",
     toolPick: "Pick",
     toolFill: "Fill",
+    toolCrop: "Crop Canvas",
     toolPan: "Pan",
     toolZoom: "Zoom",
+    canvasCropCancel: "Cancel",
+    canvasCropConfirm: "Apply Crop",
+    canvasCropHint: "Drag to select a canvas area. The selection snaps to pixel cells.",
     toolUndo: "Undo",
     toolRedo: "Redo",
     selectedColor: "Selected Color",
