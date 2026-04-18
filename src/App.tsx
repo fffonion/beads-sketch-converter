@@ -65,6 +65,7 @@ import {
   type ProcessResult,
 } from "./lib/chart-processor";
 import { getThemeClasses, type ThemeMode } from "./lib/theme";
+import { getWorkspaceStageBusy, getWorkspaceUiBusy } from "./lib/workspace-busy-state";
 import type { EditorPanelMode } from "./components/pixel-editor-panel";
 
 type GridMode = "auto" | "manual";
@@ -721,7 +722,9 @@ export default function App() {
   const [chartIncludeQrCode, setChartIncludeQrCode] = useState(false);
   const [savingChart, setSavingChart] = useState(false);
   const [chartPreviewUrl, setChartPreviewUrl] = useState<string | null>(null);
+  const [chartPreviewError, setChartPreviewError] = useState<string | null>(null);
   const [chartPreviewBusy, setChartPreviewBusy] = useState(false);
+  const [editorRefreshBusy, setEditorRefreshBusy] = useState(false);
   const [chartShareLinkCopied, setChartShareLinkCopied] = useState(false);
   const [chartShareCodeCopied, setChartShareCodeCopied] = useState(false);
   const [chartShareQrBusy, setChartShareQrBusy] = useState(false);
@@ -781,6 +784,8 @@ export default function App() {
   );
   const editorGridWidth = currentEditorSnapshot?.gridWidth ?? result?.gridWidth ?? 0;
   const editorGridHeight = currentEditorSnapshot?.gridHeight ?? result?.gridHeight ?? 0;
+  const workspaceBusy = getWorkspaceUiBusy(busy, editorRefreshBusy);
+  const workspaceStageBusy = getWorkspaceStageBusy(busy, editorRefreshBusy);
   const renderedEditorCells = useMemo(
     () =>
       getRenderedEditableCells(
@@ -1234,7 +1239,7 @@ export default function App() {
 
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
-    setBusy(true);
+    setEditorRefreshBusy(true);
     setError(null);
 
     try {
@@ -1298,7 +1303,7 @@ export default function App() {
       return false;
     } finally {
       if (runIdRef.current === runId) {
-        setBusy(false);
+        setEditorRefreshBusy(false);
       }
     }
   }
@@ -1906,6 +1911,7 @@ export default function App() {
   useEffect(() => {
     if (editorPanelMode !== "chart" || !result || busy || chartEditingLocked) {
       setChartPreviewBusy(false);
+      setChartPreviewError(null);
       setChartPreviewUrl((previous) => {
         if (previous) {
           URL.revokeObjectURL(previous);
@@ -1922,6 +1928,7 @@ export default function App() {
     const timeoutId = window.setTimeout(() => {
       void (async () => {
         setChartPreviewBusy(true);
+        setChartPreviewError(null);
         try {
           const exported = await exportChartFromCells({
             cells: renderedEditorCells,
@@ -1953,7 +1960,8 @@ export default function App() {
             chartPreviewUrlRef.current = nextUrl;
             return nextUrl;
           });
-        } catch {
+          setChartPreviewError(null);
+        } catch (processingError) {
           if (chartPreviewRunIdRef.current !== runId) {
             return;
           }
@@ -1966,6 +1974,11 @@ export default function App() {
             }
             return null;
           });
+          setChartPreviewError(
+            processingError instanceof Error && processingError.message
+              ? processingError.message
+              : t.chartSettingsPreviewError,
+          );
         } finally {
           if (chartPreviewRunIdRef.current === runId) {
             setChartPreviewBusy(false);
@@ -2244,6 +2257,7 @@ export default function App() {
   useEffect(() => {
     if (!file) {
       setBusy(false);
+      setEditorRefreshBusy(false);
       setError(null);
       disabledResultLabelsRef.current = [];
       setDisabledResultLabels([]);
@@ -2274,6 +2288,7 @@ export default function App() {
     ) {
       setError(t.manualGridValidation);
       setBusy(false);
+      setEditorRefreshBusy(false);
       disabledResultLabelsRef.current = [];
       setDisabledResultLabels([]);
       setCanvasCropSelection(null);
@@ -2294,6 +2309,7 @@ export default function App() {
 
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
+    setEditorRefreshBusy(false);
 
     const timeoutId = window.setTimeout(() => {
       void (async () => {
@@ -2512,7 +2528,8 @@ export default function App() {
             inputUrl={inputUrl}
             cropRect={cropRect}
             result={result}
-            busy={busy}
+            busy={workspaceBusy}
+            stageBusy={workspaceStageBusy}
             isDark={isDark}
             editTool={editTool}
             onEditToolChange={handleEditToolChange}
@@ -2602,6 +2619,7 @@ export default function App() {
             chartIncludeQrCode={chartIncludeQrCode}
             onChartIncludeQrCodeChange={setChartIncludeQrCode}
             chartPreviewUrl={chartPreviewUrl}
+            chartPreviewError={chartPreviewError}
             chartShareCode={chartShareCode}
             chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}
@@ -2833,7 +2851,8 @@ export default function App() {
             inputUrl={inputUrl}
             cropRect={cropRect}
             result={result}
-            busy={busy}
+            busy={workspaceBusy}
+            stageBusy={workspaceStageBusy}
             isDark={isDark}
             editTool={editTool}
             onEditToolChange={handleEditToolChange}
@@ -2922,6 +2941,7 @@ export default function App() {
             chartIncludeQrCode={chartIncludeQrCode}
             onChartIncludeQrCodeChange={setChartIncludeQrCode}
             chartPreviewUrl={chartPreviewUrl}
+            chartPreviewError={chartPreviewError}
             chartShareCode={chartShareCode}
             chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}

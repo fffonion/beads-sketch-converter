@@ -168,6 +168,7 @@ export interface ProcessResult {
   colorSystemId: string;
   chartTitle?: string;
   detectionMode: string;
+  processingElapsedMs: number;
   effectiveReduceColors: boolean;
   effectiveEdgeEnhanceStrength: number;
   preferredEditorMode: "edit" | "pindou";
@@ -625,6 +626,7 @@ export async function processImageFile(
   file: File,
   options: ProcessOptions,
 ): Promise<ProcessResult> {
+  const startedAt = getTimingNow();
   const processMessages = {
     ...defaultProcessMessages,
     ...options.messages,
@@ -818,6 +820,7 @@ export async function processImageFile(
     colorSystemId: paletteDefinition.id,
     chartTitle: undefined,
     detectionMode,
+    processingElapsedMs: Math.max(0, getTimingNow() - startedAt),
     effectiveReduceColors,
     effectiveEdgeEnhanceStrength: appliedEdgeEnhanceStrength,
     preferredEditorMode,
@@ -1032,6 +1035,7 @@ async function tryLoadEmbeddedChartResult(file: File): Promise<ProcessResult | n
     colorSystemId: paletteDefinition.id,
     chartTitle: metadata.chartTitle,
     detectionMode: "embedded-chart-metadata",
+    processingElapsedMs: 0,
     effectiveReduceColors: true,
     effectiveEdgeEnhanceStrength: 0,
     preferredEditorMode: editingLocked ? "pindou" : (metadata.preferredEditorMode ?? "pindou"),
@@ -1079,6 +1083,12 @@ function buildSerializedChartCells(cells: EditableCell[]): Array<[string, 1 | 0]
     }
     return [normalized.label, normalized.source === "manual" ? 1 : 0];
   });
+}
+
+function getTimingNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 }
 
 function serializeCompactChartPayload(

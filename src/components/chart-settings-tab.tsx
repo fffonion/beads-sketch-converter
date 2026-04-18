@@ -49,6 +49,7 @@ export function ChartSettingsTab({
   chartIncludeQrCode,
   onChartIncludeQrCodeChange,
   chartPreviewUrl,
+  chartPreviewError,
   chartShareCode,
   chartShareLinkCopied,
   chartShareCodeCopied,
@@ -89,6 +90,7 @@ export function ChartSettingsTab({
   chartIncludeQrCode: boolean;
   onChartIncludeQrCodeChange: (value: boolean) => void;
   chartPreviewUrl: string | null;
+  chartPreviewError: string | null;
   chartShareCode: string;
   chartShareLinkCopied: boolean;
   chartShareCodeCopied: boolean;
@@ -394,6 +396,15 @@ export function ChartSettingsTab({
                   className="h-full max-h-full w-full max-w-full object-contain object-left"
                   src={chartPreviewUrl}
                 />
+              ) : chartPreviewError ? (
+                <div className="flex max-w-[280px] flex-col items-center gap-2 px-5 text-center">
+                  <p className={clsx("text-sm font-semibold", isDark ? "text-rose-200" : "text-rose-700")}>
+                    {t.chartSettingsPreviewError}
+                  </p>
+                  <p className={clsx("text-sm leading-6", theme.cardMuted)}>
+                    {chartPreviewError}
+                  </p>
+                </div>
               ) : (
                 <p className={clsx("max-w-[260px] text-center text-sm", theme.cardMuted)}>
                   {t.chartSettingsPreviewEmpty}
@@ -419,7 +430,7 @@ export function ChartSettingsTab({
           <div className={clsx(chartPanelClassName, "xl:flex-[1_1_0%]")}>
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
-                <span className={clsx("text-sm font-semibold", theme.cardTitle)}>
+                <span className={clsx("shrink-0 whitespace-nowrap text-sm font-semibold", theme.cardTitle)}>
                   {t.chartSettingsChartCode}
                 </span>
                 <span className={clsx("shrink-0 text-xs", theme.cardMuted)}>

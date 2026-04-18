@@ -75,6 +75,7 @@ export interface Messages {
   chartSettingsChartTitlePlaceholder: string;
   chartSettingsPreview: string;
   chartSettingsPreviewEmpty: string;
+  chartSettingsPreviewError: string;
   chartSettingsChartCode: string;
   chartSettingsChartCodeSize: string;
   chartSettingsChartCodePlaceholder: string;
@@ -248,6 +249,7 @@ export const messages: Record<Locale, Messages> = {
     chartSettingsChartTitlePlaceholder: "拼豆图纸",
     chartSettingsPreview: "预览图",
     chartSettingsPreviewEmpty: "设置图纸后，这里会显示导出预览。",
+    chartSettingsPreviewError: "导出预览生成失败",
     chartSettingsChartCode: "图纸码",
     chartSettingsChartCodeSize: "长度",
     chartSettingsChartCodePlaceholder: "",
@@ -415,6 +417,7 @@ export const messages: Record<Locale, Messages> = {
     chartSettingsChartTitlePlaceholder: "Bead Chart",
     chartSettingsPreview: "Preview",
     chartSettingsPreviewEmpty: "The exported chart preview appears here.",
+    chartSettingsPreviewError: "Preview generation failed",
     chartSettingsChartCode: "Chart Code",
     chartSettingsChartCodeSize: "Size",
     chartSettingsChartCodePlaceholder: "",

@@ -1138,6 +1138,7 @@ test("embedded chart metadata should import directly without raster parsing", as
     expect(result.preferredEditorMode).toBe("pindou");
     expect(result.editingLocked).toBe(true);
     expect(result.effectiveEdgeEnhanceStrength).toBe(0);
+    expect(result.processingElapsedMs).toBe(0);
     expect(result.colorSystemId).toBe("mard_221");
     expect(result.chartTitle).toBe("Embedded Title");
     expect(result.fileName).toBe("【拼豆豆】embedded-test.png");
@@ -1259,6 +1260,7 @@ test("grayscale mode should retain manual edge enhancement strength for converte
 
     expect(result.detectionMode).toBe("converted-from-image");
     expect(result.effectiveEdgeEnhanceStrength).toBe(30);
+    expect(result.processingElapsedMs).toBeGreaterThanOrEqual(0);
   } finally {
     globalThis.createImageBitmap = originalCreateImageBitmap;
     globalThis.document = originalDocument;

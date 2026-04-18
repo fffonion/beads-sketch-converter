@@ -50,6 +50,7 @@ export function CanvasStage({
   viewportClassName,
   embeddedInPanel = false,
   preferContentFit = false,
+  footerNote = null,
 }: {
   cells: EditableCell[];
   gridWidth: number;
@@ -85,6 +86,7 @@ export function CanvasStage({
   viewportClassName?: string;
   embeddedInPanel?: boolean;
   preferContentFit?: boolean;
+  footerNote?: string | null;
 }) {
   const theme = getThemeClasses(isDark);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -1030,6 +1032,16 @@ export function CanvasStage({
           isDark={isDark}
         />
       ) : null}
+      {footerNote ? (
+        <div
+          className={clsx(
+            "pointer-events-none absolute bottom-2 left-2 z-40 px-1 text-[11px] font-medium sm:text-xs",
+            isDark ? "text-white/45" : "text-stone-500",
+          )}
+        >
+          {footerNote}
+        </div>
+      ) : null}
       {busy ? <StageLoadingOverlay isDark={isDark} /> : null}
       {showBrushCursor && cursorPreview.visible ? (
         <div
@@ -1278,20 +1290,42 @@ function CanvasStatusBadge({
   isDark: boolean;
 }) {
   const theme = getThemeClasses(isDark);
-  const hoveredX = hoveredCellIndex === null ? "--" : String((hoveredCellIndex % gridWidth) + 1);
-  const hoveredY = hoveredCellIndex === null ? "--" : String(Math.floor(hoveredCellIndex / gridWidth) + 1);
+  const { coordinateText, sizeText } = formatCanvasStatusBadge(
+    gridWidth,
+    gridHeight,
+    hoveredCellIndex,
+  );
 
   return (
     <div
       className={clsx(
-        "pointer-events-none absolute bottom-2 right-2 z-40 rounded-md px-2.5 py-1.5 text-[11px] font-medium shadow-sm backdrop-blur-sm sm:text-xs",
-        isDark ? "bg-stone-950/70 text-stone-100" : "bg-white/80 text-stone-700",
+        "pointer-events-none absolute bottom-2 right-2 z-40 flex flex-col items-end text-[11px] font-medium leading-tight sm:text-xs",
+        isDark ? "text-stone-100/78" : "text-stone-600/88",
         theme.cardMuted,
       )}
     >
-      {gridWidth} x {gridHeight} {hoveredX}, {hoveredY}
+      <span>{coordinateText}</span>
+      <span>{sizeText}</span>
     </div>
   );
+}
+
+export function formatCanvasStatusBadge(
+  gridWidth: number,
+  gridHeight: number,
+  hoveredCellIndex: number | null,
+) {
+  const hoveredX =
+    hoveredCellIndex === null ? "--" : String((hoveredCellIndex % gridWidth) + 1);
+  const hoveredY =
+    hoveredCellIndex === null
+      ? "--"
+      : String(Math.floor(hoveredCellIndex / gridWidth) + 1);
+
+  return {
+    coordinateText: `${hoveredX}, ${hoveredY}`,
+    sizeText: `${gridWidth} x ${gridHeight}`,
+  };
 }
 
 function resolveStageCellIndexFromClientPoint(

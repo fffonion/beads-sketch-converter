@@ -59,6 +59,7 @@ export function PixelEditorPanel({
   t,
   isDark,
   busy,
+  stageBusy,
   cells,
   gridWidth,
   gridHeight,
@@ -122,6 +123,7 @@ export function PixelEditorPanel({
   onPindouTimerReset,
   pindouZoom,
   onPindouZoomChange,
+  processingElapsedMs,
   chartExportTitle,
   onChartExportTitleChange,
   chartWatermarkText,
@@ -150,6 +152,7 @@ export function PixelEditorPanel({
   chartIncludeQrCode,
   onChartIncludeQrCodeChange,
   chartPreviewUrl,
+  chartPreviewError,
   chartShareCode,
   chartShareLinkCopied,
   chartShareCodeCopied,
@@ -164,6 +167,7 @@ export function PixelEditorPanel({
   t: Messages;
   isDark: boolean;
   busy: boolean;
+  stageBusy: boolean;
   cells: EditableCell[];
   gridWidth: number;
   gridHeight: number;
@@ -227,6 +231,7 @@ export function PixelEditorPanel({
   onPindouTimerReset: () => void;
   pindouZoom: number;
   onPindouZoomChange: (value: number) => void;
+  processingElapsedMs: number;
   chartExportTitle: string;
   onChartExportTitleChange: (value: string) => void;
   chartWatermarkText: string;
@@ -255,6 +260,7 @@ export function PixelEditorPanel({
   chartIncludeQrCode: boolean;
   onChartIncludeQrCodeChange: (value: boolean) => void;
   chartPreviewUrl: string | null;
+  chartPreviewError: string | null;
   chartShareCode: string;
   chartShareLinkCopied: boolean;
   chartShareCodeCopied: boolean;
@@ -284,6 +290,7 @@ export function PixelEditorPanel({
     viewportWidth,
     focusOnly,
   });
+  const processingElapsedNote = formatProcessingElapsedNote(processingElapsedMs);
   const pindouColors = useMemo(
     () => summarizeStageColors(cells, paletteOptions),
     [cells, paletteOptions],
@@ -381,6 +388,7 @@ export function PixelEditorPanel({
         t={t}
         isDark={isDark}
         busy={busy}
+        stageBusy={stageBusy}
         cells={cells}
         gridWidth={gridWidth}
         gridHeight={gridHeight}
@@ -407,6 +415,7 @@ export function PixelEditorPanel({
         pindouZoom={pindouZoom}
         onPindouZoomChange={onPindouZoomChange}
         preferContentFit={useDesktopContentFitLayout}
+        processingElapsedNote={processingElapsedNote}
       />
     ) : (
     <Tabs.Root
@@ -593,9 +602,10 @@ export function PixelEditorPanel({
                   canvasCropSelection={canvasCropSelection}
                   onCanvasCropSelectionChange={onCanvasCropSelectionChange}
                   paintActiveRef={paintActiveRef}
-                  busy={busy}
+                  busy={stageBusy}
                   embeddedInPanel
                   preferContentFit={useDesktopContentFitLayout}
+                  footerNote={processingElapsedNote}
                 />
               </div>
             </div>
@@ -607,6 +617,7 @@ export function PixelEditorPanel({
             t={t}
             isDark={isDark}
             busy={busy}
+            stageBusy={stageBusy}
             cells={cells}
             gridWidth={gridWidth}
             gridHeight={gridHeight}
@@ -632,6 +643,7 @@ export function PixelEditorPanel({
             pindouZoom={pindouZoom}
             onPindouZoomChange={onPindouZoomChange}
             preferContentFit={useDesktopContentFitLayout}
+            processingElapsedNote={processingElapsedNote}
           />
         </Tabs.Content>
 
@@ -669,6 +681,7 @@ export function PixelEditorPanel({
             chartIncludeQrCode={chartIncludeQrCode}
             onChartIncludeQrCodeChange={onChartIncludeQrCodeChange}
             chartPreviewUrl={chartPreviewUrl}
+            chartPreviewError={chartPreviewError}
             chartShareCode={chartShareCode}
             chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}
@@ -691,6 +704,7 @@ function PindouModePanel({
   t,
   isDark,
   busy,
+  stageBusy,
   cells,
   gridWidth,
   gridHeight,
@@ -717,10 +731,12 @@ function PindouModePanel({
   pindouZoom,
   onPindouZoomChange,
   preferContentFit = false,
+  processingElapsedNote = null,
 }: {
   t: Messages;
   isDark: boolean;
   busy: boolean;
+  stageBusy: boolean;
   cells: EditableCell[];
   gridWidth: number;
   gridHeight: number;
@@ -747,6 +763,7 @@ function PindouModePanel({
   pindouZoom: number;
   onPindouZoomChange: (value: number) => void;
   preferContentFit?: boolean;
+  processingElapsedNote?: string | null;
 }) {
   const theme = getThemeClasses(isDark);
   const flipHorizontalLabel = t.pindouFlipHorizontal ?? "Flip Horizontally";
@@ -1446,10 +1463,11 @@ function PindouModePanel({
                 pindouBoardTheme={pindouBoardTheme}
                 pindouZoom={pindouZoom}
                 onPindouZoomChange={onPindouZoomChange}
-                busy={busy}
+                busy={stageBusy}
                 viewportClassName={useLandscapeColorRail ? "rounded-l-none" : undefined}
                 embeddedInPanel={!focusOnly}
                 preferContentFit={preferContentFit}
+                footerNote={processingElapsedNote}
                 onPindouStageTap={useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined}
               />
             </div>
@@ -1478,9 +1496,10 @@ function PindouModePanel({
               pindouBoardTheme={pindouBoardTheme}
               pindouZoom={pindouZoom}
               onPindouZoomChange={onPindouZoomChange}
-              busy={busy}
+              busy={stageBusy}
               embeddedInPanel={!focusOnly}
               preferContentFit={preferContentFit}
+              footerNote={processingElapsedNote}
               onPindouStageTap={useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined}
             />
             {usePortraitMobileFocusZoomBar ? (
@@ -1556,6 +1575,21 @@ function PindouModePanel({
       ) : null}
     </section>
   );
+}
+
+export function formatProcessingElapsedNote(elapsedMs: number) {
+  if (elapsedMs <= 0) {
+    return null;
+  }
+
+  return formatProcessingElapsed(elapsedMs);
+}
+
+function formatProcessingElapsed(elapsedMs: number) {
+  if (elapsedMs >= 1000) {
+    return `${(elapsedMs / 1000).toFixed(elapsedMs >= 10_000 ? 1 : 2)} s`;
+  }
+  return `${Math.round(elapsedMs)} ms`;
 }
 
 function ContextToolStrip({

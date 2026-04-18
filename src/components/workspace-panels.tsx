@@ -13,6 +13,7 @@ export function WorkspacePanels({
   cropRect,
   result,
   busy,
+  stageBusy,
   isDark,
   editTool,
   onEditToolChange,
@@ -99,6 +100,7 @@ export function WorkspacePanels({
   chartIncludeQrCode,
   onChartIncludeQrCodeChange,
   chartPreviewUrl,
+  chartPreviewError,
   chartShareCode,
   chartShareLinkCopied,
   chartShareCodeCopied,
@@ -115,6 +117,7 @@ export function WorkspacePanels({
   cropRect: NormalizedCropRect | null;
   result: (ProcessResult & { url: string }) | null;
   busy: boolean;
+  stageBusy: boolean;
   isDark: boolean;
   editTool: EditTool;
   onEditToolChange: (tool: EditTool) => void;
@@ -204,6 +207,7 @@ export function WorkspacePanels({
   chartIncludeQrCode: boolean;
   onChartIncludeQrCodeChange: (value: boolean) => void;
   chartPreviewUrl: string | null;
+  chartPreviewError: string | null;
   chartShareCode: string;
   chartShareLinkCopied: boolean;
   chartShareCodeCopied: boolean;
@@ -225,6 +229,7 @@ export function WorkspacePanels({
             t={t}
             isDark={isDark}
             busy={busy}
+            stageBusy={stageBusy}
             cells={currentCells}
             gridWidth={editorGridWidth}
             gridHeight={editorGridHeight}
@@ -287,6 +292,7 @@ export function WorkspacePanels({
             onPindouTimerReset={onPindouTimerReset}
             pindouZoom={pindouZoom}
             onPindouZoomChange={onPindouZoomChange}
+            processingElapsedMs={result.processingElapsedMs}
             chartExportTitle={chartExportTitle}
             onChartExportTitleChange={onChartExportTitleChange}
             chartWatermarkText={chartWatermarkText}
@@ -315,6 +321,7 @@ export function WorkspacePanels({
             chartIncludeQrCode={chartIncludeQrCode}
             onChartIncludeQrCodeChange={onChartIncludeQrCodeChange}
             chartPreviewUrl={chartPreviewUrl}
+            chartPreviewError={chartPreviewError}
             chartShareCode={chartShareCode}
             chartShareLinkCopied={chartShareLinkCopied}
             chartShareCodeCopied={chartShareCodeCopied}
@@ -345,6 +352,7 @@ export function WorkspacePanels({
           t={t}
           isDark={isDark}
           busy={busy}
+          stageBusy={stageBusy}
           cells={result ? currentCells : []}
           gridWidth={result ? editorGridWidth : 33}
           gridHeight={result ? editorGridHeight : 33}
@@ -407,6 +415,7 @@ export function WorkspacePanels({
           onPindouTimerReset={onPindouTimerReset}
           pindouZoom={pindouZoom}
           onPindouZoomChange={onPindouZoomChange}
+          processingElapsedMs={result?.processingElapsedMs ?? 0}
           chartExportTitle={chartExportTitle}
           onChartExportTitleChange={onChartExportTitleChange}
           chartWatermarkText={chartWatermarkText}
@@ -435,6 +444,7 @@ export function WorkspacePanels({
           chartIncludeQrCode={chartIncludeQrCode}
           onChartIncludeQrCodeChange={onChartIncludeQrCodeChange}
           chartPreviewUrl={chartPreviewUrl}
+          chartPreviewError={chartPreviewError}
           chartShareCode={chartShareCode}
           chartShareLinkCopied={chartShareLinkCopied}
           chartShareCodeCopied={chartShareCodeCopied}
