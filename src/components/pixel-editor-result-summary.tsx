@@ -15,6 +15,7 @@ export function EditResultSummary({
   matchedCoveragePercent,
   activeMatchedColorCount,
   colorSystemId,
+  lockColorSystem = false,
   onColorSystemIdChange,
   onMatchedCoveragePercentChange,
   onToggleMatchedColor,
@@ -28,6 +29,7 @@ export function EditResultSummary({
   matchedCoveragePercent: number;
   activeMatchedColorCount: number;
   colorSystemId: string;
+  lockColorSystem?: boolean;
   onColorSystemIdChange: (value: string) => void;
   onMatchedCoveragePercentChange: (value: number) => void;
   onToggleMatchedColor: (label: string) => void;
@@ -408,6 +410,7 @@ export function EditResultSummary({
                     "h-10 w-full rounded-md border px-3 text-sm outline-none transition",
                     theme.input,
                   )}
+                  disabled={lockColorSystem}
                   value={colorSystemId}
                   onChange={(event) => onColorSystemIdChange(event.target.value)}
                 >

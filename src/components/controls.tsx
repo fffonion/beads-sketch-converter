@@ -297,6 +297,32 @@ export function SliderRow({
   isDark: boolean;
 }) {
   const theme = getThemeClasses(isDark);
+  if (!label) {
+    return (
+      <div className={clsx("flex items-center gap-3", disabled && "opacity-45")}>
+        <Slider.Root
+          id={id}
+          className="relative flex h-5 min-w-0 flex-1 touch-none select-none items-center"
+          disabled={disabled}
+          max={max}
+          min={min}
+          step={step}
+          value={[value]}
+          onValueChange={(next) => onValueChange(next[0] ?? value)}
+        >
+          <Slider.Track className={clsx("relative h-2 grow rounded-full", theme.sliderTrack)}>
+            <Slider.Range className={clsx("absolute h-full rounded-full", theme.sliderRange)} />
+          </Slider.Track>
+          <Slider.Thumb className={clsx("block h-5 w-5 rounded-full border shadow outline-none", theme.sliderThumb)} />
+        </Slider.Root>
+        <span className={clsx("w-12 shrink-0 text-right text-sm font-semibold tabular-nums", theme.cardTitle)}>
+          {value}
+        </span>
+        {accessory ? <div className="shrink-0">{accessory}</div> : null}
+      </div>
+    );
+  }
+
   return (
     <div className={clsx("space-y-3", disabled && "opacity-45")}>
       <div className={clsx("flex gap-3", label ? "items-center justify-between" : "justify-end")}>

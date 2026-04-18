@@ -78,6 +78,7 @@ export function PixelEditorPanel({
   selectedLabel,
   selectedHex,
   colorSystemId,
+  lockColorSystem = false,
   onColorSystemIdChange,
   paletteOptions,
   onSelectedLabelChange,
@@ -182,6 +183,7 @@ export function PixelEditorPanel({
   selectedLabel: string;
   selectedHex: string | null;
   colorSystemId: string;
+  lockColorSystem?: boolean;
   onColorSystemIdChange: (value: string) => void;
   paletteOptions: Array<{ label: string; hex: string }>;
   onSelectedLabelChange: (label: string) => void;
@@ -463,6 +465,7 @@ export function PixelEditorPanel({
                 matchedCoveragePercent={matchedCoveragePercent}
                 activeMatchedColorCount={activeMatchedColorCount}
                 colorSystemId={colorSystemId}
+                lockColorSystem={lockColorSystem}
                 onColorSystemIdChange={onColorSystemIdChange}
                 onMatchedCoveragePercentChange={onMatchedCoveragePercentChange}
                 onToggleMatchedColor={onToggleMatchedColor}

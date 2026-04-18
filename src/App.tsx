@@ -1,12 +1,20 @@
 ﻿import clsx from "clsx";
 import { ImageUp, LaptopMinimal, Moon, Sun, X } from "lucide-react";
-import { startTransition, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import { BrandLogo } from "./components/brand-logo";
 import { BrandWordmark } from "./components/brand-wordmark";
 import { LanguageSwitch, ThemeSwitch } from "./components/controls";
 import { OriginalPreviewCard } from "./components/preview-cards";
 import { SidebarPanel } from "./components/sidebar-panel";
-import { WorkspacePanels } from "./components/workspace-panels";
 import {
   applyDisabledColorReplacements,
   buildDisabledLabelsByCoverage,
@@ -77,6 +85,34 @@ const CHART_SHARE_QR_SIZE = 1200;
 const CHART_SHARE_QR_FALLBACK_URL = "yooooo.us/pdd/";
 const CHART_SHARE_QR_CANVAS_FILL = "#FFF8ED";
 const CHART_SHARE_QR_CARD_FILL = "#FFFFFF";
+const GRAYSCALE_BASE_COLOR_SYSTEM_ID = "mard_221";
+const DEFAULT_CONTRAST = 0;
+const DEFAULT_GRAYSCALE_CONTRAST = 0;
+const DEFAULT_RENDER_STYLE_BIAS = 100;
+const DEFAULT_GRAYSCALE_RENDER_STYLE_BIAS = 0;
+const DEFAULT_GRAYSCALE_DISABLED_LABELS = ["H1", "H6", "H22", "H10"] as const;
+const DEFAULT_GRAYSCALE_DISABLED_HEXES = new Set(
+  getPaletteOptions(GRAYSCALE_BASE_COLOR_SYSTEM_ID, true)
+    .filter((entry) => DEFAULT_GRAYSCALE_DISABLED_LABELS.includes(entry.label as (typeof DEFAULT_GRAYSCALE_DISABLED_LABELS)[number]))
+    .map((entry) => entry.hex),
+);
+const WorkspacePanels = lazy(async () => {
+  const module = await import("./components/workspace-panels");
+  return { default: module.WorkspacePanels };
+});
+
+function getDefaultDisabledResultLabels(
+  grayscaleMode: boolean,
+  paletteOptions: Array<{ label: string; hex: string }>,
+) {
+  if (!grayscaleMode) {
+    return [];
+  }
+
+  return paletteOptions
+    .filter((entry) => DEFAULT_GRAYSCALE_DISABLED_HEXES.has(entry.hex))
+    .map((entry) => entry.label);
+}
 
 function readInitialLocale(): Locale {
   if (typeof window === "undefined") {
@@ -629,12 +665,15 @@ export default function App() {
 
   const [gridMode, setGridMode] = useState<GridMode>("auto");
   const [colorSystemId, setColorSystemId] = useState("mard_221");
+  const [grayscaleMode, setGrayscaleMode] = useState(false);
   const [gridWidth, setGridWidth] = useState("33");
   const [gridHeight, setGridHeight] = useState("33");
   const [manualLastEditedAxis, setManualLastEditedAxis] = useState<GridAxis>("width");
   const [followSourceRatio, setFollowSourceRatio] = useState(true);
   const [reduceColors, setReduceColors] = useState(true);
   const [reduceColorsTouched, setReduceColorsTouched] = useState(false);
+  const [contrast, setContrast] = useState(DEFAULT_CONTRAST);
+  const [renderStyleBias, setRenderStyleBias] = useState(DEFAULT_RENDER_STYLE_BIAS);
   const [reduceTolerance, setReduceTolerance] = useState(16);
   const [preSharpen, setPreSharpen] = useState(true);
   const [preSharpenStrength, setPreSharpenStrength] = useState(20);
@@ -687,8 +726,14 @@ export default function App() {
   const [chartShareLinkCopied, setChartShareLinkCopied] = useState(false);
   const [chartShareCodeCopied, setChartShareCodeCopied] = useState(false);
   const [chartShareQrBusy, setChartShareQrBusy] = useState(false);
+  const lastNonGrayscaleColorSystemIdRef = useRef("mard_221");
+  const lastNonGrayscaleContrastRef = useRef(DEFAULT_CONTRAST);
+  const lastGrayscaleContrastRef = useRef(DEFAULT_GRAYSCALE_CONTRAST);
+  const lastNonGrayscaleRenderStyleBiasRef = useRef(DEFAULT_RENDER_STYLE_BIAS);
+  const lastGrayscaleRenderStyleBiasRef = useRef(DEFAULT_GRAYSCALE_RENDER_STYLE_BIAS);
 
-  const paletteOptions = getPaletteOptions(colorSystemId);
+  const effectiveColorSystemId = colorSystemId;
+  const paletteOptions = getPaletteOptions(effectiveColorSystemId, grayscaleMode);
   const [selectedLabel, setSelectedLabel] = useState<string>(paletteOptions[0]?.label ?? "A1");
 
   const t = getMessages(locale);
@@ -770,7 +815,7 @@ export default function App() {
     try {
       return serializeChartPayload(
         {
-          colorSystemId,
+          colorSystemId: effectiveColorSystemId,
           gridWidth: editorGridWidth,
           gridHeight: editorGridHeight,
           editingLocked: chartLockEditing,
@@ -792,9 +837,9 @@ export default function App() {
   }, [
     chartExportTitle,
     chartLockEditing,
-    colorSystemId,
     editorGridHeight,
     editorGridWidth,
+    effectiveColorSystemId,
     renderedEditorCells,
     result,
   ]);
@@ -919,6 +964,55 @@ export default function App() {
     setCropRect(nextCropRect);
   }
 
+  function applyColorSystemId(nextColorSystemId: string) {
+    setColorSystemId(nextColorSystemId);
+    lastNonGrayscaleColorSystemIdRef.current = nextColorSystemId;
+  }
+
+  function handleGrayscaleModeChange(nextGrayscaleMode: boolean) {
+    if (nextGrayscaleMode === grayscaleMode) {
+      return;
+    }
+
+    if (nextGrayscaleMode) {
+      lastNonGrayscaleContrastRef.current = contrast;
+      lastNonGrayscaleRenderStyleBiasRef.current = renderStyleBias;
+      setContrast(lastGrayscaleContrastRef.current);
+      setRenderStyleBias(lastGrayscaleRenderStyleBiasRef.current);
+    } else {
+      lastGrayscaleContrastRef.current = contrast;
+      lastGrayscaleRenderStyleBiasRef.current = renderStyleBias;
+      setContrast(lastNonGrayscaleContrastRef.current);
+      setRenderStyleBias(lastNonGrayscaleRenderStyleBiasRef.current);
+    }
+
+    setGrayscaleMode(nextGrayscaleMode);
+    const nextDisabledResultLabels = getDefaultDisabledResultLabels(
+      nextGrayscaleMode,
+      getPaletteOptions(colorSystemId, nextGrayscaleMode),
+    );
+    disabledResultLabelsRef.current = nextDisabledResultLabels;
+    setDisabledResultLabels(nextDisabledResultLabels);
+  }
+
+  function handleContrastChange(nextContrast: number) {
+    setContrast(nextContrast);
+    if (grayscaleMode) {
+      lastGrayscaleContrastRef.current = nextContrast;
+      return;
+    }
+    lastNonGrayscaleContrastRef.current = nextContrast;
+  }
+
+  function handleRenderStyleBiasChange(nextRenderStyleBias: number) {
+    setRenderStyleBias(nextRenderStyleBias);
+    if (grayscaleMode) {
+      lastGrayscaleRenderStyleBiasRef.current = nextRenderStyleBias;
+      return;
+    }
+    lastNonGrayscaleRenderStyleBiasRef.current = nextRenderStyleBias;
+  }
+
   function handleReduceColorsChange(nextReduceColors: boolean) {
     setReduceColorsTouched(true);
     setReduceColors(nextReduceColors);
@@ -1016,6 +1110,13 @@ export default function App() {
     setGridHeight("33");
     setManualLastEditedAxis("width");
     setFollowSourceRatio(true);
+    setGrayscaleMode(false);
+    setContrast(DEFAULT_CONTRAST);
+    lastNonGrayscaleContrastRef.current = DEFAULT_CONTRAST;
+    lastGrayscaleContrastRef.current = DEFAULT_GRAYSCALE_CONTRAST;
+    setRenderStyleBias(DEFAULT_RENDER_STYLE_BIAS);
+    lastNonGrayscaleRenderStyleBiasRef.current = DEFAULT_RENDER_STYLE_BIAS;
+    lastGrayscaleRenderStyleBiasRef.current = DEFAULT_GRAYSCALE_RENDER_STYLE_BIAS;
     setReduceColors(true);
     setReduceColorsTouched(false);
     setFftEdgeEnhance(true);
@@ -1156,7 +1257,7 @@ export default function App() {
         gridWidth: targetGridWidth,
         gridHeight: targetGridHeight,
         fileName: result.fileName,
-        colorSystemId,
+        colorSystemId: effectiveColorSystemId,
         chartSettings: {
           saveMetadata: false,
         },
@@ -1630,7 +1731,7 @@ export default function App() {
       return;
     }
 
-    setColorSystemId(decoded.colorSystemId);
+    applyColorSystemId(decoded.colorSystemId);
     setChartExportTitle(decoded.title ?? "");
     handleFileSelection(
       new File([exported.blob], exported.fileName, {
@@ -1826,7 +1927,7 @@ export default function App() {
             gridWidth: editorGridWidth,
             gridHeight: editorGridHeight,
             fileName: result.fileName,
-            colorSystemId,
+            colorSystemId: effectiveColorSystemId,
             chartSettings: buildChartExportSettings(),
             messages: {
               canvasContextUnavailable: t.errorCanvasContextUnavailable,
@@ -1878,10 +1979,10 @@ export default function App() {
   }, [
     busy,
     chartEditingLocked,
-    colorSystemId,
     editorGridHeight,
     editorGridWidth,
     editorPanelMode,
+    effectiveColorSystemId,
     renderedEditorCells,
     result,
     chartExportTitle,
@@ -1920,7 +2021,7 @@ export default function App() {
         gridWidth: editorGridWidth,
         gridHeight: editorGridHeight,
         fileName: result.fileName,
-        colorSystemId,
+        colorSystemId: effectiveColorSystemId,
         chartSettings: buildChartExportSettings(),
         messages: {
           canvasContextUnavailable: t.errorCanvasContextUnavailable,
@@ -2143,6 +2244,7 @@ export default function App() {
     if (!file) {
       setBusy(false);
       setError(null);
+      disabledResultLabelsRef.current = [];
       setDisabledResultLabels([]);
       setCanvasCropSelection(null);
       editorHistoryRef.current = [];
@@ -2171,6 +2273,7 @@ export default function App() {
     ) {
       setError(t.manualGridValidation);
       setBusy(false);
+      disabledResultLabelsRef.current = [];
       setDisabledResultLabels([]);
       setCanvasCropSelection(null);
       editorHistoryRef.current = [];
@@ -2200,11 +2303,14 @@ export default function App() {
 
         try {
           const processed = await processImageFile(file, {
-            colorSystemId,
+            colorSystemId: effectiveColorSystemId,
+            grayscaleMode,
             gridMode,
             gridWidth: gridMode === "manual" ? manualWidth : undefined,
             gridHeight: gridMode === "manual" ? manualHeight : undefined,
             cropRect: cropMode ? cropRect : null,
+            contrast,
+            renderStyleBias,
             reduceColors,
             applyAutoReduceColorsDefault: !reduceColorsTouched,
             reduceTolerance,
@@ -2246,6 +2352,7 @@ export default function App() {
               }
               return null;
             });
+            disabledResultLabelsRef.current = [];
             setDisabledResultLabels([]);
             setCanvasCropSelection(null);
             editorHistoryRef.current = [];
@@ -2271,6 +2378,7 @@ export default function App() {
               }
               return null;
             });
+            disabledResultLabelsRef.current = [];
             setDisabledResultLabels([]);
             setCanvasCropSelection(null);
             editorHistoryRef.current = [];
@@ -2284,9 +2392,18 @@ export default function App() {
           }
 
           const url = URL.createObjectURL(processed.blob);
-          setDisabledResultLabels([]);
+          const nextDisabledResultLabels = getDefaultDisabledResultLabels(
+            grayscaleMode,
+            getPaletteOptions(processed.colorSystemId, grayscaleMode),
+          );
+          disabledResultLabelsRef.current = nextDisabledResultLabels;
+          setDisabledResultLabels(nextDisabledResultLabels);
           setCanvasCropSelection(null);
-          if (!reduceColorsTouched && reduceColors !== processed.effectiveReduceColors) {
+          if (
+            !grayscaleMode &&
+            !reduceColorsTouched &&
+            reduceColors !== processed.effectiveReduceColors
+          ) {
             setReduceColors(processed.effectiveReduceColors);
           }
           if (
@@ -2295,8 +2412,8 @@ export default function App() {
           ) {
             setFftEdgeEnhance(processed.effectiveFftEdgeEnhance);
           }
-          if (processed.colorSystemId !== colorSystemId) {
-            setColorSystemId(processed.colorSystemId);
+          if (!grayscaleMode && processed.colorSystemId !== colorSystemId) {
+            applyColorSystemId(processed.colorSystemId);
           }
           setChartLockEditing(processed.editingLocked);
           if (processed.editingLocked) {
@@ -2317,7 +2434,10 @@ export default function App() {
           });
 
           if (processed.colors[0]?.label) {
-            const processedPaletteOptions = getPaletteOptions(processed.colorSystemId);
+            const processedPaletteOptions = getPaletteOptions(
+              processed.colorSystemId,
+              grayscaleMode,
+            );
             setSelectedLabel((previous) =>
               previous === EMPTY_SELECTION_LABEL || processedPaletteOptions.some((entry) => entry.label === previous)
                 ? previous
@@ -2344,6 +2464,7 @@ export default function App() {
             }
             return null;
           });
+          disabledResultLabelsRef.current = [];
           setDisabledResultLabels([]);
           setCanvasCropSelection(null);
           editorHistoryRef.current = [];
@@ -2368,10 +2489,13 @@ export default function App() {
     };
   }, [
     file,
-    colorSystemId,
+    effectiveColorSystemId,
+    grayscaleMode,
     gridMode,
     gridWidth,
     gridHeight,
+    contrast,
+    renderStyleBias,
     reduceColors,
     reduceColorsTouched,
     reduceTolerance,
@@ -2391,7 +2515,8 @@ export default function App() {
     return (
       <main className={clsx("min-h-screen transition-colors", theme.page)}>
         <div className="min-h-screen w-full overflow-hidden p-0">
-          <WorkspacePanels
+          <Suspense fallback={<div className="min-h-screen w-full" />}>
+            <WorkspacePanels
             t={t}
             inputUrl={inputUrl}
             cropRect={cropRect}
@@ -2419,7 +2544,8 @@ export default function App() {
             selectedLabel={selectedLabel}
             onSelectedLabelChange={setSelectedLabel}
             colorSystemId={colorSystemId}
-            onColorSystemIdChange={setColorSystemId}
+            lockColorSystem={false}
+            onColorSystemIdChange={applyColorSystemId}
             paletteOptions={paletteOptions}
             currentCells={renderedEditorCells}
             editorGridWidth={editorGridWidth}
@@ -2495,7 +2621,8 @@ export default function App() {
             onExportChartShareQr={handleExportChartShareQr}
             onSaveChart={handleSaveChart}
             saveBusy={savingChart}
-          />
+            />
+          </Suspense>
         </div>
       </main>
     );
@@ -2688,6 +2815,12 @@ export default function App() {
             followSourceRatio={followSourceRatio}
             onFollowSourceRatioChange={setFollowSourceRatio}
             paletteOptions={paletteOptions}
+            grayscaleMode={grayscaleMode}
+            onGrayscaleModeChange={handleGrayscaleModeChange}
+            contrast={contrast}
+            onContrastChange={handleContrastChange}
+            renderStyleBias={renderStyleBias}
+            onRenderStyleBiasChange={handleRenderStyleBiasChange}
             reduceColors={reduceColors}
             onReduceColorsChange={handleReduceColorsChange}
             reduceTolerance={reduceTolerance}
@@ -2705,7 +2838,8 @@ export default function App() {
             onFileSelection={handleFileSelection}
           />
 
-          <WorkspacePanels
+          <Suspense fallback={<div className="min-h-[520px] w-full" />}>
+            <WorkspacePanels
             t={t}
             inputUrl={inputUrl}
             cropRect={cropRect}
@@ -2733,7 +2867,8 @@ export default function App() {
             selectedLabel={selectedLabel}
             onSelectedLabelChange={setSelectedLabel}
             colorSystemId={colorSystemId}
-            onColorSystemIdChange={setColorSystemId}
+            lockColorSystem={false}
+            onColorSystemIdChange={applyColorSystemId}
             paletteOptions={paletteOptions}
             currentCells={renderedEditorCells}
             editorGridWidth={editorGridWidth}
@@ -2808,7 +2943,8 @@ export default function App() {
             onExportChartShareQr={handleExportChartShareQr}
             onSaveChart={handleSaveChart}
             saveBusy={savingChart}
-          />
+            />
+          </Suspense>
         </div>
       )}
 

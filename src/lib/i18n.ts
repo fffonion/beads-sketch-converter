@@ -41,13 +41,15 @@ export interface Messages {
   gridWidth: string;
   gridHeight: string;
   polishTitle: string;
+  grayscaleModeTitle: string;
+  contrastTitle: string;
+  renderStyleBiasTitle: string;
+  renderStyleBiasRealistic: string;
+  renderStyleBiasPixelArt: string;
   reduceColorsTitle: string;
-  reduceColorsDescription: string;
   tolerance: string;
   preSharpenTitle: string;
-  preSharpenDescription: string;
   fftEdgeEnhanceTitle: string;
-  fftEdgeEnhanceDescription: string;
   edgeColorAuto: string;
   edgeColorOverride: string;
   strength: string;
@@ -212,13 +214,15 @@ export const messages: Record<Locale, Messages> = {
     gridWidth: "网格宽度",
     gridHeight: "网格高度",
     polishTitle: "图像整理",
+    grayscaleModeTitle: "灰度模式",
+    contrastTitle: "对比度",
+    renderStyleBiasTitle: "风格倾向",
+    renderStyleBiasRealistic: "写实",
+    renderStyleBiasPixelArt: "像素画",
     reduceColorsTitle: "归并近似颜色",
-    reduceColorsDescription: "在调色板匹配之前，先合并人眼不易区分的逻辑颜色。",
     tolerance: "容差",
     preSharpenTitle: "后锐化",
-    preSharpenDescription: "在边缘增强之后做局部锐化，收紧轮廓，减少缩图带来的晕边。",
     fftEdgeEnhanceTitle: "边缘增强",
-    fftEdgeEnhanceDescription: "对于细边框图像，检测勾线桥接断边，让拼豆轮廓更连续顺滑。",
     edgeColorAuto: "自动",
     edgeColorOverride: "边缘颜色",
     strength: "强度",
@@ -377,14 +381,15 @@ export const messages: Record<Locale, Messages> = {
     gridWidth: "Grid Width",
     gridHeight: "Grid Height",
     polishTitle: "Polish",
+    grayscaleModeTitle: "Grayscale Mode",
+    contrastTitle: "Contrast",
+    renderStyleBiasTitle: "Style Bias",
+    renderStyleBiasRealistic: "Realistic",
+    renderStyleBiasPixelArt: "Pixel Art",
     reduceColorsTitle: "Reduce Colors",
-    reduceColorsDescription: "Merge logical colors that are visually close before palette matching.",
     tolerance: "Tolerance",
     preSharpenTitle: "Post-Sharpen",
-    preSharpenDescription: "Runs after edge enhancement to tighten outlines and reduce downsampling halos.",
     fftEdgeEnhanceTitle: "Edge Enhance",
-    fftEdgeEnhanceDescription:
-      "For thin-outline images, detects strokes and bridges broken edges so bead contours stay more continuous and smooth.",
     edgeColorAuto: "Auto",
     edgeColorOverride: "Edge Color",
     strength: "Strength",

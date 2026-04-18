@@ -34,6 +34,12 @@ export function SidebarPanel({
   followSourceRatio,
   onFollowSourceRatioChange,
   paletteOptions,
+  grayscaleMode,
+  onGrayscaleModeChange,
+  contrast,
+  onContrastChange,
+  renderStyleBias,
+  onRenderStyleBiasChange,
   reduceColors,
   onReduceColorsChange,
   reduceTolerance,
@@ -72,6 +78,12 @@ export function SidebarPanel({
   followSourceRatio: boolean;
   onFollowSourceRatioChange: (checked: boolean) => void;
   paletteOptions: Array<{ label: string; hex: string }>;
+  grayscaleMode: boolean;
+  onGrayscaleModeChange: (checked: boolean) => void;
+  contrast: number;
+  onContrastChange: (value: number) => void;
+  renderStyleBias: number;
+  onRenderStyleBiasChange: (value: number) => void;
   reduceColors: boolean;
   onReduceColorsChange: (checked: boolean) => void;
   reduceTolerance: number;
@@ -248,12 +260,52 @@ export function SidebarPanel({
             </Tabs.Content>
           </Tabs.Root>
           <div className="mt-5 space-y-4">
+            <div className={clsx("h-px", theme.divider)} />
+            <SwitchRow
+              id="grayscale-mode"
+              title={t.grayscaleModeTitle}
+              description=""
+              checked={grayscaleMode}
+              onCheckedChange={onGrayscaleModeChange}
+              isDark={isDark}
+            />
+            <div className="space-y-3">
+              <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.contrastTitle}</p>
+              <SliderRow
+                id="contrast"
+                value={contrast}
+                min={-100}
+                max={100}
+                step={1}
+                onValueChange={onContrastChange}
+                isDark={isDark}
+              />
+            </div>
+            <div className={clsx("h-px", theme.divider)} />
+            <div className="space-y-3">
+              <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.renderStyleBiasTitle}</p>
+              <SliderRow
+                id="render-style-bias"
+                value={renderStyleBias}
+                min={0}
+                max={100}
+                step={1}
+                onValueChange={onRenderStyleBiasChange}
+                isDark={isDark}
+              />
+              <div className={clsx("flex items-center justify-between text-xs", theme.cardMuted)}>
+                <span>{t.renderStyleBiasRealistic}</span>
+                <span>{t.renderStyleBiasPixelArt}</span>
+              </div>
+            </div>
+            <div className={clsx("h-px", theme.divider)} />
             <SwitchRow
               id="reduce-colors"
               title={t.reduceColorsTitle}
-              description={t.reduceColorsDescription}
-              checked={reduceColors}
+              description=""
+              checked={grayscaleMode ? false : reduceColors}
               onCheckedChange={onReduceColorsChange}
+              disabled={grayscaleMode}
               isDark={isDark}
             />
             <SliderRow
@@ -262,7 +314,7 @@ export function SidebarPanel({
               min={0}
               max={255}
               step={1}
-              disabled={!reduceColors}
+              disabled={grayscaleMode || !reduceColors}
               onValueChange={onReduceToleranceChange}
               isDark={isDark}
             />
@@ -272,9 +324,10 @@ export function SidebarPanel({
             <SwitchRow
               id="fft-edge-enhance"
               title={t.fftEdgeEnhanceTitle}
-              description={t.fftEdgeEnhanceDescription}
-              checked={fftEdgeEnhance}
+              description=""
+              checked={grayscaleMode ? false : fftEdgeEnhance}
               onCheckedChange={onFftEdgeEnhanceChange}
+              disabled={grayscaleMode}
               isDark={isDark}
             />
             <SliderRow
@@ -283,14 +336,14 @@ export function SidebarPanel({
               min={0}
               max={100}
               step={1}
-              disabled={!fftEdgeEnhance}
+              disabled={grayscaleMode || !fftEdgeEnhance}
               accessory={
                 <div ref={edgeColorPickerRef} className="relative">
                   <button
                     className={clsx(
                       "flex h-9 w-9 items-center justify-center rounded-full border transition",
                       fftEdgeEnhanceOverrideOption ? theme.controlButtonActive : theme.pill,
-                      !fftEdgeEnhance && "pointer-events-none opacity-45",
+                      (grayscaleMode || !fftEdgeEnhance) && "pointer-events-none opacity-45",
                     )}
                     onClick={() => setEdgeColorPickerOpen((current) => !current)}
                     title={edgeColorButtonTitle}
@@ -350,9 +403,10 @@ export function SidebarPanel({
             <SwitchRow
               id="pre-sharpen"
               title={t.preSharpenTitle}
-              description={t.preSharpenDescription}
-              checked={preSharpen}
+              description=""
+              checked={grayscaleMode ? false : preSharpen}
               onCheckedChange={onPreSharpenChange}
+              disabled={grayscaleMode}
               isDark={isDark}
             />
             <SliderRow
@@ -361,7 +415,7 @@ export function SidebarPanel({
               min={0}
               max={100}
               step={1}
-              disabled={!preSharpen}
+              disabled={grayscaleMode || !preSharpen}
               onValueChange={onPreSharpenStrengthChange}
               isDark={isDark}
             />

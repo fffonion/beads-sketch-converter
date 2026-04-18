@@ -35,6 +35,7 @@ export function WorkspacePanels({
   selectedLabel,
   onSelectedLabelChange,
   colorSystemId,
+  lockColorSystem = false,
   onColorSystemIdChange,
   paletteOptions,
   currentCells,
@@ -136,6 +137,7 @@ export function WorkspacePanels({
   selectedLabel: string;
   onSelectedLabelChange: (label: string) => void;
   colorSystemId: string;
+  lockColorSystem?: boolean;
   onColorSystemIdChange: (value: string) => void;
   paletteOptions: Array<{ label: string; hex: string }>;
   currentCells: ProcessResult["cells"];
@@ -243,6 +245,7 @@ export function WorkspacePanels({
             selectedLabel={selectedLabel}
             selectedHex={paletteOptions.find((entry) => entry.label === selectedLabel)?.hex ?? null}
             colorSystemId={colorSystemId}
+            lockColorSystem={lockColorSystem}
             onColorSystemIdChange={onColorSystemIdChange}
             paletteOptions={paletteOptions}
             onSelectedLabelChange={onSelectedLabelChange}
@@ -362,6 +365,7 @@ export function WorkspacePanels({
           selectedLabel={selectedLabel}
           selectedHex={paletteOptions.find((entry) => entry.label === selectedLabel)?.hex ?? null}
           colorSystemId={colorSystemId}
+          lockColorSystem={lockColorSystem}
           onColorSystemIdChange={onColorSystemIdChange}
           paletteOptions={paletteOptions}
           onSelectedLabelChange={onSelectedLabelChange}
