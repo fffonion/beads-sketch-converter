@@ -21,7 +21,7 @@ import {
   serializeChartPayload,
 } from "./chart-serialization";
 import { drawBrandWordmark, measureBrandWordmarkWidth } from "./brand-wordmark";
-import { sharedColorSystemDefinitions } from "./color-system-data";
+import { sharedColorSystemById, sharedColorSystemDefinitions } from "./color-system-data";
 import { getPindouBoardThemeShades, type PindouBoardTheme } from "./pindou-board-theme";
 
 const GRID_SEPARATOR_COLOR = "#C9C4BC";
@@ -31,10 +31,17 @@ const OMITTED_BACKGROUND_HEX = "#FFFFFF";
 const MAX_DETECTION_EDGE = 768;
 const CHART_EDGE_SAMPLE_PROGRESS = [0.15, 0.2, 0.3, 0.35];
 const CHART_EDGE_SAMPLE_INSET = 0.18;
+const MIN_VISIBLE_PIXEL_ALPHA = 8;
+const MIN_MATCHABLE_CELL_ALPHA = 32;
+const GRAYSCALE_CURVE_BLEND = 0.55;
+const SNS_MAX_EXPORT_WIDTH = 1280;
+const SNS_MAX_EXPORT_HEIGHT = 1468;
+const MIN_SNS_DISPLAY_QR_SIZE = 192;
 
 type CropBox = [number, number, number, number];
 type Rgb = [number, number, number];
 type Oklab = [number, number, number];
+type SamplingStrategy = "patch" | "chart-edge";
 
 export interface RasterImage {
   width: number;
@@ -62,10 +69,13 @@ export interface ColorSystemOption {
 
 export interface ProcessOptions {
   colorSystemId?: string;
+  grayscaleMode?: boolean;
   gridMode: "auto" | "manual";
   gridWidth?: number;
   gridHeight?: number;
   cropRect?: NormalizedCropRect | null;
+  contrast?: number;
+  renderStyleBias?: number;
   reduceColors: boolean;
   applyAutoReduceColorsDefault?: boolean;
   reduceTolerance: number;
@@ -143,6 +153,11 @@ interface OutlineBridgeCandidate {
   mode: "horizontal" | "vertical" | "diag-desc" | "diag-asc";
 }
 
+interface RepresentativePixel {
+  rgb: Rgb;
+  alpha: number;
+}
+
 export interface PaletteOption {
   label: string;
   hex: string;
@@ -176,6 +191,17 @@ export interface ChartQrBoardPlacement {
   cardHeight: number;
   cardPadding: number;
   qrSize: number;
+}
+
+interface ResponsiveChartQrSizeOptions {
+  cellSize: number;
+  canvasPadding: number;
+  qrCardPadding: number;
+  qrCaptionBlockHeight: number;
+  qrSectionGap: number;
+  baseCanvasWidth: number;
+  baseCanvasHeight: number;
+  minDisplayedQrSize?: number;
 }
 
 export interface AutoDetectionDebugResult {
@@ -214,6 +240,77 @@ export interface AutoDetectionDebugResult {
   trimmedConnectedFamilyCrop?: [number, number, number, number] | null;
 }
 
+function getBaseChartQrSize(cellSize: number) {
+  return Math.max(232, Math.floor(cellSize * 7.8));
+}
+
+function getBelowBoardQrCardWidth(cellSize: number, qrSize: number, qrCardPadding: number) {
+  return Math.max(
+    qrSize + qrCardPadding * 2,
+    qrSize + Math.max(120, Math.floor(cellSize * 6)),
+  );
+}
+
+function getBelowBoardQrCardHeight(qrSize: number, qrCardPadding: number, qrCaptionBlockHeight: number) {
+  return qrSize + qrCardPadding * 2 + Math.max(0, qrCaptionBlockHeight);
+}
+
+export function getChartSnsDisplayScale(canvasWidth: number, canvasHeight: number) {
+  if (canvasWidth <= 0 || canvasHeight <= 0) {
+    return 1;
+  }
+
+  return Math.min(
+    1,
+    SNS_MAX_EXPORT_WIDTH / canvasWidth,
+    SNS_MAX_EXPORT_HEIGHT / canvasHeight,
+  );
+}
+
+export function getMinimumQrSizeForSnsReadable(
+  canvasWidth: number,
+  canvasHeight: number,
+  minDisplayedQrSize = MIN_SNS_DISPLAY_QR_SIZE,
+) {
+  const scale = getChartSnsDisplayScale(canvasWidth, canvasHeight);
+  return Math.ceil(minDisplayedQrSize / Math.max(scale, 0.0001));
+}
+
+export function resolveResponsiveChartQrSize({
+  cellSize,
+  canvasPadding,
+  qrCardPadding,
+  qrCaptionBlockHeight,
+  qrSectionGap,
+  baseCanvasWidth,
+  baseCanvasHeight,
+  minDisplayedQrSize = MIN_SNS_DISPLAY_QR_SIZE,
+}: ResponsiveChartQrSizeOptions) {
+  let qrSize = Math.max(
+    getBaseChartQrSize(cellSize),
+    getMinimumQrSizeForSnsReadable(baseCanvasWidth, baseCanvasHeight, minDisplayedQrSize),
+  );
+
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    const qrCardWidth = getBelowBoardQrCardWidth(cellSize, qrSize, qrCardPadding);
+    const qrCardHeight = getBelowBoardQrCardHeight(qrSize, qrCardPadding, qrCaptionBlockHeight);
+    const canvasWidth = Math.max(baseCanvasWidth, qrCardWidth + canvasPadding * 2);
+    const canvasHeight = baseCanvasHeight + qrSectionGap + qrCardHeight;
+    const requiredQrSize = Math.max(
+      getBaseChartQrSize(cellSize),
+      getMinimumQrSizeForSnsReadable(canvasWidth, canvasHeight, minDisplayedQrSize),
+    );
+
+    if (requiredQrSize <= qrSize) {
+      break;
+    }
+
+    qrSize = requiredQrSize;
+  }
+
+  return qrSize;
+}
+
 export interface AutoDetectionDebugInput {
   width: number;
   height: number;
@@ -249,6 +346,21 @@ interface DetectionPreparation {
   scaleX: number;
   scaleY: number;
 }
+
+const MARD_221_GRAYSCALE_MATCH_LABELS = new Set([
+  "H2",
+  "H1",
+  "H17",
+  "H10",
+  "H9",
+  "H11",
+  "H22",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "H7",
+]);
 
 function buildPaletteDefinition(
   id: string,
@@ -327,6 +439,12 @@ const paletteDefinitions = new Map<string, PaletteDefinition>(
     buildPaletteDefinition(entry.id, entry.label, entry.labelToHex),
   ]),
 );
+const mard221CommonDefinition = sharedColorSystemById.get("mard_221");
+const grayscaleCommonLabelIndexes = new Set(
+  (mard221CommonDefinition?.commonLabels ?? [])
+    .map((label, index) => (MARD_221_GRAYSCALE_MATCH_LABELS.has(label) ? index : -1))
+    .filter((index) => index >= 0),
+);
 
 export const colorSystemOptions: ColorSystemOption[] = sharedColorSystemDefinitions.map(
   (entry) => ({
@@ -335,12 +453,67 @@ export const colorSystemOptions: ColorSystemOption[] = sharedColorSystemDefiniti
   }),
 );
 
-export function getPaletteOptions(colorSystemId = "mard_221"): PaletteOption[] {
-  return getPaletteDefinition(colorSystemId).options;
-}
-
 function getPaletteDefinition(colorSystemId = "mard_221"): PaletteDefinition {
   return paletteDefinitions.get(colorSystemId) ?? paletteDefinitions.get("mard_221")!;
+}
+
+function buildPaletteSubsetDefinition(
+  base: PaletteDefinition,
+  labels: Set<string>,
+): PaletteDefinition {
+  const colors = base.colors.filter((entry) => labels.has(entry.label));
+  return {
+    id: base.id,
+    label: base.label,
+    colors,
+    byLabel: new Map(colors.map((entry) => [entry.label, entry])),
+    options: colors.map((entry) => ({
+      label: entry.label,
+      hex: entry.hex,
+    })),
+  };
+}
+
+const grayscalePaletteDefinitions = new Map(
+  sharedColorSystemDefinitions.map((entry) => {
+    const labels = entry.commonLabels.filter((_, index) => grayscaleCommonLabelIndexes.has(index));
+    return [
+      entry.id,
+      buildPaletteSubsetDefinition(
+        getPaletteDefinition(entry.id),
+        new Set(labels),
+      ),
+    ] as const;
+  }),
+);
+
+function getMatchingPaletteDefinition(
+  colorSystemId = "mard_221",
+  grayscaleMode = false,
+) {
+  return grayscaleMode
+    ? grayscalePaletteDefinitions.get(colorSystemId) ?? grayscalePaletteDefinitions.get("mard_221")!
+    : getPaletteDefinition(colorSystemId);
+}
+
+export function getPaletteOptions(colorSystemId = "mard_221", grayscaleMode = false): PaletteOption[] {
+  return getMatchingPaletteDefinition(colorSystemId, grayscaleMode).options;
+}
+
+function getDefaultRenderStyleBias(grayscaleMode: boolean) {
+  return grayscaleMode ? 0 : 100;
+}
+
+export function debugMatchLogicalRasterToPalette(
+  logical: RasterImage,
+  colorSystemId = "mard_221",
+  grayscaleMode = false,
+  renderStyleBias = getDefaultRenderStyleBias(grayscaleMode),
+) {
+  const clampedRenderStyleBias = Math.max(0, Math.min(100, renderStyleBias));
+  return matchPalette(logical, getMatchingPaletteDefinition(colorSystemId, grayscaleMode), {
+    ditherStrength: 1 - clampedRenderStyleBias / 100,
+  }).cells;
 }
 
 const defaultProcessMessages: ProcessMessages = {
@@ -462,11 +635,24 @@ export async function processImageFile(
     return embeddedResult;
   }
 
+  const grayscaleMode = options.grayscaleMode ?? false;
+  const contrast = options.contrast ?? 0;
+  const renderStyleBias = Math.max(
+    0,
+    Math.min(100, options.renderStyleBias ?? getDefaultRenderStyleBias(grayscaleMode)),
+  );
+  const pixelArtBias = renderStyleBias / 100;
+  const ditherStrength = 1 - pixelArtBias;
   const paletteDefinition = getPaletteDefinition(options.colorSystemId);
+  const matchingPaletteDefinition = getMatchingPaletteDefinition(
+    paletteDefinition.id,
+    grayscaleMode,
+  );
   const loadedSource = await getCachedFileRaster(file, processMessages.canvasContextUnavailable);
   const source = getCachedCropRaster(loadedSource, options.cropRect);
   const fftEdgeEnhanceEnabled = options.fftEdgeEnhance ?? false;
   const fftEdgeEnhanceStrength = options.fftEdgeEnhanceStrength ?? 30;
+  const effectivePreSharpen = grayscaleMode ? false : options.preSharpen;
   let logical: RasterImage;
   let gridWidth: number;
   let gridHeight: number;
@@ -482,12 +668,13 @@ export async function processImageFile(
 
     logical = await getCachedLogicalGrid(
       source,
-      `auto:${wasmDetection.kind}:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}`,
+      `auto:${wasmDetection.kind}:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${renderStyleBias}`,
       () => sampleRegularGrid(
         cropRaster(source, wasmDetection.cropBox),
         wasmDetection.gridWidth,
         wasmDetection.gridHeight,
         wasmDetection.kind === "chart" ? "chart-edge" : "patch",
+        pixelArtBias,
       ),
     );
     gridWidth = wasmDetection.gridWidth;
@@ -506,36 +693,55 @@ export async function processImageFile(
     }
 
     const manualFftEdgeEnhance =
-      options.applyAutoFftEdgeEnhanceDefault ? true : fftEdgeEnhanceEnabled;
+      grayscaleMode
+        ? false
+        : options.applyAutoFftEdgeEnhanceDefault
+          ? true
+          : fftEdgeEnhanceEnabled;
     gridWidth = options.gridWidth;
     gridHeight = options.gridHeight;
     logical = await getCachedLogicalGrid(
       source,
-      `manual:v2:${gridWidth}:${gridHeight}:${options.preSharpen ? 1 : 0}:${options.preSharpenStrength}:${manualFftEdgeEnhance ? 1 : 0}:${fftEdgeEnhanceStrength}`,
+      `manual:v4:${gridWidth}:${gridHeight}:${renderStyleBias}:${effectivePreSharpen ? 1 : 0}:${options.preSharpenStrength}:${manualFftEdgeEnhance ? 1 : 0}:${fftEdgeEnhanceStrength}`,
       () => convertImageToLogicalGrid(
         source,
         gridWidth,
         gridHeight,
-        options.preSharpen,
+        effectivePreSharpen,
         options.preSharpenStrength,
         manualFftEdgeEnhance,
         fftEdgeEnhanceStrength,
+        "patch",
+        pixelArtBias,
       ),
     );
     detectionMode = "converted-from-image";
   }
 
+  if (grayscaleMode) {
+    logical = convertRasterToGrayscale(logical);
+    logical = applySoftGrayscaleToneCurve(logical);
+  }
+  if (contrast !== 0) {
+    logical = applyContrast(logical, contrast);
+  }
+
   const effectiveReduceColors =
-    options.applyAutoReduceColorsDefault &&
-    options.gridMode === "auto" &&
-    detectionMode === "detected-wasm-pixel" &&
-    gridWidth < 30 &&
-    gridHeight < 30
+    grayscaleMode
       ? false
-      : options.reduceColors;
-  const effectiveFftEdgeEnhance = options.applyAutoFftEdgeEnhanceDefault
-    ? detectionMode === "converted-from-image"
-    : fftEdgeEnhanceEnabled;
+      : options.applyAutoReduceColorsDefault &&
+          options.gridMode === "auto" &&
+          detectionMode === "detected-wasm-pixel" &&
+          gridWidth < 30 &&
+          gridHeight < 30
+        ? false
+        : options.reduceColors;
+  const effectiveFftEdgeEnhance =
+    grayscaleMode
+      ? false
+      : options.applyAutoFftEdgeEnhanceDefault
+        ? detectionMode === "converted-from-image"
+        : fftEdgeEnhanceEnabled;
 
   const originalUniqueColors = countUniqueColors(logical.data);
   let reducedUniqueColors = originalUniqueColors;
@@ -547,11 +753,13 @@ export async function processImageFile(
     reducedUniqueColors = reduced.reducedUniqueColors;
   }
 
-  let matched = matchPalette(logical, paletteDefinition);
+  let matched = matchPalette(logical, matchingPaletteDefinition, {
+    ditherStrength,
+  });
   if (effectiveFftEdgeEnhance && detectionMode === "converted-from-image") {
     const fftEdgeEnhanceOverrideColor =
       options.fftEdgeEnhanceOverrideLabel
-        ? paletteDefinition.byLabel.get(options.fftEdgeEnhanceOverrideLabel) ?? null
+        ? matchingPaletteDefinition.byLabel.get(options.fftEdgeEnhanceOverrideLabel) ?? null
         : null;
     matched = {
       cells: enhancePixelOutlineContinuity(
@@ -1314,7 +1522,7 @@ function cropRaster(image: RasterImage, cropBox: CropBox): RasterImage {
       data[targetIndex] = image.data[sourceIndex];
       data[targetIndex + 1] = image.data[sourceIndex + 1];
       data[targetIndex + 2] = image.data[sourceIndex + 2];
-      data[targetIndex + 3] = 255;
+      data[targetIndex + 3] = image.data[sourceIndex + 3];
     }
   }
 
@@ -1369,7 +1577,7 @@ function applySharpen(image: RasterImage, strength: number): RasterImage {
       const blur = blurred.data[index + channel];
       data[index + channel] = clampToByte(base + (base - blur) * amount);
     }
-    data[index + 3] = 255;
+    data[index + 3] = image.data[index + 3];
   }
   return { width: image.width, height: image.height, data };
 }
@@ -1379,59 +1587,82 @@ function boxBlur(image: RasterImage): RasterImage {
   for (let y = 0; y < image.height; y += 1) {
     for (let x = 0; x < image.width; x += 1) {
       const sums = [0, 0, 0];
+      let colorWeight = 0;
+      let alphaSum = 0;
       let count = 0;
       for (let sampleY = Math.max(0, y - 1); sampleY <= Math.min(image.height - 1, y + 1); sampleY += 1) {
         for (let sampleX = Math.max(0, x - 1); sampleX <= Math.min(image.width - 1, x + 1); sampleX += 1) {
-          const pixel = getPixel(image, sampleX, sampleY);
-          sums[0] += pixel[0];
-          sums[1] += pixel[1];
-          sums[2] += pixel[2];
+          const pixelIndex = (sampleY * image.width + sampleX) * 4;
+          const alpha = image.data[pixelIndex + 3];
+          const weight = alpha / 255;
+          if (weight > 0) {
+            sums[0] += image.data[pixelIndex] * weight;
+            sums[1] += image.data[pixelIndex + 1] * weight;
+            sums[2] += image.data[pixelIndex + 2] * weight;
+            colorWeight += weight;
+          }
+          alphaSum += alpha;
           count += 1;
         }
       }
       const index = (y * image.width + x) * 4;
-      data[index] = clampToByte(sums[0] / count);
-      data[index + 1] = clampToByte(sums[1] / count);
-      data[index + 2] = clampToByte(sums[2] / count);
-      data[index + 3] = 255;
+      data[index] = colorWeight > 0 ? clampToByte(sums[0] / colorWeight) : 0;
+      data[index + 1] = colorWeight > 0 ? clampToByte(sums[1] / colorWeight) : 0;
+      data[index + 2] = colorWeight > 0 ? clampToByte(sums[2] / colorWeight) : 0;
+      data[index + 3] = clampToByte(alphaSum / count);
     }
   }
   return { width: image.width, height: image.height, data };
 }
 
-export function representativeColorFromPatch(
+function representativePixelFromPatch(
   image: RasterImage,
   left: number,
   top: number,
   right: number,
   bottom: number,
-): Rgb {
+): RepresentativePixel {
   const patchWidth = Math.max(1, right - left);
   const patchHeight = Math.max(1, bottom - top);
-  const bucketCodes = new Uint16Array(patchWidth * patchHeight);
+  const totalPixels = patchWidth * patchHeight;
+  const bucketCodes = new Int32Array(totalPixels);
+  bucketCodes.fill(-1);
   const buckets = new Map<number, { count: number; sum: [number, number, number]; support: number }>();
+  let alphaSum = 0;
   for (let y = top; y < bottom; y += 1) {
     for (let x = left; x < right; x += 1) {
-      const pixel = getPixel(image, x, y);
-      const code = ((pixel[0] >> 3) << 10) | ((pixel[1] >> 3) << 5) | (pixel[2] >> 3);
+      const pixelIndex = (y * image.width + x) * 4;
+      const alpha = image.data[pixelIndex + 3];
+      alphaSum += alpha;
+      if (alpha < MIN_VISIBLE_PIXEL_ALPHA) {
+        continue;
+      }
+      const red = image.data[pixelIndex];
+      const green = image.data[pixelIndex + 1];
+      const blue = image.data[pixelIndex + 2];
+      const code = ((red >> 3) << 10) | ((green >> 3) << 5) | (blue >> 3);
       const localIndex = (y - top) * patchWidth + (x - left);
       bucketCodes[localIndex] = code;
       const current = buckets.get(code) ?? { count: 0, sum: [0, 0, 0], support: 0 };
       current.count += 1;
-      current.sum[0] += pixel[0];
-      current.sum[1] += pixel[1];
-      current.sum[2] += pixel[2];
+      current.sum[0] += red;
+      current.sum[1] += green;
+      current.sum[2] += blue;
       buckets.set(code, current);
     }
   }
 
+  const averageAlpha = clampToByte(alphaSum / totalPixels);
   if (!buckets.size) {
-    return [255, 255, 255];
+    return { rgb: [255, 255, 255], alpha: averageAlpha };
   }
 
   for (let y = 0; y < patchHeight; y += 1) {
     for (let x = 0; x < patchWidth; x += 1) {
       const code = bucketCodes[y * patchWidth + x]!;
+      if (code < 0) {
+        continue;
+      }
       const bucket = buckets.get(code);
       if (!bucket) {
         continue;
@@ -1468,7 +1699,7 @@ export function representativeColorFromPatch(
     }
   }
   if (!bestBucket || bestCode === -1) {
-    return [255, 255, 255];
+    return { rgb: [255, 255, 255], alpha: averageAlpha };
   }
 
   const mean: Rgb = [
@@ -1536,16 +1767,27 @@ export function representativeColorFromPatch(
     }
   }
 
-  return bestPixel ?? mean;
+  return { rgb: bestPixel ?? mean, alpha: averageAlpha };
 }
 
-function representativeColorFromChartPatch(
+export function representativeColorFromPatch(
   image: RasterImage,
   left: number,
   top: number,
   right: number,
   bottom: number,
 ): Rgb {
+  return representativePixelFromPatch(image, left, top, right, bottom).rgb;
+}
+
+function representativePixelFromChartPatch(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): RepresentativePixel {
+  const fallback = representativePixelFromPatch(image, left, top, right, bottom);
   const width = Math.max(1, right - left);
   const height = Math.max(1, bottom - top);
   const xInset = Math.max(0, Math.min(width - 1, Math.round((width - 1) * CHART_EDGE_SAMPLE_INSET)));
@@ -1561,10 +1803,14 @@ function representativeColorFromChartPatch(
     let count = 0;
     for (let y = startY; y <= endY; y += 1) {
       for (let x = startX; x <= endX; x += 1) {
-        const pixel = getPixel(image, x, y);
-        sums[0] += pixel[0];
-        sums[1] += pixel[1];
-        sums[2] += pixel[2];
+        const pixelIndex = (y * image.width + x) * 4;
+        const alpha = image.data[pixelIndex + 3];
+        if (alpha < MIN_VISIBLE_PIXEL_ALPHA) {
+          continue;
+        }
+        sums[0] += image.data[pixelIndex];
+        sums[1] += image.data[pixelIndex + 1];
+        sums[2] += image.data[pixelIndex + 2];
         count += 1;
       }
     }
@@ -1595,7 +1841,7 @@ function representativeColorFromChartPatch(
   }
 
   if (!samples.length) {
-    return representativeColorFromPatch(image, left, top, right, bottom);
+    return fallback;
   }
 
   const buckets = new Map<number, { count: number; sum: [number, number, number] }>();
@@ -1616,21 +1862,96 @@ function representativeColorFromChartPatch(
     }
   }
   if (!best) {
-    return representativeColorFromPatch(image, left, top, right, bottom);
+    return fallback;
   }
 
-  return [
-    clampToByte(best.sum[0] / best.count),
-    clampToByte(best.sum[1] / best.count),
-    clampToByte(best.sum[2] / best.count),
-  ];
+  return {
+    rgb: [
+      clampToByte(best.sum[0] / best.count),
+      clampToByte(best.sum[1] / best.count),
+      clampToByte(best.sum[2] / best.count),
+    ],
+    alpha: fallback.alpha,
+  };
+}
+
+function weightedAveragePixelFromPatch(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): RepresentativePixel {
+  const patchWidth = Math.max(1, right - left);
+  const patchHeight = Math.max(1, bottom - top);
+  const centerX = left + patchWidth / 2;
+  const centerY = top + patchHeight / 2;
+  const radiusX = Math.max(0.8, patchWidth * 0.38);
+  const radiusY = Math.max(0.8, patchHeight * 0.38);
+  let weightedRed = 0;
+  let weightedGreen = 0;
+  let weightedBlue = 0;
+  let visibleWeight = 0;
+  let weightedAlpha = 0;
+  let alphaWeight = 0;
+
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const pixelIndex = (y * image.width + x) * 4;
+      const alpha = image.data[pixelIndex + 3];
+      const dx = (x + 0.5 - centerX) / radiusX;
+      const dy = (y + 0.5 - centerY) / radiusY;
+      const spatialWeight = Math.exp(-0.5 * (dx * dx + dy * dy));
+      weightedAlpha += alpha * spatialWeight;
+      alphaWeight += spatialWeight;
+      if (alpha < MIN_VISIBLE_PIXEL_ALPHA) {
+        continue;
+      }
+
+      const weight = spatialWeight * (alpha / 255);
+      weightedRed += image.data[pixelIndex] * weight;
+      weightedGreen += image.data[pixelIndex + 1] * weight;
+      weightedBlue += image.data[pixelIndex + 2] * weight;
+      visibleWeight += weight;
+    }
+  }
+
+  return {
+    rgb:
+      visibleWeight > 0
+        ? [
+            clampToByte(weightedRed / visibleWeight),
+            clampToByte(weightedGreen / visibleWeight),
+            clampToByte(weightedBlue / visibleWeight),
+          ]
+        : [255, 255, 255],
+    alpha: alphaWeight > 0 ? clampToByte(weightedAlpha / alphaWeight) : 0,
+  };
+}
+
+function blendRepresentativePixels(
+  realistic: RepresentativePixel,
+  pixelArt: RepresentativePixel,
+  pixelArtBias: number,
+): RepresentativePixel {
+  const clampedBias = Math.max(0, Math.min(1, pixelArtBias));
+  const realisticWeight = 1 - clampedBias;
+  return {
+    rgb: [
+      clampToByte(realistic.rgb[0] * realisticWeight + pixelArt.rgb[0] * clampedBias),
+      clampToByte(realistic.rgb[1] * realisticWeight + pixelArt.rgb[1] * clampedBias),
+      clampToByte(realistic.rgb[2] * realisticWeight + pixelArt.rgb[2] * clampedBias),
+    ],
+    alpha: clampToByte(realistic.alpha * realisticWeight + pixelArt.alpha * clampedBias),
+  };
 }
 
 function sampleRegularGrid(
   image: RasterImage,
   gridWidth: number,
   gridHeight: number,
-  strategy: "patch" | "chart-edge" = "patch",
+  strategy: SamplingStrategy = "patch",
+  pixelArtBias = 1,
 ): RasterImage {
   const xEdges = buildEdges(image.width, gridWidth);
   const yEdges = buildEdges(image.height, gridHeight);
@@ -1642,15 +1963,21 @@ function sampleRegularGrid(
     for (let column = 0; column < gridWidth; column += 1) {
       const left = xEdges[column];
       const right = Math.max(xEdges[column + 1], left + 1);
-      const color =
+      const realisticRepresentative = weightedAveragePixelFromPatch(image, left, top, right, bottom);
+      const pixelArtRepresentative =
         strategy === "chart-edge"
-          ? representativeColorFromChartPatch(image, left, top, right, bottom)
-          : representativeColorFromPatch(image, left, top, right, bottom);
+          ? representativePixelFromChartPatch(image, left, top, right, bottom)
+          : representativePixelFromPatch(image, left, top, right, bottom);
+      const representative = blendRepresentativePixels(
+        realisticRepresentative,
+        pixelArtRepresentative,
+        pixelArtBias,
+      );
       const index = (row * gridWidth + column) * 4;
-      data[index] = color[0];
-      data[index + 1] = color[1];
-      data[index + 2] = color[2];
-      data[index + 3] = 255;
+      data[index] = representative.rgb[0];
+      data[index + 1] = representative.rgb[1];
+      data[index + 2] = representative.rgb[2];
+      data[index + 3] = representative.alpha;
     }
   }
 
@@ -1663,6 +1990,7 @@ function sampleFixedSquareGrid(
   gridHeight: number,
   cellSize: number,
   gap: number,
+  pixelArtBias = 1,
 ): RasterImage {
   const pitch = cellSize + gap;
   const data = new Uint8ClampedArray(gridWidth * gridHeight * 4);
@@ -1673,12 +2001,16 @@ function sampleFixedSquareGrid(
     for (let column = 0; column < gridWidth; column += 1) {
       const left = column * pitch;
       const right = Math.min(image.width, left + cellSize);
-      const color = representativeColorFromPatch(image, left, top, right, bottom);
+      const representative = blendRepresentativePixels(
+        weightedAveragePixelFromPatch(image, left, top, right, bottom),
+        representativePixelFromPatch(image, left, top, right, bottom),
+        pixelArtBias,
+      );
       const index = (row * gridWidth + column) * 4;
-      data[index] = color[0];
-      data[index + 1] = color[1];
-      data[index + 2] = color[2];
-      data[index + 3] = 255;
+      data[index] = representative.rgb[0];
+      data[index + 1] = representative.rgb[1];
+      data[index + 2] = representative.rgb[2];
+      data[index + 3] = representative.alpha;
     }
   }
 
@@ -1693,6 +2025,8 @@ async function convertImageToLogicalGrid(
   preSharpenStrength: number,
   fftEdgeEnhanceEnabled: boolean,
   fftEdgeEnhanceStrength: number,
+  samplingStrategy: SamplingStrategy = "patch",
+  pixelArtBias = 1,
 ) {
   let cropped = centerCropToRatio(image, gridWidth / gridHeight);
   if (fftEdgeEnhanceEnabled) {
@@ -1701,7 +2035,7 @@ async function convertImageToLogicalGrid(
   if (preSharpenEnabled) {
     cropped = applySharpen(cropped, preSharpenStrength);
   }
-  return sampleRegularGrid(cropped, gridWidth, gridHeight);
+  return sampleRegularGrid(cropped, gridWidth, gridHeight, samplingStrategy, pixelArtBias);
 }
 
 function centerCropToRatio(image: RasterImage, targetRatio: number) {
@@ -1721,27 +2055,35 @@ function centerCropToRatio(image: RasterImage, targetRatio: number) {
   return cropRaster(image, [0, top, image.width, top + newHeight]);
 }
 
-function matchPalette(logical: RasterImage, paletteDefinition: PaletteDefinition) {
+function findClosestPaletteColor(rgb: Rgb, paletteDefinition: PaletteDefinition) {
+  const oklab = rgbToOklab(rgb);
+  let best = paletteDefinition.colors[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const paletteColor of paletteDefinition.colors) {
+    const distance = oklabDistanceSquared(oklab, paletteColor.oklab);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = paletteColor;
+    }
+  }
+  return best;
+}
+
+function matchPaletteNearest(logical: RasterImage, paletteDefinition: PaletteDefinition) {
   const cells: EditableCell[] = [];
 
   for (let index = 0; index < logical.width * logical.height; index += 1) {
     const pixelIndex = index * 4;
+    if (logical.data[pixelIndex + 3] < MIN_MATCHABLE_CELL_ALPHA) {
+      cells.push({ label: null, hex: null, source: null });
+      continue;
+    }
     const rgb: Rgb = [
       logical.data[pixelIndex],
       logical.data[pixelIndex + 1],
       logical.data[pixelIndex + 2],
     ];
-    const oklab = rgbToOklab(rgb);
-
-    let best = paletteDefinition.colors[0];
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (const paletteColor of paletteDefinition.colors) {
-      const distance = oklabDistanceSquared(oklab, paletteColor.oklab);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = paletteColor;
-      }
-    }
+    const best = findClosestPaletteColor(rgb, paletteDefinition);
 
     cells.push(normalizeEditableCell({
       label: best.label,
@@ -1751,6 +2093,93 @@ function matchPalette(logical: RasterImage, paletteDefinition: PaletteDefinition
   }
 
   return { cells };
+}
+
+function matchPaletteWithErrorDiffusion(
+  logical: RasterImage,
+  paletteDefinition: PaletteDefinition,
+  ditherStrength = 1,
+) {
+  const width = logical.width;
+  const height = logical.height;
+  const cells: EditableCell[] = new Array(width * height);
+  const working = new Float32Array(logical.data.length);
+  const clampedDitherStrength = Math.max(0, Math.min(1, ditherStrength));
+  for (let index = 0; index < logical.data.length; index += 1) {
+    working[index] = logical.data[index];
+  }
+
+  function diffuseError(
+    x: number,
+    y: number,
+    redError: number,
+    greenError: number,
+    blueError: number,
+    factor: number,
+  ) {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+      return;
+    }
+
+    const pixelIndex = (y * width + x) * 4;
+    if (logical.data[pixelIndex + 3] < MIN_MATCHABLE_CELL_ALPHA) {
+      return;
+    }
+
+    const scaledFactor = factor * clampedDitherStrength;
+    working[pixelIndex] += redError * scaledFactor;
+    working[pixelIndex + 1] += greenError * scaledFactor;
+    working[pixelIndex + 2] += blueError * scaledFactor;
+  }
+
+  for (let row = 0; row < height; row += 1) {
+    const serpentine = row % 2 === 1;
+    const startX = serpentine ? width - 1 : 0;
+    const endX = serpentine ? -1 : width;
+    const stepX = serpentine ? -1 : 1;
+
+    for (let column = startX; column !== endX; column += stepX) {
+      const pixelIndex = (row * width + column) * 4;
+      if (logical.data[pixelIndex + 3] < MIN_MATCHABLE_CELL_ALPHA) {
+        cells[row * width + column] = { label: null, hex: null, source: null };
+        continue;
+      }
+
+      const current: Rgb = [
+        clampToByte(working[pixelIndex]),
+        clampToByte(working[pixelIndex + 1]),
+        clampToByte(working[pixelIndex + 2]),
+      ];
+      const best = findClosestPaletteColor(current, paletteDefinition);
+      cells[row * width + column] = normalizeEditableCell({
+        label: best.label,
+        hex: best.hex,
+        source: "detected",
+      });
+
+      const redError = working[pixelIndex] - best.rgb[0];
+      const greenError = working[pixelIndex + 1] - best.rgb[1];
+      const blueError = working[pixelIndex + 2] - best.rgb[2];
+      const forwardX = column + stepX;
+      diffuseError(forwardX, row, redError, greenError, blueError, 7 / 16);
+      diffuseError(column - stepX, row + 1, redError, greenError, blueError, 3 / 16);
+      diffuseError(column, row + 1, redError, greenError, blueError, 5 / 16);
+      diffuseError(forwardX, row + 1, redError, greenError, blueError, 1 / 16);
+    }
+  }
+
+  return { cells: cells.map((cell) => cell ?? { label: null, hex: null, source: null }) };
+}
+
+function matchPalette(
+  logical: RasterImage,
+  paletteDefinition: PaletteDefinition,
+  options: { ditherStrength?: number } = {},
+) {
+  const ditherStrength = Math.max(0, Math.min(1, options.ditherStrength ?? 0));
+  return ditherStrength > 0.001
+    ? matchPaletteWithErrorDiffusion(logical, paletteDefinition, ditherStrength)
+    : matchPaletteNearest(logical, paletteDefinition);
 }
 
 export function enhancePixelOutlineContinuity(
@@ -2099,6 +2528,10 @@ export function reduceColorsPhotoshopStyle(
 
   for (let index = 0; index < pixelCount; index += 1) {
     const pixelIndex = index * 4;
+    if (image.data[pixelIndex + 3] < MIN_VISIBLE_PIXEL_ALPHA) {
+      inverse[index] = -1;
+      continue;
+    }
     const code =
       (image.data[pixelIndex] << 16) |
       (image.data[pixelIndex + 1] << 8) |
@@ -2172,7 +2605,15 @@ export function reduceColorsPhotoshopStyle(
 
   const data = new Uint8ClampedArray(image.data.length);
   for (let index = 0; index < pixelCount; index += 1) {
+    const pixelIndex = index * 4;
     const colorIndex = inverse[index];
+    if (colorIndex < 0) {
+      data[pixelIndex] = image.data[pixelIndex];
+      data[pixelIndex + 1] = image.data[pixelIndex + 1];
+      data[pixelIndex + 2] = image.data[pixelIndex + 2];
+      data[pixelIndex + 3] = image.data[pixelIndex + 3];
+      continue;
+    }
     const replacementIndex =
       preserveEdges &&
       replacementByColor[colorIndex] !== colorIndex &&
@@ -2189,11 +2630,10 @@ export function reduceColorsPhotoshopStyle(
         ? colorIndex
         : replacementByColor[colorIndex];
     const replacement = uniqueColors[replacementIndex];
-    const pixelIndex = index * 4;
     data[pixelIndex] = replacement[0];
     data[pixelIndex + 1] = replacement[1];
     data[pixelIndex + 2] = replacement[2];
-    data[pixelIndex + 3] = 255;
+    data[pixelIndex + 3] = image.data[pixelIndex + 3];
   }
 
   const globallyReducedImage = {
@@ -2230,6 +2670,10 @@ function mergeRareNeighborhoodColors(
   const counts = new Map<number, number>();
   for (let index = 0; index < pixelCount; index += 1) {
     const pixelIndex = index * 4;
+    if (image.data[pixelIndex + 3] < MIN_VISIBLE_PIXEL_ALPHA) {
+      codes[index] = -1;
+      continue;
+    }
     const code =
       (image.data[pixelIndex] << 16) |
       (image.data[pixelIndex + 1] << 8) |
@@ -2257,6 +2701,9 @@ function mergeRareNeighborhoodColors(
 
   for (let index = 0; index < pixelCount; index += 1) {
     const currentCode = codes[index];
+    if (currentCode < 0) {
+      continue;
+    }
     const currentCount = counts.get(currentCode) ?? 0;
     if (currentCount <= 0 || currentCount > rareColorLimit) {
       continue;
@@ -2301,7 +2748,7 @@ function mergeRareNeighborhoodColors(
         }
 
         const neighborCode = codes[neighborY * image.width + neighborX];
-        if (neighborCode === currentCode) {
+        if (neighborCode < 0 || neighborCode === currentCode) {
           continue;
         }
 
@@ -2347,7 +2794,7 @@ function mergeRareNeighborhoodColors(
     nextData[pixelIndex] = replacement[0];
     nextData[pixelIndex + 1] = replacement[1];
     nextData[pixelIndex + 2] = replacement[2];
-    nextData[pixelIndex + 3] = 255;
+    nextData[pixelIndex + 3] = image.data[pixelIndex + 3];
     changed = true;
   }
 
@@ -2386,6 +2833,9 @@ function hasSupportingSimilarNeighbor(
       }
 
       const neighborCode = codes[neighborY * width + neighborX];
+      if (neighborCode < 0) {
+        continue;
+      }
       if (isSupportingCode && !isSupportingCode(neighborCode)) {
         continue;
       }
@@ -2638,34 +3088,11 @@ async function renderChart(
   const legendTileHeight = legendSwatchHeight + Math.max(30, Math.floor(cellSize * 0.82));
   const legendGap = Math.max(10, Math.floor(cellSize / 4));
   const qrCardPadding = Math.max(24, Math.floor(cellSize * 0.64));
-  const qrSize = includeQrCode ? Math.max(232, Math.floor(cellSize * 7.8)) : 0;
+  const baseQrSize = includeQrCode ? getBaseChartQrSize(cellSize) : 0;
   const qrCaption = chartQrCaptionMessage.trim();
   const qrCaptionFontSize = includeQrCode ? Math.max(15, Math.floor(cellSize * 0.46)) : 0;
   const qrCaptionGap = qrCaption ? Math.max(12, Math.floor(cellSize * 0.34)) : 0;
   const qrCaptionBlockHeight = qrCaption ? qrCaptionFontSize + qrCaptionGap : 0;
-  const qrBoardPlacement =
-    includeQrCode && chartSettings?.shareUrl
-      ? findChartQrBoardPlacement(
-          cells,
-          gridWidth,
-          gridHeight,
-          cellSize,
-          qrSize,
-          qrCaptionBlockHeight,
-        )
-      : null;
-  const renderQrBelowBoard = includeQrCode && !qrBoardPlacement;
-  const qrCardWidth =
-    qrSize > 0 && renderQrBelowBoard
-      ? Math.max(
-          qrSize + qrCardPadding * 2,
-          qrSize + Math.max(120, Math.floor(cellSize * 6)),
-        )
-      : 0;
-  const qrCardHeight =
-    qrSize > 0 && renderQrBelowBoard
-      ? qrSize + qrCardPadding * 2 + qrCaptionBlockHeight
-      : 0;
 
   const baseCanvasWidth = Math.max(boardBlockWidth + canvasPadding * 2, 900);
   const itemsPerRow = Math.max(
@@ -2677,6 +3104,59 @@ async function renderChart(
     legendRows * legendTileHeight + Math.max(0, legendRows - 1) * legendGap;
   const legendSectionHeight = includeLegend ? legendHeight : 0;
   const legendSectionGap = includeLegend ? titleGap : 0;
+  const baseCanvasHeight =
+    canvasPadding +
+    brandRowHeight +
+    headerSectionHeight +
+    boardBlockHeight +
+    legendSectionGap +
+    legendSectionHeight +
+    canvasPadding;
+  const preferredBoardQrSize = includeQrCode
+    ? Math.max(
+        baseQrSize,
+        getMinimumQrSizeForSnsReadable(baseCanvasWidth, baseCanvasHeight),
+      )
+    : 0;
+  const tentativeQrBoardPlacement =
+    includeQrCode && chartSettings?.shareUrl
+      ? findChartQrBoardPlacement(
+          cells,
+          gridWidth,
+          gridHeight,
+          cellSize,
+          preferredBoardQrSize,
+          qrCaptionBlockHeight,
+        )
+      : null;
+  const qrBoardPlacement =
+    tentativeQrBoardPlacement &&
+    tentativeQrBoardPlacement.qrSize *
+      getChartSnsDisplayScale(baseCanvasWidth, baseCanvasHeight) >=
+      MIN_SNS_DISPLAY_QR_SIZE
+      ? tentativeQrBoardPlacement
+      : null;
+  const renderQrBelowBoard = includeQrCode && !qrBoardPlacement;
+  const qrSize =
+    includeQrCode && renderQrBelowBoard
+      ? resolveResponsiveChartQrSize({
+          cellSize,
+          canvasPadding,
+          qrCardPadding,
+          qrCaptionBlockHeight,
+          qrSectionGap: titleGap,
+          baseCanvasWidth,
+          baseCanvasHeight,
+        })
+      : 0;
+  const qrCardWidth =
+    qrSize > 0 && renderQrBelowBoard
+      ? getBelowBoardQrCardWidth(cellSize, qrSize, qrCardPadding)
+      : 0;
+  const qrCardHeight =
+    qrSize > 0 && renderQrBelowBoard
+      ? getBelowBoardQrCardHeight(qrSize, qrCardPadding, qrCaptionBlockHeight)
+      : 0;
   const qrSectionHeight = renderQrBelowBoard ? qrCardHeight : 0;
   const qrSectionGap = renderQrBelowBoard ? titleGap : 0;
 
@@ -2685,16 +3165,7 @@ async function renderChart(
     itemsPerRow * legendTileWidth + Math.max(0, itemsPerRow - 1) * legendGap + canvasPadding * 2,
     qrCardWidth + canvasPadding * 2,
   );
-  const canvasHeight =
-    canvasPadding +
-    brandRowHeight +
-    headerSectionHeight +
-    boardBlockHeight +
-    legendSectionGap +
-    legendSectionHeight +
-    qrSectionGap +
-    qrSectionHeight +
-    canvasPadding;
+  const canvasHeight = baseCanvasHeight + qrSectionGap + qrSectionHeight;
 
   const canvas = document.createElement("canvas");
   canvas.width = canvasWidth;
@@ -3150,7 +3621,7 @@ export function findChartQrBoardPlacement(
         cellLeft,
         cellTop,
         cellSpan: span,
-        cardWidth: regionSize,
+        cardWidth: qrSize + cardPadding * 2,
         cardHeight: qrSize + cardPadding * 2 + Math.max(0, captionBlockHeight),
         cardPadding,
         qrSize,
@@ -3723,7 +4194,7 @@ function scaleLogicalNearest(logical: RasterImage, width: number, height: number
       data[targetIndex] = logical.data[sourceIndex];
       data[targetIndex + 1] = logical.data[sourceIndex + 1];
       data[targetIndex + 2] = logical.data[sourceIndex + 2];
-      data[targetIndex + 3] = 255;
+      data[targetIndex + 3] = logical.data[sourceIndex + 3];
     }
   }
   return { width, height, data };
@@ -3740,6 +4211,9 @@ function buildEdges(total: number, segments: number) {
 function countUniqueColors(data: Uint8ClampedArray) {
   const set = new Set<number>();
   for (let index = 0; index < data.length; index += 4) {
+    if (data[index + 3] < MIN_VISIBLE_PIXEL_ALPHA) {
+      continue;
+    }
     const code = (data[index] << 16) | (data[index + 1] << 8) | data[index + 2];
     set.add(code);
   }
@@ -3811,6 +4285,77 @@ function rgbToCss(rgb: Rgb) {
 function getPixel(image: RasterImage, x: number, y: number): Rgb {
   const index = (y * image.width + x) * 4;
   return [image.data[index], image.data[index + 1], image.data[index + 2]];
+}
+
+export function convertRasterToGrayscale(image: RasterImage): RasterImage {
+  const data = new Uint8ClampedArray(image.data);
+  for (let index = 0; index < data.length; index += 4) {
+    const grayscale = Math.round(
+      data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114,
+    );
+    data[index] = grayscale;
+    data[index + 1] = grayscale;
+    data[index + 2] = grayscale;
+  }
+
+  return {
+    width: image.width,
+    height: image.height,
+    data,
+  };
+}
+
+function smoothstep01(value: number) {
+  const clamped = Math.max(0, Math.min(1, value));
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+export function applySoftGrayscaleToneCurve(image: RasterImage): RasterImage {
+  const data = new Uint8ClampedArray(image.data);
+  for (let index = 0; index < data.length; index += 4) {
+    if (data[index + 3] < MIN_VISIBLE_PIXEL_ALPHA) {
+      continue;
+    }
+
+    const normalized = data[index] / 255;
+    const curved =
+      normalized * (1 - GRAYSCALE_CURVE_BLEND) +
+      smoothstep01(normalized) * GRAYSCALE_CURVE_BLEND;
+    const mapped = clampToByte(curved * 255);
+    data[index] = mapped;
+    data[index + 1] = mapped;
+    data[index + 2] = mapped;
+  }
+
+  return {
+    width: image.width,
+    height: image.height,
+    data,
+  };
+}
+
+export function applyContrast(image: RasterImage, amount: number): RasterImage {
+  const clampedAmount = Math.max(-100, Math.min(100, amount));
+  if (clampedAmount === 0) {
+    return image;
+  }
+
+  const factor = (100 + clampedAmount) / 100;
+  const data = new Uint8ClampedArray(image.data);
+  for (let index = 0; index < data.length; index += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      data[index + channel] = Math.max(
+        0,
+        Math.min(255, Math.round((data[index + channel] - 128) * factor + 128)),
+      );
+    }
+  }
+
+  return {
+    width: image.width,
+    height: image.height,
+    data,
+  };
 }
 
 function cloneRaster(image: RasterImage): RasterImage {

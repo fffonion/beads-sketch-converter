@@ -5,14 +5,22 @@ import {
   serializeChartPayload,
 } from "../src/lib/chart-serialization";
 import {
+  applyContrast,
+  applySoftGrayscaleToneCurve,
   collapseOpenBackgroundAreas,
+  convertRasterToGrayscale,
   debugAutoDetectRaster,
   debugDetectChartBoardWithWasmPrepared,
+  debugMatchLogicalRasterToPalette,
   enhancePixelOutlineContinuity,
   findChartQrBoardPlacement,
   getChartCellGap,
+  getChartSnsDisplayScale,
+  getMinimumQrSizeForSnsReadable,
   getChartFrameWidth,
+  getPaletteOptions,
   representativeColorFromPatch,
+  resolveResponsiveChartQrSize,
   reduceColorsPhotoshopStyle,
   shouldShowChartColorLabels,
   shouldShowChartHeaderDetails,
@@ -143,6 +151,30 @@ function setRasterPixel(
   raster.data[pixelIndex + 3] = 255;
 }
 
+function setRasterPixelRgba(
+  raster: { width: number; height: number; data: Uint8ClampedArray },
+  x: number,
+  y: number,
+  color: [number, number, number],
+  alpha: number,
+) {
+  const pixelIndex = (y * raster.width + x) * 4;
+  raster.data[pixelIndex] = color[0];
+  raster.data[pixelIndex + 1] = color[1];
+  raster.data[pixelIndex + 2] = color[2];
+  raster.data[pixelIndex + 3] = alpha;
+}
+
+function setRasterPixelAlpha(
+  raster: { width: number; height: number; data: Uint8ClampedArray },
+  x: number,
+  y: number,
+  alpha: number,
+) {
+  const pixelIndex = (y * raster.width + x) * 4;
+  raster.data[pixelIndex + 3] = alpha;
+}
+
 function getRasterPixel(
   raster: { width: number; height: number; data: Uint8ClampedArray },
   x: number,
@@ -154,6 +186,15 @@ function getRasterPixel(
     raster.data[pixelIndex + 1]!,
     raster.data[pixelIndex + 2]!,
   ] as [number, number, number];
+}
+
+function getRasterPixelAlpha(
+  raster: { width: number; height: number; data: Uint8ClampedArray },
+  x: number,
+  y: number,
+) {
+  const pixelIndex = (y * raster.width + x) * 4;
+  return raster.data[pixelIndex + 3]!;
 }
 
 function readUint32(bytes: Uint8Array, offset: number) {
@@ -498,6 +539,21 @@ test("patch sampling should prefer cohesive actual pixels over averaged halo ton
   expect(representativeColorFromPatch(raster, 0, 0, 3, 3)).toEqual([200, 200, 200]);
 });
 
+test("patch sampling should ignore fully transparent pixels instead of black mattes", () => {
+  const raster = buildSolidRaster(3, 3, [0, 0, 0]);
+  for (let y = 0; y < 3; y += 1) {
+    for (let x = 0; x < 3; x += 1) {
+      setRasterPixelAlpha(raster, x, y, 0);
+    }
+  }
+
+  setRasterPixelRgba(raster, 1, 0, [196, 164, 120], 255);
+  setRasterPixelRgba(raster, 0, 1, [196, 164, 120], 255);
+  setRasterPixelRgba(raster, 1, 1, [196, 164, 120], 255);
+
+  expect(representativeColorFromPatch(raster, 0, 0, 3, 3)).toEqual([196, 164, 120]);
+});
+
 test("photo color reduction should still merge isolated near-color noise when preserving edges", () => {
   const raster = buildSolidRaster(5, 5, [200, 200, 200]);
   setRasterPixel(raster, 2, 2, [188, 188, 188]);
@@ -506,6 +562,18 @@ test("photo color reduction should still merge isolated near-color noise when pr
 
   expect(getRasterPixel(preserved.image, 2, 2)).toEqual([200, 200, 200]);
   expect(preserved.reducedUniqueColors).toBe(1);
+});
+
+test("photo color reduction should preserve transparent pixels", () => {
+  const raster = buildSolidRaster(3, 1, [200, 200, 200]);
+  setRasterPixelRgba(raster, 0, 0, [0, 0, 0], 0);
+  setRasterPixel(raster, 1, 0, [188, 188, 188]);
+
+  const reduced = reduceColorsPhotoshopStyle(raster, 20);
+
+  expect(getRasterPixel(reduced.image, 0, 0)).toEqual([0, 0, 0]);
+  expect(getRasterPixelAlpha(reduced.image, 0, 0)).toBe(0);
+  expect(getRasterPixelAlpha(reduced.image, 1, 0)).toBe(255);
 });
 
 test("fft edge enhancement should strengthen a broken thin outline neighborhood", async () => {
@@ -681,8 +749,8 @@ test("chart QR placement should use a large empty board region when available", 
     hex: "#000000",
     source: "detected" as const,
   }));
-  for (let row = 0; row < 8; row += 1) {
-    for (let column = 0; column < 8; column += 1) {
+  for (let row = 0; row < 10; row += 1) {
+    for (let column = 0; column < 10; column += 1) {
       cells[row * 16 + column] = { label: null, hex: null, source: null };
     }
   }
@@ -692,9 +760,11 @@ test("chart QR placement should use a large empty board region when available", 
   expect(placement).toMatchObject({
     cellLeft: 0,
     cellTop: 0,
-    cellSpan: 8,
+    cellSpan: 10,
   });
   expect(placement?.qrSize).toBeGreaterThanOrEqual(160);
+  expect(placement?.cardWidth).toBe(placement?.qrSize ? placement.qrSize + placement.cardPadding * 2 : undefined);
+  expect(placement?.cardWidth).toBeLessThan(placement ? placement.cellSpan * 28 : Number.POSITIVE_INFINITY);
 });
 
 test("chart QR placement should ignore empty regions that are not in board corners", () => {
@@ -712,6 +782,28 @@ test("chart QR placement should ignore empty regions that are not in board corne
 
   expect(findChartQrBoardPlacement(filledCells, 16, 16, 28, 220)).toBeNull();
   expect(findChartQrBoardPlacement(middleEmptyCells, 16, 16, 28, 220)).toBeNull();
+});
+
+test("SNS QR sizing should upscale the code when the export image will be downscaled heavily", () => {
+  expect(getChartSnsDisplayScale(2560, 2936)).toBeCloseTo(0.5, 2);
+  expect(getMinimumQrSizeForSnsReadable(2560, 2936)).toBeGreaterThanOrEqual(384);
+});
+
+test("responsive below-board QR sizing should preserve readable size after SNS downscale", () => {
+  const qrSize = resolveResponsiveChartQrSize({
+    cellSize: 28,
+    canvasPadding: 28,
+    qrCardPadding: 24,
+    qrCaptionBlockHeight: 28,
+    qrSectionGap: 16,
+    baseCanvasWidth: 2560,
+    baseCanvasHeight: 2936,
+  });
+
+  const scaledCanvasWidth = Math.max(2560, Math.max(qrSize + 48, qrSize + 168) + 56);
+  const scaledCanvasHeight = 2936 + 16 + (qrSize + 48 + 28);
+  expect(qrSize).toBeGreaterThanOrEqual(384);
+  expect(qrSize * getChartSnsDisplayScale(scaledCanvasWidth, scaledCanvasHeight)).toBeGreaterThanOrEqual(192);
 });
 
 test("auto detect should not crop bangboo _4 into a stripe", async () => {
@@ -936,5 +1028,137 @@ test("embedded chart metadata should import directly without raster parsing", as
   } finally {
     globalThis.createImageBitmap = originalCreateImageBitmap;
   }
+});
+
+test("grayscale conversion should write the same gray value into rgb channels", () => {
+  const raster = buildSolidRaster(2, 1, [255, 0, 0]);
+  setRasterPixel(raster, 1, 0, [0, 255, 0]);
+
+  const grayscale = convertRasterToGrayscale(raster);
+
+  expect(getRasterPixel(grayscale, 0, 0)).toEqual([76, 76, 76]);
+  expect(getRasterPixel(grayscale, 1, 0)).toEqual([150, 150, 150]);
+});
+
+test("soft grayscale tone curve should gently deepen shadows and lift highlights", () => {
+  const raster = buildSolidRaster(3, 1, [64, 64, 64]);
+  setRasterPixel(raster, 1, 0, [128, 128, 128]);
+  setRasterPixel(raster, 2, 0, [192, 192, 192]);
+
+  const curved = applySoftGrayscaleToneCurve(raster);
+
+  expect(getRasterPixel(curved, 0, 0)[0]).toBeLessThan(64);
+  expect(getRasterPixel(curved, 1, 0)).toEqual([128, 128, 128]);
+  expect(getRasterPixel(curved, 2, 0)[0]).toBeGreaterThan(192);
+});
+
+test("contrast adjustment should expand values around mid gray", () => {
+  const raster = buildSolidRaster(3, 1, [128, 128, 128]);
+  setRasterPixel(raster, 0, 0, [64, 64, 64]);
+  setRasterPixel(raster, 2, 0, [192, 192, 192]);
+
+  const contrasted = applyContrast(raster, 100);
+
+  expect(getRasterPixel(contrasted, 0, 0)).toEqual([0, 0, 0]);
+  expect(getRasterPixel(contrasted, 1, 0)).toEqual([128, 128, 128]);
+  expect(getRasterPixel(contrasted, 2, 0)).toEqual([255, 255, 255]);
+});
+
+test("palette matching should keep transparent logical cells empty", () => {
+  const raster = buildSolidRaster(2, 1, [255, 255, 255]);
+  setRasterPixelRgba(raster, 1, 0, [0, 0, 0], 0);
+
+  const cells = debugMatchLogicalRasterToPalette(raster, "mard_221");
+
+  expect(cells[0]?.label).not.toBeNull();
+  expect(cells[1]).toMatchObject({ label: null, hex: null, source: null });
+});
+
+test("grayscale palette matching should dither a flat midtone across multiple gray labels", () => {
+  const raster = buildSolidRaster(12, 1, [103, 103, 103]);
+  const cells = debugMatchLogicalRasterToPalette(raster, "mard_221", true);
+  const labels = cells.map((cell) => cell.label).filter((label): label is string => Boolean(label));
+
+  expect(new Set(labels).size).toBeGreaterThan(1);
+});
+
+test("render style bias should disable grayscale dithering at the pixel-art end", () => {
+  const raster = buildSolidRaster(12, 1, [103, 103, 103]);
+  const realisticCells = debugMatchLogicalRasterToPalette(raster, "mard_221", true, 0);
+  const pixelArtCells = debugMatchLogicalRasterToPalette(raster, "mard_221", true, 100);
+  const realisticLabels = realisticCells
+    .map((cell) => cell.label)
+    .filter((label): label is string => Boolean(label));
+  const pixelArtLabels = pixelArtCells
+    .map((cell) => cell.label)
+    .filter((label): label is string => Boolean(label));
+
+  expect(new Set(realisticLabels).size).toBeGreaterThan(1);
+  expect(new Set(pixelArtLabels).size).toBe(1);
+});
+
+test("grayscale mode should expose the curated MARD 221 gray subset", () => {
+  const palette = getPaletteOptions("mard_221", true);
+  const labels = palette.map((entry) => entry.label);
+  const sortedLabels = [...labels].sort();
+
+  expect(palette.length).toBeGreaterThan(0);
+  expect(sortedLabels).toEqual([
+    "H1",
+    "H10",
+    "H11",
+    "H17",
+    "H2",
+    "H22",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "H7",
+    "H9",
+  ]);
+  expect(labels.includes("H13")).toBe(false);
+  expect(labels.includes("H14")).toBe(false);
+  expect(labels.includes("H19")).toBe(false);
+  expect(labels.includes("H21")).toBe(false);
+});
+
+test("grayscale mode should remap gray labels when the color system changes", () => {
+  const mardPalette = getPaletteOptions("mard_221", true);
+  const cocoPalette = getPaletteOptions("system_COCO", true);
+
+  expect(cocoPalette.length).toBe(mardPalette.length);
+  expect(cocoPalette.map((entry) => entry.hex).sort()).toEqual(
+    mardPalette.map((entry) => entry.hex).sort(),
+  );
+  expect(cocoPalette.map((entry) => entry.label)).not.toEqual(
+    mardPalette.map((entry) => entry.label),
+  );
+});
+
+test("chart serialization should keep grayscale-mode labels inside mard_221", () => {
+  const serialized = serializeChartPayload(
+    {
+      colorSystemId: "mard_221",
+      gridWidth: 2,
+      gridHeight: 2,
+      preferredEditorMode: "edit",
+      cells: [["H2", 0], ["H7", 1], ["H9", 0], ["H5", 0]],
+    },
+    {
+      includeManualRuns: true,
+      includePreferredEditorMode: true,
+    },
+  );
+
+  expect(deserializeChartPayload(serialized)).toEqual({
+    colorSystemId: "mard_221",
+    gridWidth: 2,
+    gridHeight: 2,
+    preferredEditorMode: "edit",
+    editingLocked: false,
+    title: "",
+    cells: [["H2", 0], ["H7", 1], ["H9", 0], ["H5", 0]],
+  });
 });
 
