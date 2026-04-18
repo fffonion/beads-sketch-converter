@@ -1,4 +1,8 @@
-﻿use crate::detector_signal::*;
+use crate::detector_common::{
+    boost_confidence, choose_best_detection, detection_outer_margin_ratio, grid_size_in_range,
+    make_detection, matches_grid_aspect, rounded_grid_size,
+};
+use crate::detector_signal::*;
 use crate::fft::estimate_period_from_fft;
 use crate::types::{Detection, LinePair, RectBox};
 
@@ -18,7 +22,11 @@ pub(crate) fn detect_chart_inner(rgba: &[u8], width: usize, height: usize) -> Op
     detect_chart_with_luma(rgba, &luma, width, height)
 }
 
-pub(crate) fn detect_pixel_art_inner(rgba: &[u8], width: usize, height: usize) -> Option<Detection> {
+pub(crate) fn detect_pixel_art_inner(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Detection> {
     let luma = build_luma(rgba, width, height);
     detect_pixel_art_with_luma(rgba, &luma, width, height)
 }
@@ -36,19 +44,17 @@ fn detect_chart_with_luma(
     if let Some(detection) = detect_separator_board_inner(rgba, luma, width, height) {
         candidates.push(detection);
     }
-    if let Some(detection) = detect_content_coverage_board_inner(rgba, luma, width, height) {
-        if has_meaningful_content_outside_detection(rgba, width, height, detection)
-            || has_significant_outer_margin(width, height, detection)
-        {
-            candidates.push(detection);
-        }
+    if let Some(detection) = detect_content_coverage_board_inner(rgba, luma, width, height)
+        && (has_meaningful_content_outside_detection(rgba, width, height, detection)
+            || has_significant_outer_margin(width, height, detection))
+    {
+        candidates.push(detection);
     }
-    if let Some(detection) = detect_dense_edge_board_inner(luma, width, height) {
-        if has_meaningful_content_outside_detection(rgba, width, height, detection)
-            || has_significant_outer_margin(width, height, detection)
-        {
-            candidates.push(detection);
-        }
+    if let Some(detection) = detect_dense_edge_board_inner(luma, width, height)
+        && (has_meaningful_content_outside_detection(rgba, width, height, detection)
+            || has_significant_outer_margin(width, height, detection))
+    {
+        candidates.push(detection);
     }
     if let Some(detection) = detect_pixel_art_with_luma(rgba, luma, width, height) {
         let trimmed = trim_chart_outer_bands(
@@ -74,19 +80,15 @@ fn detect_chart_with_luma(
         }
     }
 
-    candidates
-        .into_iter()
-        .map(|detection| {
+    choose_best_detection(
+        candidates.into_iter().map(|detection| {
             let detection = refine_inner_framed_chart(rgba, luma, width, height, detection)
                 .unwrap_or(detection);
             let detection = refine_guide_detection(rgba, width, height, detection);
             trim_chart_outer_bands(rgba, width, height, detection)
-        })
-        .max_by(|left, right| {
-            let left_score = score_chart_detection(width, height, *left);
-            let right_score = score_chart_detection(width, height, *right);
-            left_score.total_cmp(&right_score)
-        })
+        }),
+        |detection| score_chart_detection(width, height, detection),
+    )
 }
 
 fn detect_pixel_art_with_luma(
@@ -109,30 +111,24 @@ fn detect_pixel_art_with_luma(
     let mut validated = candidates
         .iter()
         .copied()
-        .filter(|detection| validate_pixel_detection(rgba, &luma, width, height, *detection))
+        .filter(|detection| validate_pixel_detection(rgba, luma, width, height, *detection))
         .collect::<Vec<_>>();
     if !validated.is_empty() {
-        return validated
-            .drain(..)
-            .max_by(|left, right| {
-                let left_score = score_pixel_detection(width, height, *left);
-                let right_score = score_pixel_detection(width, height, *right);
-                left_score.total_cmp(&right_score)
-            })
-            .map(|detection| {
-                expand_pixel_empty_grid_bands(rgba, width, height, boost_confidence(detection, 0.1))
-            });
+        return choose_best_detection(validated.drain(..), |detection| {
+            score_pixel_detection(width, height, detection)
+        })
+        .map(|detection| {
+            expand_pixel_empty_grid_bands(rgba, width, height, boost_confidence(detection, 0.1))
+        });
     }
 
-    candidates
-        .into_iter()
-        .filter(|detection| is_reasonable_detection_shape(width, height, *detection))
-        .max_by(|left, right| {
-            let left_score = score_pixel_detection(width, height, *left);
-            let right_score = score_pixel_detection(width, height, *right);
-            left_score.total_cmp(&right_score)
-        })
-        .map(|detection| expand_pixel_empty_grid_bands(rgba, width, height, detection))
+    choose_best_detection(
+        candidates
+            .into_iter()
+            .filter(|detection| is_reasonable_detection_shape(width, height, *detection)),
+        |detection| score_pixel_detection(width, height, detection),
+    )
+    .map(|detection| expand_pixel_empty_grid_bands(rgba, width, height, detection))
 }
 
 fn detect_framed_chart_inner(
@@ -141,8 +137,8 @@ fn detect_framed_chart_inner(
     width: usize,
     height: usize,
 ) -> Option<Detection> {
-    let mut column_projection = build_column_edge_projection(&luma, width, height);
-    let mut row_projection = build_row_edge_projection(&luma, width, height);
+    let mut column_projection = build_column_edge_projection(luma, width, height);
+    let mut row_projection = build_row_edge_projection(luma, width, height);
     smooth_projection(&mut column_projection, 4);
     smooth_projection(&mut row_projection, 4);
 
@@ -162,7 +158,7 @@ fn detect_framed_chart_inner(
     }
 
     let x_period = dominant_period_for_crop(
-        &luma,
+        luma,
         width,
         horizontal.start,
         horizontal.end,
@@ -171,7 +167,7 @@ fn detect_framed_chart_inner(
         true,
     )?;
     let y_period = dominant_period_for_crop(
-        &luma,
+        luma,
         width,
         horizontal.start,
         horizontal.end,
@@ -192,24 +188,25 @@ fn detect_framed_chart_inner(
 
     let inner_width = right - left;
     let inner_height = bottom - top;
-    let grid_width = ((inner_width as f32) / (x_period as f32)).round() as usize;
-    let grid_height = ((inner_height as f32) / (y_period as f32)).round() as usize;
-    if !(10..=102).contains(&grid_width) || !(10..=102).contains(&grid_height) {
+    let (grid_width, grid_height) =
+        rounded_grid_size(inner_width, inner_height, x_period, y_period);
+    if !grid_size_in_range(grid_width, grid_height, 10, 102) {
         return None;
     }
 
-    let crop_aspect = inner_width as f32 / inner_height.max(1) as f32;
-    let grid_aspect = grid_width as f32 / grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect
-    } else {
-        grid_aspect / crop_aspect
-    };
-    if aspect_ratio > 1.28 {
+    if !matches_grid_aspect(inner_width, inner_height, grid_width, grid_height, 1.28) {
         return None;
     }
 
-    Some(make_detection(left, top, right, bottom, grid_width, grid_height, 0.96))
+    Some(make_detection(
+        left,
+        top,
+        right,
+        bottom,
+        grid_width,
+        grid_height,
+        0.96,
+    ))
 }
 
 fn refine_inner_framed_chart(
@@ -219,12 +216,12 @@ fn refine_inner_framed_chart(
     height: usize,
     detection: Detection,
 ) -> Option<Detection> {
-    let rough_cell_width =
-        ((detection.right.saturating_sub(detection.left)) as f32 / detection.grid_width.max(1) as f32)
-            .max(1.0);
-    let rough_cell_height =
-        ((detection.bottom.saturating_sub(detection.top)) as f32 / detection.grid_height.max(1) as f32)
-            .max(1.0);
+    let rough_cell_width = ((detection.right.saturating_sub(detection.left)) as f32
+        / detection.grid_width.max(1) as f32)
+        .max(1.0);
+    let rough_cell_height = ((detection.bottom.saturating_sub(detection.top)) as f32
+        / detection.grid_height.max(1) as f32)
+        .max(1.0);
     let pad_x = (rough_cell_width * 2.2).round() as usize;
     let pad_y = (rough_cell_height * 2.2).round() as usize;
     let search = RectBox {
@@ -277,10 +274,22 @@ fn detect_framed_chart_in_region(
         return None;
     }
 
-    let mut column_projection =
-        build_crop_column_projection(luma, width, region.left, region.right, region.top, region.bottom);
-    let mut row_projection =
-        build_crop_row_projection(luma, width, region.left, region.right, region.top, region.bottom);
+    let mut column_projection = build_crop_column_projection(
+        luma,
+        width,
+        region.left,
+        region.right,
+        region.top,
+        region.bottom,
+    );
+    let mut row_projection = build_crop_row_projection(
+        luma,
+        width,
+        region.left,
+        region.right,
+        region.top,
+        region.bottom,
+    );
     smooth_projection(&mut column_projection, 4);
     smooth_projection(&mut row_projection, 4);
 
@@ -317,18 +326,16 @@ fn detect_framed_chart_in_region(
         end: region.top + vertical.end,
     };
 
-    if !border_colors_are_consistent(
-        rgba,
-        width,
-        height,
-        absolute_horizontal,
-        absolute_vertical,
-    ) {
+    if !border_colors_are_consistent(rgba, width, height, absolute_horizontal, absolute_vertical) {
         return None;
     }
 
-    let crop_width = absolute_horizontal.end.saturating_sub(absolute_horizontal.start);
-    let crop_height = absolute_vertical.end.saturating_sub(absolute_vertical.start);
+    let crop_width = absolute_horizontal
+        .end
+        .saturating_sub(absolute_horizontal.start);
+    let crop_height = absolute_vertical
+        .end
+        .saturating_sub(absolute_vertical.start);
     if crop_width < width / 4 || crop_height < height / 4 {
         return None;
     }
@@ -364,9 +371,9 @@ fn detect_framed_chart_in_region(
 
     let inner_width = right - left;
     let inner_height = bottom - top;
-    let grid_width = ((inner_width as f32) / (x_period as f32)).round() as usize;
-    let grid_height = ((inner_height as f32) / (y_period as f32)).round() as usize;
-    if !(10..=102).contains(&grid_width) || !(10..=102).contains(&grid_height) {
+    let (grid_width, grid_height) =
+        rounded_grid_size(inner_width, inner_height, x_period, y_period);
+    if !grid_size_in_range(grid_width, grid_height, 10, 102) {
         return None;
     }
 
@@ -390,18 +397,19 @@ fn detect_framed_chart_in_region(
         }
     }
 
-    let crop_aspect = inner_width as f32 / inner_height.max(1) as f32;
-    let grid_aspect = grid_width as f32 / grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect.max(0.0001)
-    } else {
-        grid_aspect / crop_aspect.max(0.0001)
-    };
-    if aspect_ratio > 1.28 {
+    if !matches_grid_aspect(inner_width, inner_height, grid_width, grid_height, 1.28) {
         return None;
     }
 
-    Some(make_detection(left, top, right, bottom, grid_width, grid_height, 0.94))
+    Some(make_detection(
+        left,
+        top,
+        right,
+        bottom,
+        grid_width,
+        grid_height,
+        0.94,
+    ))
 }
 
 fn detect_separator_board_inner(
@@ -435,42 +443,43 @@ fn detect_separator_board_inner(
 
     let x_signal = build_light_separator_crop_signal(rgba, width, left, right, top, bottom, true);
     let y_signal = build_light_separator_crop_signal(rgba, width, left, right, top, bottom, false);
-    let x_period =
-        estimate_period_from_fft(&x_signal).or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, true))?;
-    let y_period =
-        estimate_period_from_fft(&y_signal).or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, false))?;
-    let mut grid_width = ((crop_width as f32) / (x_period as f32)).round() as usize;
-    let mut grid_height = ((crop_height as f32) / (y_period as f32)).round() as usize;
-    if should_add_boundary_cell(crop_width, x_period) && has_boundary_separator_lines(&x_signal, x_period) {
+    let x_period = estimate_period_from_fft(&x_signal)
+        .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, true))?;
+    let y_period = estimate_period_from_fft(&y_signal)
+        .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, false))?;
+    let (mut grid_width, mut grid_height) =
+        rounded_grid_size(crop_width, crop_height, x_period, y_period);
+    if should_add_boundary_cell(crop_width, x_period)
+        && has_boundary_separator_lines(&x_signal, x_period)
+    {
         grid_width += 1;
     }
-    if should_add_boundary_cell(crop_height, y_period) && has_boundary_separator_lines(&y_signal, y_period) {
+    if should_add_boundary_cell(crop_height, y_period)
+        && has_boundary_separator_lines(&y_signal, y_period)
+    {
         grid_height += 1;
     }
 
-    if !(10..=102).contains(&grid_width) || !(10..=102).contains(&grid_height) {
+    if !grid_size_in_range(grid_width, grid_height, 10, 102) {
         return None;
     }
 
-    let crop_aspect = crop_width as f32 / crop_height.max(1) as f32;
-    let grid_aspect = grid_width as f32 / grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect.max(0.0001)
-    } else {
-        grid_aspect / crop_aspect.max(0.0001)
-    };
-    if aspect_ratio > 1.24 {
+    if !matches_grid_aspect(crop_width, crop_height, grid_width, grid_height, 1.24) {
         return None;
     }
 
-    Some(make_detection(left, top, right, bottom, grid_width, grid_height, 0.8))
+    Some(make_detection(
+        left,
+        top,
+        right,
+        bottom,
+        grid_width,
+        grid_height,
+        0.8,
+    ))
 }
 
-fn detect_dense_edge_board_inner(
-    luma: &[f32],
-    width: usize,
-    height: usize,
-) -> Option<Detection> {
+fn detect_dense_edge_board_inner(luma: &[f32], width: usize, height: usize) -> Option<Detection> {
     let mut x_signal = build_column_edge_projection(luma, width, height);
     let mut y_signal = build_row_edge_projection(luma, width, height);
     normalize_projection(&mut x_signal, height.max(1) as f32);
@@ -500,24 +509,24 @@ fn detect_dense_edge_board_inner(
         .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, true))?;
     let y_period = estimate_edge_period_for_crop(luma, width, left, right, top, bottom, false)
         .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, false))?;
-    let grid_width = ((crop_width as f32) / (x_period as f32)).round() as usize;
-    let grid_height = ((crop_height as f32) / (y_period as f32)).round() as usize;
-    if !(10..=102).contains(&grid_width) || !(10..=102).contains(&grid_height) {
+    let (grid_width, grid_height) = rounded_grid_size(crop_width, crop_height, x_period, y_period);
+    if !grid_size_in_range(grid_width, grid_height, 10, 102) {
         return None;
     }
 
-    let crop_aspect = crop_width as f32 / crop_height.max(1) as f32;
-    let grid_aspect = grid_width as f32 / grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect.max(0.0001)
-    } else {
-        grid_aspect / crop_aspect.max(0.0001)
-    };
-    if aspect_ratio > 1.28 {
+    if !matches_grid_aspect(crop_width, crop_height, grid_width, grid_height, 1.28) {
         return None;
     }
 
-    Some(make_detection(left, top, right, bottom, grid_width, grid_height, 0.68))
+    Some(make_detection(
+        left,
+        top,
+        right,
+        bottom,
+        grid_width,
+        grid_height,
+        0.68,
+    ))
 }
 
 fn detect_content_coverage_board_inner(
@@ -553,24 +562,24 @@ fn detect_content_coverage_board_inner(
         .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, true))?;
     let y_period = estimate_edge_period_for_crop(luma, width, left, right, top, bottom, false)
         .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, false))?;
-    let grid_width = ((crop_width as f32) / (x_period as f32)).round() as usize;
-    let grid_height = ((crop_height as f32) / (y_period as f32)).round() as usize;
-    if !(10..=102).contains(&grid_width) || !(10..=102).contains(&grid_height) {
+    let (grid_width, grid_height) = rounded_grid_size(crop_width, crop_height, x_period, y_period);
+    if !grid_size_in_range(grid_width, grid_height, 10, 102) {
         return None;
     }
 
-    let crop_aspect = crop_width as f32 / crop_height.max(1) as f32;
-    let grid_aspect = grid_width as f32 / grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect.max(0.0001)
-    } else {
-        grid_aspect / crop_aspect.max(0.0001)
-    };
-    if aspect_ratio > 1.24 {
+    if !matches_grid_aspect(crop_width, crop_height, grid_width, grid_height, 1.24) {
         return None;
     }
 
-    Some(make_detection(left, top, right, bottom, grid_width, grid_height, 0.64))
+    Some(make_detection(
+        left,
+        top,
+        right,
+        bottom,
+        grid_width,
+        grid_height,
+        0.64,
+    ))
 }
 
 fn detect_content_box_pixel_inner(
@@ -627,9 +636,8 @@ fn detect_content_box_pixel_inner(
         )
     })?;
 
-    let grid_width = ((crop_width as f32) / (x_period as f32)).round() as usize;
-    let grid_height = ((crop_height as f32) / (y_period as f32)).round() as usize;
-    if !(4..=102).contains(&grid_width) || !(4..=102).contains(&grid_height) {
+    let (grid_width, grid_height) = rounded_grid_size(crop_width, crop_height, x_period, y_period);
+    if !grid_size_in_range(grid_width, grid_height, 4, 102) {
         return None;
     }
 
@@ -714,7 +722,12 @@ fn detect_content_box(rgba: &[u8], width: usize, height: usize) -> Option<RectBo
     for y in 0..height {
         for x in 0..width {
             let index = (y * width + x) * 4;
-            let pixel = [rgba[index], rgba[index + 1], rgba[index + 2], rgba[index + 3]];
+            let pixel = [
+                rgba[index],
+                rgba[index + 1],
+                rgba[index + 2],
+                rgba[index + 3],
+            ];
             if !is_content_pixel(pixel) {
                 continue;
             }
@@ -747,8 +760,8 @@ fn validate_pixel_detection(
     height: usize,
     detection: Detection,
 ) -> bool {
-    let crop_width = detection.right.saturating_sub(detection.left);
-    let crop_height = detection.bottom.saturating_sub(detection.top);
+    let crop_width = detection.crop_width();
+    let crop_height = detection.crop_height();
     if crop_width < width / 3 || crop_height < height / 3 {
         return false;
     }
@@ -756,8 +769,8 @@ fn validate_pixel_detection(
         return false;
     }
 
-    let cell_width = crop_width as f32 / detection.grid_width.max(1) as f32;
-    let cell_height = crop_height as f32 / detection.grid_height.max(1) as f32;
+    let cell_width = detection.cell_width();
+    let cell_height = detection.cell_height();
     if cell_width < 3.0 || cell_height < 3.0 {
         return false;
     }
@@ -766,14 +779,13 @@ fn validate_pixel_detection(
         return false;
     }
 
-    let crop_aspect = crop_width as f32 / crop_height.max(1) as f32;
-    let grid_aspect = detection.grid_width as f32 / detection.grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect.max(0.0001)
-    } else {
-        grid_aspect / crop_aspect.max(0.0001)
-    };
-    if aspect_ratio > 1.22 {
+    if !matches_grid_aspect(
+        crop_width,
+        crop_height,
+        detection.grid_width,
+        detection.grid_height,
+        1.22,
+    ) {
         return false;
     }
 
@@ -844,7 +856,12 @@ fn has_meaningful_content_outside_detection(
         for y in (region.top..region.bottom).step_by(step_y) {
             for x in (region.left..region.right).step_by(step_x) {
                 let index = (y * width + x) * 4;
-                let pixel = [rgba[index], rgba[index + 1], rgba[index + 2], rgba[index + 3]];
+                let pixel = [
+                    rgba[index],
+                    rgba[index + 1],
+                    rgba[index + 2],
+                    rgba[index + 3],
+                ];
                 sample_count += 1;
                 if is_content_pixel(pixel) {
                     hits += 1;
@@ -880,17 +897,17 @@ fn has_significant_outer_margin(width: usize, height: usize, detection: Detectio
 }
 
 fn score_pixel_detection(width: usize, height: usize, detection: Detection) -> f32 {
-    let crop_width = detection.right.saturating_sub(detection.left);
-    let crop_height = detection.bottom.saturating_sub(detection.top);
+    let crop_width = detection.crop_width();
+    let crop_height = detection.crop_height();
     let area_ratio = (crop_width * crop_height) as f32 / (width * height).max(1) as f32;
-    let cell_width = crop_width as f32 / detection.grid_width.max(1) as f32;
-    let cell_height = crop_height as f32 / detection.grid_height.max(1) as f32;
+    let cell_width = detection.cell_width();
+    let cell_height = detection.cell_height();
     detection.confidence * 10.0 + area_ratio * 3.0 + cell_width.min(cell_height) * 0.05
 }
 
 fn is_reasonable_detection_shape(width: usize, height: usize, detection: Detection) -> bool {
-    let crop_width = detection.right.saturating_sub(detection.left);
-    let crop_height = detection.bottom.saturating_sub(detection.top);
+    let crop_width = detection.crop_width();
+    let crop_height = detection.crop_height();
     if crop_width < width / 3 || crop_height < height / 3 {
         return false;
     }
@@ -900,14 +917,13 @@ fn is_reasonable_detection_shape(width: usize, height: usize, detection: Detecti
         return false;
     }
 
-    let crop_aspect = crop_width as f32 / crop_height.max(1) as f32;
-    let grid_aspect = detection.grid_width as f32 / detection.grid_height.max(1) as f32;
-    let aspect_ratio = if crop_aspect > grid_aspect {
-        crop_aspect / grid_aspect.max(0.0001)
-    } else {
-        grid_aspect / crop_aspect.max(0.0001)
-    };
-    aspect_ratio <= 1.3
+    matches_grid_aspect(
+        crop_width,
+        crop_height,
+        detection.grid_width,
+        detection.grid_height,
+        1.3,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -916,52 +932,17 @@ struct BandMetrics {
     separator_ratio: f32,
 }
 
-fn make_detection(
-    left: usize,
-    top: usize,
-    right: usize,
-    bottom: usize,
-    grid_width: usize,
-    grid_height: usize,
-    confidence: f32,
-) -> Detection {
-    Detection {
-        left,
-        top,
-        right,
-        bottom,
-        grid_width,
-        grid_height,
-        confidence,
-    }
-}
-
-fn boost_confidence(detection: Detection, delta: f32) -> Detection {
-    Detection {
-        confidence: (detection.confidence + delta).min(0.99),
-        ..detection
-    }
-}
-
 fn score_chart_detection(width: usize, height: usize, detection: Detection) -> f32 {
-    let crop_width = detection.right.saturating_sub(detection.left);
-    let crop_height = detection.bottom.saturating_sub(detection.top);
+    let crop_width = detection.crop_width();
+    let crop_height = detection.crop_height();
     let area_ratio = (crop_width * crop_height) as f32 / (width * height).max(1) as f32;
     let margin_ratio = detection_outer_margin_ratio(width, height, detection);
-    let cell_width = chart_cell_width(detection);
-    let cell_height = chart_cell_height(detection);
+    let cell_width = detection.cell_width();
+    let cell_height = detection.cell_height();
     detection.confidence * 10.0
         + area_ratio * 1.2
         + margin_ratio * 2.4
         + cell_width.min(cell_height) * 0.03
-}
-
-fn detection_outer_margin_ratio(width: usize, height: usize, detection: Detection) -> f32 {
-    let horizontal = (detection.left + width.saturating_sub(detection.right)) as f32
-        / width.max(1) as f32;
-    let vertical = (detection.top + height.saturating_sub(detection.bottom)) as f32
-        / height.max(1) as f32;
-    (horizontal + vertical) * 0.5
 }
 
 fn trim_chart_outer_bands(
@@ -974,8 +955,8 @@ fn trim_chart_outer_bands(
         return detection;
     }
 
-    let cell_width = chart_cell_width(detection).round() as usize;
-    let cell_height = chart_cell_height(detection).round() as usize;
+    let cell_width = detection.cell_width().round() as usize;
+    let cell_height = detection.cell_height().round() as usize;
     let near_left = detection.left <= (cell_width / 2).max(2);
     let near_right = width.saturating_sub(detection.right) <= (cell_width / 2).max(2);
     let near_top = detection.top <= (cell_height / 2).max(2);
@@ -987,13 +968,16 @@ fn trim_chart_outer_bands(
             return detection;
         }
 
-        if let Some(trim_count) =
-            count_full_page_trailing_annotation_bands(rgba, width, detection)
+        if let Some(trim_count) = count_full_page_trailing_annotation_bands(rgba, width, detection)
         {
-            let band_span = chart_cell_height(detection).round() as usize;
-            if let Some(trimmed) =
-                build_trimmed_chart_detection_simple(detection, false, band_span.max(1), 0, trim_count)
-            {
+            let band_span = detection.cell_height().round() as usize;
+            if let Some(trimmed) = build_trimmed_chart_detection_simple(
+                detection,
+                false,
+                band_span.max(1),
+                0,
+                trim_count,
+            ) {
                 return boost_confidence(trimmed, 0.01);
             }
         }
@@ -1035,12 +1019,13 @@ fn optimize_chart_band_trim(
     }
 
     let band_span = if vertical_band {
-        chart_cell_width(detection).round() as usize
+        detection.cell_width().round() as usize
     } else {
-        chart_cell_height(detection).round() as usize
+        detection.cell_height().round() as usize
     }
     .max(1);
-    let profiles = collect_chart_band_profiles(rgba, luma, width, detection, vertical_band, band_span);
+    let profiles =
+        collect_chart_band_profiles(rgba, luma, width, detection, vertical_band, band_span);
     if profiles.len() != band_count {
         return detection;
     }
@@ -1088,9 +1073,8 @@ fn optimize_chart_band_trim(
     }
 
     if symmetric_edges && best_start_trim == 0 && best_end_trim == 0 && profiles.len() >= 4 {
-        let edge_similarity =
-            chart_band_similarity(profiles[0], baseline)
-                + chart_band_similarity(*profiles.last().unwrap_or(&profiles[0]), baseline);
+        let edge_similarity = chart_band_similarity(profiles[0], baseline)
+            + chart_band_similarity(*profiles.last().unwrap_or(&profiles[0]), baseline);
         if edge_similarity < 1.52 {
             best_start_trim = 1;
             best_end_trim = 1;
@@ -1242,14 +1226,15 @@ fn chart_band_trim_score(
     end_trim: usize,
 ) -> f32 {
     let kept_start = start_trim.min(profiles.len().saturating_sub(1));
-    let kept_end = profiles.len().saturating_sub(1 + end_trim.min(profiles.len().saturating_sub(1)));
+    let kept_end = profiles
+        .len()
+        .saturating_sub(1 + end_trim.min(profiles.len().saturating_sub(1)));
     if kept_end <= kept_start {
         return f32::NEG_INFINITY;
     }
 
-    let edge_similarity =
-        chart_band_similarity(profiles[kept_start], baseline)
-            + chart_band_similarity(profiles[kept_end], baseline);
+    let edge_similarity = chart_band_similarity(profiles[kept_start], baseline)
+        + chart_band_similarity(profiles[kept_end], baseline);
 
     let mut removed_dissimilarity = 0.0_f32;
     let mut removed_count = 0_usize;
@@ -1257,7 +1242,10 @@ fn chart_band_trim_score(
         removed_dissimilarity += 1.0 - chart_band_similarity(*profile, baseline);
         removed_count += 1;
     }
-    for profile in profiles.iter().skip(profiles.len().saturating_sub(end_trim)) {
+    for profile in profiles
+        .iter()
+        .skip(profiles.len().saturating_sub(end_trim))
+    {
         removed_dissimilarity += 1.0 - chart_band_similarity(*profile, baseline);
         removed_count += 1;
     }
@@ -1275,25 +1263,23 @@ fn build_trimmed_chart_detection_simple(
     let mut trimmed = detection;
     if vertical_band {
         trimmed.left = (trimmed.left + band_span * start_trim).min(trimmed.right.saturating_sub(1));
-        trimmed.right = trimmed.right.saturating_sub(band_span * end_trim).max(trimmed.left + 1);
-        trimmed.grid_width = trimmed
-            .grid_width
-            .saturating_sub(start_trim + end_trim);
+        trimmed.right = trimmed
+            .right
+            .saturating_sub(band_span * end_trim)
+            .max(trimmed.left + 1);
+        trimmed.grid_width = trimmed.grid_width.saturating_sub(start_trim + end_trim);
     } else {
         trimmed.top = (trimmed.top + band_span * start_trim).min(trimmed.bottom.saturating_sub(1));
-        trimmed.bottom = trimmed.bottom.saturating_sub(band_span * end_trim).max(trimmed.top + 1);
-        trimmed.grid_height = trimmed
-            .grid_height
-            .saturating_sub(start_trim + end_trim);
+        trimmed.bottom = trimmed
+            .bottom
+            .saturating_sub(band_span * end_trim)
+            .max(trimmed.top + 1);
+        trimmed.grid_height = trimmed.grid_height.saturating_sub(start_trim + end_trim);
     }
 
     let crop_width = trimmed.right.saturating_sub(trimmed.left);
     let crop_height = trimmed.bottom.saturating_sub(trimmed.top);
-    if crop_width < 8
-        || crop_height < 8
-        || trimmed.grid_width < 10
-        || trimmed.grid_height < 10
-    {
+    if crop_width < 8 || crop_height < 8 || trimmed.grid_width < 10 || trimmed.grid_height < 10 {
         return None;
     }
 
@@ -1309,38 +1295,28 @@ fn count_full_page_trailing_annotation_bands(
         return None;
     }
 
-    let band_span = chart_cell_height(detection).round() as usize;
+    let band_span = detection.cell_height().round() as usize;
     if band_span < 4 {
         return None;
     }
 
     let height = (rgba.len() / 4) / width.max(1);
     let luma = build_luma(rgba, width, height.max(1));
-    let profiles = collect_chart_band_profiles(
-        rgba,
-        &luma,
-        width,
-        detection,
-        false,
-        band_span,
-    );
+    let profiles = collect_chart_band_profiles(rgba, &luma, width, detection, false, band_span);
     if profiles.len() != detection.grid_height {
         return None;
     }
-    let Some(baseline) = chart_band_baseline(&profiles) else {
-        return None;
-    };
+    let baseline = chart_band_baseline(&profiles)?;
 
     let mut trimmed = 0_usize;
     for profile in profiles.iter().rev() {
         let similarity = chart_band_similarity(*profile, baseline);
-        let is_annotation_band =
-            similarity < 0.74
-                || profile.separator_ratio > baseline.separator_ratio * 1.42
-                || (profile.colored_ratio < baseline.colored_ratio * 0.22
-                    && profile.separator_ratio > baseline.separator_ratio * 1.12)
-                || (profile.separator_ratio < baseline.separator_ratio * 0.22
-                    && profile.colored_ratio > baseline.colored_ratio * 0.72);
+        let is_annotation_band = similarity < 0.74
+            || profile.separator_ratio > baseline.separator_ratio * 1.42
+            || (profile.colored_ratio < baseline.colored_ratio * 0.22
+                && profile.separator_ratio > baseline.separator_ratio * 1.12)
+            || (profile.separator_ratio < baseline.separator_ratio * 0.22
+                && profile.colored_ratio > baseline.colored_ratio * 0.72);
         if !is_annotation_band {
             break;
         }
@@ -1439,9 +1415,9 @@ fn estimate_rect_boundary_strength(
     }
 
     let cell_size = if vertical_lines {
-        chart_cell_width(detection)
+        detection.cell_width()
     } else {
-        chart_cell_height(detection)
+        detection.cell_height()
     };
     if cell_size <= 1.0 {
         return 0.0;
@@ -1530,7 +1506,7 @@ fn expand_pixel_empty_grid_bands(
         if !should_expand_pixel_band(rgba, width, height, current, true, true) {
             break;
         }
-        let grow = chart_cell_width(current).round() as usize;
+        let grow = current.cell_width().round() as usize;
         current.left = current.left.saturating_sub(grow);
         current.grid_width += 1;
     }
@@ -1539,7 +1515,7 @@ fn expand_pixel_empty_grid_bands(
         if !should_expand_pixel_band(rgba, width, height, current, true, false) {
             break;
         }
-        let grow = chart_cell_width(current).round() as usize;
+        let grow = current.cell_width().round() as usize;
         current.right = (current.right + grow).min(width);
         current.grid_width += 1;
     }
@@ -1548,7 +1524,7 @@ fn expand_pixel_empty_grid_bands(
         if !should_expand_pixel_band(rgba, width, height, current, false, true) {
             break;
         }
-        let grow = chart_cell_height(current).round() as usize;
+        let grow = current.cell_height().round() as usize;
         current.top = current.top.saturating_sub(grow);
         current.grid_height += 1;
     }
@@ -1557,7 +1533,7 @@ fn expand_pixel_empty_grid_bands(
         if !should_expand_pixel_band(rgba, width, height, current, false, false) {
             break;
         }
-        let grow = chart_cell_height(current).round() as usize;
+        let grow = current.cell_height().round() as usize;
         current.bottom = (current.bottom + grow).min(height);
         current.grid_height += 1;
     }
@@ -1573,7 +1549,8 @@ fn should_expand_pixel_band(
     vertical_band: bool,
     toward_start: bool,
 ) -> bool {
-    let metrics = sample_outside_band_metrics(rgba, width, height, detection, vertical_band, toward_start);
+    let metrics =
+        sample_outside_band_metrics(rgba, width, height, detection, vertical_band, toward_start);
     metrics.separator_ratio >= 0.035 && metrics.colored_ratio <= 0.06
 }
 
@@ -1586,54 +1563,69 @@ fn sample_outside_band_metrics(
     toward_start: bool,
 ) -> BandMetrics {
     let band_span = if vertical_band {
-        chart_cell_width(detection).round() as usize
+        detection.cell_width().round() as usize
     } else {
-        chart_cell_height(detection).round() as usize
+        detection.cell_height().round() as usize
     }
     .max(1);
 
     if vertical_band {
         if toward_start {
             let left = detection.left.saturating_sub(band_span);
-            return sample_band_metrics(rgba, width, height, RectBox {
-                left,
-                top: detection.top,
-                right: detection.left,
-                bottom: detection.bottom,
-            });
+            return sample_band_metrics(
+                rgba,
+                width,
+                height,
+                RectBox {
+                    left,
+                    top: detection.top,
+                    right: detection.left,
+                    bottom: detection.bottom,
+                },
+            );
         }
-        return sample_band_metrics(rgba, width, height, RectBox {
-            left: detection.right,
-            top: detection.top,
-            right: (detection.right + band_span).min(width),
-            bottom: detection.bottom,
-        });
+        return sample_band_metrics(
+            rgba,
+            width,
+            height,
+            RectBox {
+                left: detection.right,
+                top: detection.top,
+                right: (detection.right + band_span).min(width),
+                bottom: detection.bottom,
+            },
+        );
     }
 
     if toward_start {
         let top = detection.top.saturating_sub(band_span);
-        return sample_band_metrics(rgba, width, height, RectBox {
-            left: detection.left,
-            top,
-            right: detection.right,
-            bottom: detection.top,
-        });
+        return sample_band_metrics(
+            rgba,
+            width,
+            height,
+            RectBox {
+                left: detection.left,
+                top,
+                right: detection.right,
+                bottom: detection.top,
+            },
+        );
     }
 
-    sample_band_metrics(rgba, width, height, RectBox {
-        left: detection.left,
-        top: detection.bottom,
-        right: detection.right,
-        bottom: (detection.bottom + band_span).min(height),
-    })
+    sample_band_metrics(
+        rgba,
+        width,
+        height,
+        RectBox {
+            left: detection.left,
+            top: detection.bottom,
+            right: detection.right,
+            bottom: (detection.bottom + band_span).min(height),
+        },
+    )
 }
 
-fn sample_band_metrics(
-    rgba: &[u8],
-    width: usize,
-    _height: usize,
-    rect: RectBox,
-) -> BandMetrics {
+fn sample_band_metrics(rgba: &[u8], width: usize, _height: usize, rect: RectBox) -> BandMetrics {
     if rect.right <= rect.left || rect.bottom <= rect.top {
         return BandMetrics {
             colored_ratio: 0.0,
@@ -1648,7 +1640,12 @@ fn sample_band_metrics(
     for y in rect.top..rect.bottom {
         for x in rect.left..rect.right {
             let index = (y * width + x) * 4;
-            let pixel = [rgba[index], rgba[index + 1], rgba[index + 2], rgba[index + 3]];
+            let pixel = [
+                rgba[index],
+                rgba[index + 1],
+                rgba[index + 2],
+                rgba[index + 3],
+            ];
             if is_colored_content_pixel(pixel) {
                 colored_hits += 1;
             }
@@ -1664,12 +1661,3 @@ fn sample_band_metrics(
         separator_ratio: separator_hits as f32 / total.max(1) as f32,
     }
 }
-
-fn chart_cell_width(detection: Detection) -> f32 {
-    (detection.right.saturating_sub(detection.left)) as f32 / detection.grid_width.max(1) as f32
-}
-
-fn chart_cell_height(detection: Detection) -> f32 {
-    (detection.bottom.saturating_sub(detection.top)) as f32 / detection.grid_height.max(1) as f32
-}
-

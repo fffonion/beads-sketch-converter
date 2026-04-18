@@ -9,6 +9,24 @@ pub(crate) struct Detection {
     pub(crate) confidence: f32,
 }
 
+impl Detection {
+    pub(crate) fn crop_width(self) -> usize {
+        self.right.saturating_sub(self.left)
+    }
+
+    pub(crate) fn crop_height(self) -> usize {
+        self.bottom.saturating_sub(self.top)
+    }
+
+    pub(crate) fn cell_width(self) -> f32 {
+        self.crop_width() as f32 / self.grid_width.max(1) as f32
+    }
+
+    pub(crate) fn cell_height(self) -> f32 {
+        self.crop_height() as f32 / self.grid_height.max(1) as f32
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct RectBox {
     pub(crate) left: usize,

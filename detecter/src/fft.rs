@@ -33,7 +33,7 @@ pub(crate) fn estimate_period_from_fft(signal: &[f32]) -> Option<usize> {
     fft_in_place(&mut buffer, false);
 
     let min_period = 3.0_f32;
-    let max_period = (signal.len() as f32 / 10.0).min(256.0).max(16.0);
+    let max_period = (signal.len() as f32 / 10.0).clamp(16.0, 256.0);
     let mut candidates = Vec::<(f32, f32)>::new();
     let mut best_score = 0.0_f32;
     for bin in 1..(fft_len / 2) {
