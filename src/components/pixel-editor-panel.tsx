@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefOb
 import { CanvasStage, clampEditorZoom, clampPindouZoom } from "./canvas-stage";
 import { ChartSettingsTab } from "./chart-settings-tab";
 import { SwitchRow } from "./controls";
+import { shouldUseDesktopContentFitLayout } from "./pixel-editor-layout";
 import {
   ColorPickerPanel,
   ColorPickerPopup,
@@ -275,9 +276,14 @@ export function PixelEditorPanel({
   const useAutoHeightChartLayout = panelMode === "chart";
   const [focusedSketchLabel, setFocusedSketchLabel] = useState<string | null>(null);
   const [panelViewportHeight, setPanelViewportHeight] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   const activeMatchedColorCount = matchedColors.filter(
     (color) => !disabledResultLabels.includes(color.label),
   ).length;
+  const useDesktopContentFitLayout = shouldUseDesktopContentFitLayout({
+    viewportWidth,
+    focusOnly,
+  });
   const pindouColors = useMemo(
     () => summarizeStageColors(cells, paletteOptions),
     [cells, paletteOptions],
@@ -347,6 +353,7 @@ export function PixelEditorPanel({
       }
 
       const viewportWidth = window.innerWidth;
+      setViewportWidth((previous) => (previous === viewportWidth ? previous : viewportWidth));
       const nextHeight =
         viewportWidth < 640
           ? Math.max(680, Math.round(window.innerHeight * 0.9))
@@ -399,6 +406,7 @@ export function PixelEditorPanel({
         onPindouTimerReset={onPindouTimerReset}
         pindouZoom={pindouZoom}
         onPindouZoomChange={onPindouZoomChange}
+        preferContentFit={useDesktopContentFitLayout}
       />
     ) : (
     <Tabs.Root
@@ -562,8 +570,10 @@ export function PixelEditorPanel({
                 </div>
               </section>
 
-              <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
-                <CanvasStage
+                <div
+                  className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
+                >
+                  <CanvasStage
                   cells={cells}
                   gridWidth={gridWidth}
                   gridHeight={gridHeight}
@@ -585,6 +595,7 @@ export function PixelEditorPanel({
                   paintActiveRef={paintActiveRef}
                   busy={busy}
                   embeddedInPanel
+                  preferContentFit={useDesktopContentFitLayout}
                 />
               </div>
             </div>
@@ -620,6 +631,7 @@ export function PixelEditorPanel({
             onPindouTimerReset={onPindouTimerReset}
             pindouZoom={pindouZoom}
             onPindouZoomChange={onPindouZoomChange}
+            preferContentFit={useDesktopContentFitLayout}
           />
         </Tabs.Content>
 
@@ -704,6 +716,7 @@ function PindouModePanel({
   onPindouTimerReset,
   pindouZoom,
   onPindouZoomChange,
+  preferContentFit = false,
 }: {
   t: Messages;
   isDark: boolean;
@@ -733,6 +746,7 @@ function PindouModePanel({
   onPindouTimerReset: () => void;
   pindouZoom: number;
   onPindouZoomChange: (value: number) => void;
+  preferContentFit?: boolean;
 }) {
   const theme = getThemeClasses(isDark);
   const flipHorizontalLabel = t.pindouFlipHorizontal ?? "Flip Horizontally";
@@ -1409,8 +1423,10 @@ function PindouModePanel({
               </div>
             </aside>
 
-            <div className="flex h-full min-h-0 min-w-0 flex-1">
-              <CanvasStage
+              <div
+                className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
+              >
+                <CanvasStage
                 cells={cells}
                 gridWidth={gridWidth}
                 gridHeight={gridHeight}
@@ -1433,13 +1449,16 @@ function PindouModePanel({
                 busy={busy}
                 viewportClassName={useLandscapeColorRail ? "rounded-l-none" : undefined}
                 embeddedInPanel={!focusOnly}
+                preferContentFit={preferContentFit}
                 onPindouStageTap={useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined}
               />
             </div>
           </div>
         ) : (
-          <div className="relative flex h-full min-h-0 min-w-0">
-            <CanvasStage
+            <div
+              className="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
+            >
+              <CanvasStage
               cells={cells}
               gridWidth={gridWidth}
               gridHeight={gridHeight}
@@ -1461,6 +1480,7 @@ function PindouModePanel({
               onPindouZoomChange={onPindouZoomChange}
               busy={busy}
               embeddedInPanel={!focusOnly}
+              preferContentFit={preferContentFit}
               onPindouStageTap={useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined}
             />
             {usePortraitMobileFocusZoomBar ? (

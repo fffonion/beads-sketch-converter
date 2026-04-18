@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type Point
 import type { EditableCell, NormalizedCropRect } from "../lib/chart-processor";
 import { getPindouBoardThemeShades, type PindouBeadShape, type PindouBoardTheme } from "../lib/pindou-board-theme";
 import { getThemeClasses } from "../lib/theme";
+import { getDesktopContentFitViewportScale } from "./pixel-editor-layout";
 
 import {
   createCanvasCropRectFromCellIndices,
@@ -48,6 +49,7 @@ export function CanvasStage({
   onPindouStageTap,
   viewportClassName,
   embeddedInPanel = false,
+  preferContentFit = false,
 }: {
   cells: EditableCell[];
   gridWidth: number;
@@ -82,6 +84,7 @@ export function CanvasStage({
   onPindouStageTap?: () => void;
   viewportClassName?: string;
   embeddedInPanel?: boolean;
+  preferContentFit?: boolean;
 }) {
   const theme = getThemeClasses(isDark);
   const stageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -181,10 +184,15 @@ export function CanvasStage({
   const pindouPaddingCells = stageMode === "pindou" ? PINDOU_STAGE_PADDING_CELLS : 0;
   const displayGridWidth = gridWidth + pindouPaddingCells * 2;
   const displayGridHeight = gridHeight + pindouPaddingCells * 2;
-  const cellSize = calculateStageCellSize(displayGridWidth, displayGridHeight, stageViewport.width, stageViewport.height);
+  const contentFitViewportScale = preferContentFit
+    ? getDesktopContentFitViewportScale(stageViewport.width + stageInset)
+    : 1;
+  const fitViewportWidth = stageViewport.width * contentFitViewportScale;
+  const fitViewportHeight = stageViewport.height * contentFitViewportScale;
+  const cellSize = calculateStageCellSize(displayGridWidth, displayGridHeight, fitViewportWidth, fitViewportHeight);
   const stageWidth = displayGridWidth * cellSize + Math.max(0, displayGridWidth - 1) * gridGap;
   const stageHeight = displayGridHeight * cellSize + Math.max(0, displayGridHeight - 1) * gridGap;
-  const stageScale = calculateStageScale(stageWidth, stageHeight, stageViewport.width, stageViewport.height);
+  const stageScale = calculateStageScale(stageWidth, stageHeight, fitViewportWidth, fitViewportHeight);
   const effectiveScale = stageMode === "pindou" ? stageScale * pindouZoom : stageScale * editZoom;
   const scaledCellSize = cellSize * effectiveScale;
   const scaledGap = gridGap * effectiveScale;
@@ -857,13 +865,13 @@ export function CanvasStage({
 
   return (
     <div
-      ref={stageViewportRef}
-      tabIndex={stageMode === "edit" ? 0 : undefined}
-      className={clsx(
-        "relative flex h-full min-h-0 w-full min-w-0 max-w-full flex-1 touch-none",
-        embeddedInPanel
-          ? stageMode === "pindou"
-            ? "rounded-none border-0 p-1.5 sm:p-2"
+        ref={stageViewportRef}
+        tabIndex={stageMode === "edit" ? 0 : undefined}
+        className={clsx(
+          "relative flex h-full w-full min-h-0 min-w-0 max-w-full flex-1 touch-none",
+          embeddedInPanel
+            ? stageMode === "pindou"
+              ? "rounded-none border-0 p-1.5 sm:p-2"
             : "rounded-none border-0 p-2 sm:p-3"
           : "rounded-[10px] border p-2 sm:p-3",
         embeddedInPanel ? "mt-0" : focusOnly ? "mt-0" : "mt-4",
