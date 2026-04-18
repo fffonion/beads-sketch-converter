@@ -13,12 +13,14 @@ import {
   debugDetectChartBoardWithWasmPrepared,
   debugMatchLogicalRasterToPalette,
   enhancePixelOutlineContinuity,
+  easePixelOutlineThickness,
   findChartQrBoardPlacement,
   getChartCellGap,
   getChartSnsDisplayScale,
   getMinimumQrSizeForSnsReadable,
   getChartFrameWidth,
   getPaletteOptions,
+  projectEdgeEnhanceStrength,
   representativeColorFromPatch,
   resolveResponsiveChartQrSize,
   reduceColorsPhotoshopStyle,
@@ -588,8 +590,67 @@ test("fft edge enhancement should strengthen a broken thin outline neighborhood"
   const enhanced = await enhanceEdgesWithFftWasm(raster, 80);
 
   expect(getRasterPixel(enhanced, 10, 10)[0]).toBeLessThan(200);
-  expect(getRasterPixel(enhanced, 9, 10)[0]).toBeLessThan(200);
-  expect(getRasterPixel(enhanced, 11, 10)[0]).toBeLessThan(200);
+  expect(getRasterPixel(enhanced, 9, 10)[0]).toBeGreaterThan(210);
+  expect(getRasterPixel(enhanced, 11, 10)[0]).toBeGreaterThan(210);
+});
+
+test("fft edge enhancement should not widen a clean one-pixel stroke at high strength", async () => {
+  const raster = buildSolidRaster(21, 21, [220, 220, 220]);
+  for (let y = 3; y <= 17; y += 1) {
+    setRasterPixel(raster, 10, y, [28, 28, 28]);
+  }
+
+  const enhanced = await enhanceEdgesWithFftWasm(raster, 100);
+
+  expect(getRasterPixel(enhanced, 10, 10)[0]).toBeLessThan(60);
+  expect(getRasterPixel(enhanced, 9, 10)[0]).toBeGreaterThan(210);
+  expect(getRasterPixel(enhanced, 11, 10)[0]).toBeGreaterThan(210);
+});
+
+test("fft edge enhancement should favor the dominant dark edge color instead of bleeding nearby accent colors", async () => {
+  const raster = buildSolidRaster(21, 21, [220, 220, 220]);
+  for (let y = 3; y <= 17; y += 1) {
+    if (y === 10) {
+      continue;
+    }
+    setRasterPixel(raster, 10, y, [150, 20, 20]);
+  }
+  setRasterPixel(raster, 9, 9, [20, 20, 150]);
+  setRasterPixel(raster, 11, 11, [20, 20, 150]);
+
+  const enhanced = await enhanceEdgesWithFftWasm(raster, 100);
+  const bridged = getRasterPixel(enhanced, 10, 10);
+
+  expect(bridged[0]).toBeGreaterThan(bridged[2] + 50);
+  expect(bridged[1]).toBeLessThan(140);
+});
+
+test("fft edge enhancement should stay subtle at very low continuous strength", async () => {
+  const raster = buildSolidRaster(21, 21, [220, 220, 220]);
+  for (let y = 3; y <= 17; y += 1) {
+    if (y === 10) {
+      continue;
+    }
+    setRasterPixel(raster, 10, y, [40, 40, 40]);
+  }
+
+  const enhanced = await enhanceEdgesWithFftWasm(raster, 0.0059049);
+  let totalDiff = 0;
+  let changedPixels = 0;
+
+  for (let index = 0; index < raster.data.length; index += 4) {
+    const diff =
+      Math.abs(enhanced.data[index] - raster.data[index]) +
+      Math.abs(enhanced.data[index + 1] - raster.data[index + 1]) +
+      Math.abs(enhanced.data[index + 2] - raster.data[index + 2]);
+    totalDiff += diff;
+    if (diff > 0) {
+      changedPixels += 1;
+    }
+  }
+
+  expect(totalDiff).toBeLessThan(2000);
+  expect(changedPixels).toBeLessThan(40);
 });
 
 test("pixel outline continuity should bridge a one-cell horizontal gap after palette matching", () => {
@@ -697,6 +758,81 @@ test("pixel outline continuity should preserve short whisker-like details withou
   expect(enhanced[2 * 5 + 1]).toMatchObject(fill);
   expect(enhanced[2 * 5 + 3]).toMatchObject(fill);
   expect(enhanced[3 * 5 + 2]).toMatchObject(fill);
+});
+
+test("pixel outline easing should leave cells unchanged at zero strength", () => {
+  const fill = { label: "FILL", hex: "#F7DDE4", source: "detected" as const };
+  const outline = { label: "LINE", hex: "#5A525B", source: "detected" as const };
+  const cells = Array.from({ length: 5 * 5 }, () => ({ ...fill }));
+  cells[2 * 5 + 1] = { ...outline };
+  cells[2 * 5 + 2] = { ...outline };
+  cells[2 * 5 + 3] = { ...outline };
+
+  const eased = easePixelOutlineThickness(cells, 5, 5, 0);
+
+  expect(eased).toEqual(cells);
+});
+
+test("edge enhance strength projection should keep positive values linear while preserving the negative easing curve", () => {
+  expect(projectEdgeEnhanceStrength(0)).toBe(0);
+  expect(projectEdgeEnhanceStrength(10)).toBeCloseTo(10, 8);
+  expect(projectEdgeEnhanceStrength(20)).toBeCloseTo(20, 8);
+  expect(projectEdgeEnhanceStrength(30)).toBeCloseTo(30, 8);
+  expect(projectEdgeEnhanceStrength(40)).toBeCloseTo(40, 8);
+  expect(projectEdgeEnhanceStrength(42)).toBeCloseTo(42, 8);
+  expect(projectEdgeEnhanceStrength(43)).toBeCloseTo(43, 8);
+  expect(projectEdgeEnhanceStrength(44)).toBeCloseTo(44, 8);
+  expect(projectEdgeEnhanceStrength(50)).toBeCloseTo(50, 8);
+  expect(projectEdgeEnhanceStrength(60)).toBeCloseTo(60, 8);
+  expect(projectEdgeEnhanceStrength(80)).toBeCloseTo(80, 8);
+  expect(projectEdgeEnhanceStrength(90)).toBeCloseTo(90, 8);
+  expect(projectEdgeEnhanceStrength(100)).toBeCloseTo(100, 8);
+  expect(projectEdgeEnhanceStrength(-9)).toBeCloseTo(-0.81, 6);
+  expect(projectEdgeEnhanceStrength(-10)).toBeCloseTo(-1, 6);
+  expect(projectEdgeEnhanceStrength(-50)).toBe(-25);
+  expect(projectEdgeEnhanceStrength(-100)).toBe(-100);
+});
+
+test("pixel outline easing should thin a thick outline to a single-cell stroke and refill with neighboring color", () => {
+  const fill = { label: "FILL", hex: "#F7DDE4", source: "detected" as const };
+  const outline = { label: "LINE", hex: "#5A525B", source: "detected" as const };
+  const cells = Array.from({ length: 7 * 7 }, () => ({ ...fill }));
+
+  for (let y = 2; y <= 4; y += 1) {
+    for (let x = 1; x <= 5; x += 1) {
+      cells[y * 7 + x] = { ...outline };
+    }
+  }
+
+  const eased = easePixelOutlineThickness(cells, 7, 7, 100);
+
+  for (let x = 1; x <= 5; x += 1) {
+    expect(eased[3 * 7 + x]).toMatchObject(outline);
+    expect(eased[2 * 7 + x]).toMatchObject(fill);
+    expect(eased[4 * 7 + x]).toMatchObject(fill);
+  }
+});
+
+test("pixel outline easing should keep an intermediate thickness at medium strength", () => {
+  const fill = { label: "FILL", hex: "#F7DDE4", source: "detected" as const };
+  const outline = { label: "LINE", hex: "#5A525B", source: "detected" as const };
+  const cells = Array.from({ length: 7 * 7 }, () => ({ ...fill }));
+
+  for (let y = 2; y <= 4; y += 1) {
+    for (let x = 1; x <= 5; x += 1) {
+      cells[y * 7 + x] = { ...outline };
+    }
+  }
+
+  const eased = easePixelOutlineThickness(cells, 7, 7, 50);
+
+  for (let x = 1; x <= 5; x += 1) {
+    const outlineCount =
+      Number(eased[2 * 7 + x].label === outline.label) +
+      Number(eased[3 * 7 + x].label === outline.label) +
+      Number(eased[4 * 7 + x].label === outline.label);
+    expect(outlineCount).toBe(2);
+  }
 });
 
 test("background collapse should preserve a quasi-enclosed interior behind a one-cell mouth", () => {
@@ -995,15 +1131,13 @@ test("embedded chart metadata should import directly without raster parsing", as
       reduceTolerance: 16,
       preSharpen: true,
       preSharpenStrength: 20,
-      applyAutoFftEdgeEnhanceDefault: true,
-      fftEdgeEnhance: true,
       fftEdgeEnhanceStrength: 30,
     });
 
     expect(result.detectionMode).toBe("embedded-chart-metadata");
     expect(result.preferredEditorMode).toBe("pindou");
     expect(result.editingLocked).toBe(true);
-    expect(result.effectiveFftEdgeEnhance).toBe(false);
+    expect(result.effectiveEdgeEnhanceStrength).toBe(0);
     expect(result.colorSystemId).toBe("mard_221");
     expect(result.chartTitle).toBe("Embedded Title");
     expect(result.fileName).toBe("【拼豆豆】embedded-test.png");
@@ -1027,6 +1161,108 @@ test("embedded chart metadata should import directly without raster parsing", as
     ]);
   } finally {
     globalThis.createImageBitmap = originalCreateImageBitmap;
+  }
+});
+
+test("grayscale mode should retain manual edge enhancement strength for converted images", async () => {
+  const raster = buildSolidRaster(3, 3, [220, 220, 220]);
+  setRasterPixel(raster, 1, 0, [40, 40, 40]);
+  setRasterPixel(raster, 1, 2, [40, 40, 40]);
+  const file = new File(["stub"], "grayscale-edge-enhance.png", { type: "image/png" });
+
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const noop = () => {};
+  const canvasContext = new Proxy(
+    {
+      drawImage: noop,
+      getImageData() {
+        return {
+          width: raster.width,
+          height: raster.height,
+          data: new Uint8ClampedArray(raster.data),
+        };
+      },
+      measureText() {
+        return { width: 0 };
+      },
+      createLinearGradient() {
+        return { addColorStop: noop };
+      },
+      createRadialGradient() {
+        return { addColorStop: noop };
+      },
+      setLineDash: noop,
+      getLineDash() {
+        return [];
+      },
+    } as Record<string, unknown>,
+    {
+      get(target, property) {
+        if (property in target) {
+          return target[property as keyof typeof target];
+        }
+        return noop;
+      },
+    },
+  );
+  const createElement = (tagName: string) => {
+    if (tagName !== "canvas") {
+      throw new Error(`unexpected element: ${tagName}`);
+    }
+
+    return {
+      width: raster.width,
+      height: raster.height,
+      getContext() {
+        return canvasContext;
+      },
+      toBlob(callback: BlobCallback) {
+        callback(new Blob([PNG_SIGNATURE], { type: "image/png" }));
+      },
+    } as HTMLCanvasElement;
+  };
+
+  globalThis.createImageBitmap = (async () =>
+    ({
+      width: raster.width,
+      height: raster.height,
+      close() {},
+    }) as ImageBitmap) as typeof globalThis.createImageBitmap;
+  globalThis.document = { createElement } as Document;
+  globalThis.Image = class {
+    onload: null | (() => void) = null;
+    onerror: null | (() => void) = null;
+    width = 1;
+    height = 1;
+
+    set src(_value: string) {
+      queueMicrotask(() => {
+        this.onload?.();
+      });
+    }
+  } as typeof Image;
+
+  try {
+    const result = await processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 3,
+      gridHeight: 3,
+      grayscaleMode: true,
+      reduceColors: false,
+      reduceTolerance: 16,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 30,
+    });
+
+    expect(result.detectionMode).toBe("converted-from-image");
+    expect(result.effectiveEdgeEnhanceStrength).toBe(30);
+  } finally {
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
   }
 });
 

@@ -84,16 +84,21 @@ pub extern "C" fn detect_pixel_art(ptr: *const u8, len: usize, width: u32, heigh
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn enhance_edges(ptr: *mut u8, len: usize, width: u32, height: u32, strength: u32) -> u32 {
+pub extern "C" fn enhance_edges(ptr: *mut u8, len: usize, width: u32, height: u32, strength_milli: u32) -> u32 {
     let width = width as usize;
     let height = height as usize;
     let expected_len = width.saturating_mul(height).saturating_mul(4);
-    if ptr.is_null() || len < expected_len || width < 3 || height < 3 || strength == 0 {
+    if ptr.is_null() || len < expected_len || width < 3 || height < 3 || strength_milli == 0 {
         return 0;
     }
 
     let rgba = unsafe { slice::from_raw_parts_mut(ptr, expected_len) };
-    u32::from(enhance_edges_fft_in_place(rgba, width, height, strength as f32))
+    u32::from(enhance_edges_fft_in_place(
+        rgba,
+        width,
+        height,
+        strength_milli as f32 / 1000.0,
+    ))
 }
 
 fn write_single_result(result: Option<Detection>) {

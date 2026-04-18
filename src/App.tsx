@@ -678,9 +678,7 @@ export default function App() {
   const [reduceTolerance, setReduceTolerance] = useState(16);
   const [preSharpen, setPreSharpen] = useState(true);
   const [preSharpenStrength, setPreSharpenStrength] = useState(20);
-  const [fftEdgeEnhance, setFftEdgeEnhance] = useState(true);
-  const [fftEdgeEnhanceTouched, setFftEdgeEnhanceTouched] = useState(false);
-  const [fftEdgeEnhanceStrength, setFftEdgeEnhanceStrength] = useState(50);
+  const [fftEdgeEnhanceStrength, setFftEdgeEnhanceStrength] = useState(0);
   const [fftEdgeEnhanceOverrideLabel, setFftEdgeEnhanceOverrideLabel] = useState<string | null>(null);
   const [editTool, setEditTool] = useState<EditTool>("pan");
   const [canvasCropSelection, setCanvasCropSelection] = useState<CanvasCropRect | null>(null);
@@ -1019,11 +1017,6 @@ export default function App() {
     setReduceColors(nextReduceColors);
   }
 
-  function handleFftEdgeEnhanceChange(nextFftEdgeEnhance: boolean) {
-    setFftEdgeEnhanceTouched(true);
-    setFftEdgeEnhance(nextFftEdgeEnhance);
-  }
-
   function handleEditToolChange(nextTool: EditTool) {
     paintActiveRef.current = false;
     if (nextTool === "crop") {
@@ -1120,8 +1113,7 @@ export default function App() {
     lastGrayscaleRenderStyleBiasRef.current = DEFAULT_GRAYSCALE_RENDER_STYLE_BIAS;
     setReduceColors(true);
     setReduceColorsTouched(false);
-    setFftEdgeEnhance(true);
-    setFftEdgeEnhanceTouched(false);
+    setFftEdgeEnhanceStrength(0);
     setFftEdgeEnhanceOverrideLabel(null);
     setCropRect(null);
     setCropMode(false);
@@ -2325,8 +2317,6 @@ export default function App() {
             reduceTolerance,
             preSharpen,
             preSharpenStrength,
-            applyAutoFftEdgeEnhanceDefault: !fftEdgeEnhanceTouched,
-            fftEdgeEnhance,
             fftEdgeEnhanceStrength,
             fftEdgeEnhanceOverrideLabel,
             messages: {
@@ -2414,12 +2404,6 @@ export default function App() {
             reduceColors !== processed.effectiveReduceColors
           ) {
             setReduceColors(processed.effectiveReduceColors);
-          }
-          if (
-            !fftEdgeEnhanceTouched &&
-            fftEdgeEnhance !== processed.effectiveFftEdgeEnhance
-          ) {
-            setFftEdgeEnhance(processed.effectiveFftEdgeEnhance);
           }
           if (!grayscaleMode && processed.colorSystemId !== colorSystemId) {
             applyColorSystemId(processed.colorSystemId);
@@ -2510,8 +2494,6 @@ export default function App() {
     reduceTolerance,
     preSharpen,
     preSharpenStrength,
-    fftEdgeEnhance,
-    fftEdgeEnhanceTouched,
     fftEdgeEnhanceStrength,
     fftEdgeEnhanceOverrideLabel,
     cropMode,
@@ -2838,8 +2820,6 @@ export default function App() {
             onPreSharpenChange={setPreSharpen}
             preSharpenStrength={preSharpenStrength}
             onPreSharpenStrengthChange={setPreSharpenStrength}
-            fftEdgeEnhance={fftEdgeEnhance}
-            onFftEdgeEnhanceChange={handleFftEdgeEnhanceChange}
             fftEdgeEnhanceStrength={fftEdgeEnhanceStrength}
             fftEdgeEnhanceOverrideLabel={fftEdgeEnhanceOverrideLabel}
             onFftEdgeEnhanceStrengthChange={setFftEdgeEnhanceStrength}

@@ -138,7 +138,7 @@ export async function enhanceEdgesWithFftWasm(
   raster: RasterImageLike,
   strength: number,
 ): Promise<RasterImageLike> {
-  const normalizedStrength = Math.max(0, Math.min(100, Math.round(strength)));
+  const normalizedStrength = Math.max(0, Math.min(100, strength));
   if (normalizedStrength <= 0 || raster.width < 3 || raster.height < 3) {
     return {
       width: raster.width,
@@ -167,7 +167,7 @@ export async function enhanceEdgesWithFftWasm(
         length,
         raster.width,
         raster.height,
-        normalizedStrength,
+        Math.round(normalizedStrength * 1000),
       );
       const outputBuffer = new Uint8Array(exports.memory.buffer, pointer, length);
       return {

@@ -37,6 +37,7 @@ const GRAYSCALE_CURVE_BLEND = 0.55;
 const SNS_MAX_EXPORT_WIDTH = 1280;
 const SNS_MAX_EXPORT_HEIGHT = 1468;
 const MIN_SNS_DISPLAY_QR_SIZE = 192;
+const NEGATIVE_EDGE_ENHANCE_STRENGTH_CURVE_EXPONENT = 2;
 
 type CropBox = [number, number, number, number];
 type Rgb = [number, number, number];
@@ -81,8 +82,6 @@ export interface ProcessOptions {
   reduceTolerance: number;
   preSharpen: boolean;
   preSharpenStrength: number;
-  applyAutoFftEdgeEnhanceDefault?: boolean;
-  fftEdgeEnhance?: boolean;
   fftEdgeEnhanceStrength?: number;
   fftEdgeEnhanceOverrideLabel?: string | null;
   cellSize?: number;
@@ -170,7 +169,7 @@ export interface ProcessResult {
   chartTitle?: string;
   detectionMode: string;
   effectiveReduceColors: boolean;
-  effectiveFftEdgeEnhance: boolean;
+  effectiveEdgeEnhanceStrength: number;
   preferredEditorMode: "edit" | "pindou";
   editingLocked: boolean;
   detectedCropRect: NormalizedCropRect | null;
@@ -650,8 +649,11 @@ export async function processImageFile(
   );
   const loadedSource = await getCachedFileRaster(file, processMessages.canvasContextUnavailable);
   const source = getCachedCropRaster(loadedSource, options.cropRect);
-  const fftEdgeEnhanceEnabled = options.fftEdgeEnhance ?? false;
-  const fftEdgeEnhanceStrength = options.fftEdgeEnhanceStrength ?? 30;
+  const requestedEdgeEnhanceStrength = Number(options.fftEdgeEnhanceStrength ?? 0);
+  const rawEdgeEnhanceStrength = Math.max(-100, Math.min(100, requestedEdgeEnhanceStrength));
+  const effectiveEdgeEnhanceStrength = projectEdgeEnhanceStrength(rawEdgeEnhanceStrength);
+  const positiveEdgeEnhanceStrength = Math.max(0, effectiveEdgeEnhanceStrength);
+  const negativeEdgeEnhanceStrength = Math.max(0, -effectiveEdgeEnhanceStrength);
   const effectivePreSharpen = grayscaleMode ? false : options.preSharpen;
   let logical: RasterImage;
   let gridWidth: number;
@@ -692,25 +694,18 @@ export async function processImageFile(
       throw new Error(processMessages.manualGridRequired);
     }
 
-    const manualFftEdgeEnhance =
-      grayscaleMode
-        ? false
-        : options.applyAutoFftEdgeEnhanceDefault
-          ? true
-          : fftEdgeEnhanceEnabled;
     gridWidth = options.gridWidth;
     gridHeight = options.gridHeight;
     logical = await getCachedLogicalGrid(
       source,
-      `manual:v4:${gridWidth}:${gridHeight}:${renderStyleBias}:${effectivePreSharpen ? 1 : 0}:${options.preSharpenStrength}:${manualFftEdgeEnhance ? 1 : 0}:${fftEdgeEnhanceStrength}`,
+      `manual:v7:${gridWidth}:${gridHeight}:${renderStyleBias}:${effectivePreSharpen ? 1 : 0}:${options.preSharpenStrength}:${effectiveEdgeEnhanceStrength.toFixed(4)}`,
       () => convertImageToLogicalGrid(
         source,
         gridWidth,
         gridHeight,
         effectivePreSharpen,
         options.preSharpenStrength,
-        manualFftEdgeEnhance,
-        fftEdgeEnhanceStrength,
+        positiveEdgeEnhanceStrength,
         "patch",
         pixelArtBias,
       ),
@@ -736,12 +731,8 @@ export async function processImageFile(
           gridHeight < 30
         ? false
         : options.reduceColors;
-  const effectiveFftEdgeEnhance =
-    grayscaleMode
-      ? false
-      : options.applyAutoFftEdgeEnhanceDefault
-        ? detectionMode === "converted-from-image"
-        : fftEdgeEnhanceEnabled;
+  const appliedEdgeEnhanceStrength =
+    detectionMode === "converted-from-image" ? effectiveEdgeEnhanceStrength : 0;
 
   const originalUniqueColors = countUniqueColors(logical.data);
   let reducedUniqueColors = originalUniqueColors;
@@ -756,7 +747,7 @@ export async function processImageFile(
   let matched = matchPalette(logical, matchingPaletteDefinition, {
     ditherStrength,
   });
-  if (effectiveFftEdgeEnhance && detectionMode === "converted-from-image") {
+  if (positiveEdgeEnhanceStrength > 0 && detectionMode === "converted-from-image") {
     const fftEdgeEnhanceOverrideColor =
       options.fftEdgeEnhanceOverrideLabel
         ? matchingPaletteDefinition.byLabel.get(options.fftEdgeEnhanceOverrideLabel) ?? null
@@ -766,7 +757,7 @@ export async function processImageFile(
         matched.cells,
         gridWidth,
         gridHeight,
-        fftEdgeEnhanceStrength,
+        positiveEdgeEnhanceStrength,
         fftEdgeEnhanceOverrideColor
           ? {
               label: fftEdgeEnhanceOverrideColor.label,
@@ -774,6 +765,16 @@ export async function processImageFile(
               source: "detected",
             }
           : null,
+        ),
+    };
+  }
+  if (negativeEdgeEnhanceStrength > 0 && detectionMode === "converted-from-image") {
+    matched = {
+      cells: easePixelOutlineThickness(
+        matched.cells,
+        gridWidth,
+        gridHeight,
+        negativeEdgeEnhanceStrength,
       ),
     };
   }
@@ -818,7 +819,7 @@ export async function processImageFile(
     chartTitle: undefined,
     detectionMode,
     effectiveReduceColors,
-    effectiveFftEdgeEnhance,
+    effectiveEdgeEnhanceStrength: appliedEdgeEnhanceStrength,
     preferredEditorMode,
     editingLocked: false,
     detectedCropRect,
@@ -1032,7 +1033,7 @@ async function tryLoadEmbeddedChartResult(file: File): Promise<ProcessResult | n
     chartTitle: metadata.chartTitle,
     detectionMode: "embedded-chart-metadata",
     effectiveReduceColors: true,
-    effectiveFftEdgeEnhance: false,
+    effectiveEdgeEnhanceStrength: 0,
     preferredEditorMode: editingLocked ? "pindou" : (metadata.preferredEditorMode ?? "pindou"),
     editingLocked,
     detectedCropRect: null,
@@ -2023,13 +2024,12 @@ async function convertImageToLogicalGrid(
   gridHeight: number,
   preSharpenEnabled: boolean,
   preSharpenStrength: number,
-  fftEdgeEnhanceEnabled: boolean,
   fftEdgeEnhanceStrength: number,
   samplingStrategy: SamplingStrategy = "patch",
   pixelArtBias = 1,
 ) {
   let cropped = centerCropToRatio(image, gridWidth / gridHeight);
-  if (fftEdgeEnhanceEnabled) {
+  if (fftEdgeEnhanceStrength > 0) {
     cropped = (await enhanceEdgesWithFftWasm(cropped, fftEdgeEnhanceStrength)) as RasterImage;
   }
   if (preSharpenEnabled) {
@@ -2294,6 +2294,68 @@ export function enhancePixelOutlineContinuity(
   return current;
 }
 
+export function easePixelOutlineThickness(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  strength = 30,
+) {
+  const normalizedCells = cells.map((cell) => normalizeEditableCell(cell));
+  if (gridWidth <= 0 || gridHeight <= 0 || normalizedCells.length !== gridWidth * gridHeight) {
+    return normalizedCells;
+  }
+
+  const strengthNorm = Math.max(0, Math.min(100, strength)) / 100;
+  if (strengthNorm <= 0) {
+    return normalizedCells;
+  }
+
+  let current = normalizedCells.map((cell) => ({ ...cell }));
+  const maxIterations = 2;
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const tones = current.map((cell) => getCellTone(cell));
+    const next = current.map((cell) => ({ ...cell }));
+    let changed = false;
+
+    for (let index = 0; index < current.length; index += 1) {
+      if (!shouldEaseOutlineCell(current, tones, gridWidth, gridHeight, index, strengthNorm)) {
+        continue;
+      }
+
+      const replacement = pickOutlineEaseReplacement(current, tones, gridWidth, gridHeight, index);
+      if (!replacement) {
+        continue;
+      }
+
+      next[index] = replacement;
+      changed = true;
+    }
+
+    current = next;
+
+    if (!changed) {
+      break;
+    }
+  }
+
+  return current;
+}
+
+export function projectEdgeEnhanceStrength(strength: number) {
+  const clamped = Math.max(-100, Math.min(100, strength));
+  if (clamped === 0) {
+    return 0;
+  }
+
+  if (clamped > 0) {
+    return clamped;
+  }
+
+  const magnitude = Math.abs(clamped) / 100;
+  return -Math.pow(magnitude, NEGATIVE_EDGE_ENHANCE_STRENGTH_CURVE_EXPONENT) * 100;
+}
+
 function buildOutlineSeedMask(
   cells: EditableCell[],
   tones: Array<CellTone | null>,
@@ -2500,6 +2562,271 @@ function getGridNeighborIndex(
     return null;
   }
   return nextY * gridWidth + nextX;
+}
+
+function shouldThinOutlinePixel(
+  neighborCycle: number[],
+  phase: number,
+) {
+  const neighborCount = neighborCycle.reduce((sum, value) => sum + value, 0);
+  if (neighborCount < 2 || neighborCount > 6) {
+    return false;
+  }
+
+  let transitions = 0;
+  for (let offset = 0; offset < neighborCycle.length; offset += 1) {
+    const current = neighborCycle[offset];
+    const next = neighborCycle[(offset + 1) % neighborCycle.length];
+    if (current === 0 && next === 1) {
+      transitions += 1;
+    }
+  }
+
+  if (transitions !== 1) {
+    return false;
+  }
+
+  const [p2, , p4, , p6, , p8] = neighborCycle;
+  if (phase === 0) {
+    return p2 * p4 * p6 === 0 && p4 * p6 * p8 === 0;
+  }
+
+  return p2 * p4 * p8 === 0 && p2 * p6 * p8 === 0;
+}
+
+function shouldEaseOutlineCell(
+  cells: EditableCell[],
+  tones: Array<CellTone | null>,
+  gridWidth: number,
+  gridHeight: number,
+  index: number,
+  strengthNorm: number,
+) {
+  const cell = cells[index];
+  const tone = tones[index];
+  if (!cell.label || !tone) {
+    return false;
+  }
+
+  const replacement = pickOutlineEaseReplacement(cells, tones, gridWidth, gridHeight, index);
+  if (!replacement) {
+    return false;
+  }
+
+  const replacementTone = getCellTone(replacement);
+  if (!replacementTone) {
+    return false;
+  }
+
+  const minimumContrast = 10 - strengthNorm * 3;
+  if (replacementTone.luma < tone.luma + minimumContrast) {
+    return false;
+  }
+
+  const horizontalSpan = measureSameLabelSpan(cells, gridWidth, gridHeight, index, 1, 0, cell.label);
+  const verticalSpan = measureSameLabelSpan(cells, gridWidth, gridHeight, index, 0, 1, cell.label);
+  const majorSpan = Math.max(horizontalSpan, verticalSpan);
+  const minorSpan = Math.min(horizontalSpan, verticalSpan);
+  if (minorSpan <= 1 || majorSpan < minorSpan + 2) {
+    return false;
+  }
+
+  const targetMinorSpan = getTargetOutlineMinorSpan(minorSpan, strengthNorm);
+  if (targetMinorSpan >= minorSpan) {
+    return false;
+  }
+
+  if (horizontalSpan >= verticalSpan + 2) {
+    const position = measureSameLabelOffset(cells, gridWidth, gridHeight, index, 0, -1, cell.label);
+    const [keepStart, keepEnd] = getOutlineKeepRange(verticalSpan, targetMinorSpan);
+    return position < keepStart || position > keepEnd;
+  }
+
+  if (verticalSpan >= horizontalSpan + 2) {
+    const position = measureSameLabelOffset(cells, gridWidth, gridHeight, index, -1, 0, cell.label);
+    const [keepStart, keepEnd] = getOutlineKeepRange(horizontalSpan, targetMinorSpan);
+    return position < keepStart || position > keepEnd;
+  }
+
+  return false;
+}
+
+function pickOutlineEaseReplacement(
+  cells: EditableCell[],
+  tones: Array<CellTone | null>,
+  gridWidth: number,
+  gridHeight: number,
+  index: number,
+) {
+  const sourceCell = cells[index];
+  const sourceTone = tones[index];
+  if (!sourceCell.label || !sourceTone) {
+    return null;
+  }
+
+  const x = index % gridWidth;
+  const y = Math.floor(index / gridWidth);
+  const candidates = new Map<string, { weight: number; cell: EditableCell; luma: number }>();
+  const directions: Array<[number, number, number]> = [
+    [0, -1, 3],
+    [1, 0, 3],
+    [0, 1, 3],
+    [-1, 0, 3],
+    [-1, -1, 2],
+    [1, -1, 2],
+    [1, 1, 2],
+    [-1, 1, 2],
+  ];
+
+  for (const [dx, dy, weight] of directions) {
+    const neighborIndex = getGridNeighborIndex(x, y, dx, dy, gridWidth, gridHeight);
+    if (neighborIndex === null) {
+      continue;
+    }
+
+    const candidate = cells[neighborIndex];
+    const tone = tones[neighborIndex];
+    if (
+      !candidate.label ||
+      !candidate.hex ||
+      !tone ||
+      candidate.label === sourceCell.label
+    ) {
+      continue;
+    }
+
+    if (tone.luma <= sourceTone.luma) {
+      continue;
+    }
+
+    const key = `${candidate.label}:${candidate.hex}`;
+    const current = candidates.get(key);
+    if (!current) {
+      candidates.set(key, {
+        weight,
+        cell: normalizeEditableCell(candidate),
+        luma: tone.luma,
+      });
+      continue;
+    }
+
+    current.weight += weight;
+    current.luma = Math.max(current.luma, tone.luma);
+  }
+
+  let best: { weight: number; cell: EditableCell; luma: number } | null = null;
+  for (const candidate of candidates.values()) {
+    if (
+      !best ||
+      candidate.weight > best.weight ||
+      (candidate.weight === best.weight && candidate.luma > best.luma)
+    ) {
+      best = candidate;
+    }
+  }
+
+  return best ? { ...best.cell } : null;
+}
+
+function getSameLabelNeighborCycle(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  index: number,
+  label: string,
+) {
+  const x = index % gridWidth;
+  const y = Math.floor(index / gridWidth);
+  const offsets: Array<[number, number]> = [
+    [0, -1],
+    [1, -1],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+    [-1, 1],
+    [-1, 0],
+    [-1, -1],
+  ];
+
+  return offsets.map(([dx, dy]) => {
+    const index = getGridNeighborIndex(x, y, dx, dy, gridWidth, gridHeight);
+    return index === null || cells[index].label !== label ? 0 : 1;
+  });
+}
+
+function measureSameLabelSpan(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  index: number,
+  dx: number,
+  dy: number,
+  label: string,
+) {
+  const x = index % gridWidth;
+  const y = Math.floor(index / gridWidth);
+  let span = 1;
+
+  for (const direction of [-1, 1] as const) {
+    let step = 1;
+    while (true) {
+      const neighborIndex = getGridNeighborIndex(
+        x,
+        y,
+        dx * step * direction,
+        dy * step * direction,
+        gridWidth,
+        gridHeight,
+      );
+      if (neighborIndex === null || cells[neighborIndex].label !== label) {
+        break;
+      }
+      span += 1;
+      step += 1;
+    }
+  }
+
+  return span;
+}
+
+function measureSameLabelOffset(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  index: number,
+  dx: number,
+  dy: number,
+  label: string,
+) {
+  const x = index % gridWidth;
+  const y = Math.floor(index / gridWidth);
+  let offset = 0;
+
+  while (true) {
+    const neighborIndex = getGridNeighborIndex(
+      x,
+      y,
+      dx * (offset + 1),
+      dy * (offset + 1),
+      gridWidth,
+      gridHeight,
+    );
+    if (neighborIndex === null || cells[neighborIndex].label !== label) {
+      break;
+    }
+    offset += 1;
+  }
+
+  return offset;
+}
+
+function getTargetOutlineMinorSpan(minorSpan: number, strengthNorm: number) {
+  return Math.max(1, Math.round(1 + (minorSpan - 1) * (1 - strengthNorm)));
+}
+
+function getOutlineKeepRange(span: number, targetSpan: number): [number, number] {
+  const start = Math.floor((span - targetSpan) / 2);
+  return [start, start + targetSpan - 1];
 }
 
 function getCellTone(cell: EditableCell): CellTone | null {

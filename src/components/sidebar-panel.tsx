@@ -48,8 +48,6 @@ export function SidebarPanel({
   onPreSharpenChange,
   preSharpenStrength,
   onPreSharpenStrengthChange,
-  fftEdgeEnhance,
-  onFftEdgeEnhanceChange,
   fftEdgeEnhanceStrength,
   fftEdgeEnhanceOverrideLabel,
   onFftEdgeEnhanceStrengthChange,
@@ -92,8 +90,6 @@ export function SidebarPanel({
   onPreSharpenChange: (checked: boolean) => void;
   preSharpenStrength: number;
   onPreSharpenStrengthChange: (value: number) => void;
-  fftEdgeEnhance: boolean;
-  onFftEdgeEnhanceChange: (checked: boolean) => void;
   fftEdgeEnhanceStrength: number;
   fftEdgeEnhanceOverrideLabel: string | null;
   onFftEdgeEnhanceStrengthChange: (value: number) => void;
@@ -320,30 +316,20 @@ export function SidebarPanel({
             />
 
             <div className={clsx("h-px", theme.divider)} />
-
-            <SwitchRow
-              id="fft-edge-enhance"
-              title={t.fftEdgeEnhanceTitle}
-              description=""
-              checked={grayscaleMode ? false : fftEdgeEnhance}
-              onCheckedChange={onFftEdgeEnhanceChange}
-              disabled={grayscaleMode}
-              isDark={isDark}
-            />
             <SliderRow
               id="fft-edge-enhance-strength"
+              label={t.fftEdgeEnhanceTitle}
               value={fftEdgeEnhanceStrength}
-              min={0}
+              min={-100}
               max={100}
               step={1}
-              disabled={grayscaleMode || !fftEdgeEnhance}
               accessory={
                 <div ref={edgeColorPickerRef} className="relative">
                   <button
                     className={clsx(
                       "flex h-9 w-9 items-center justify-center rounded-full border transition",
                       fftEdgeEnhanceOverrideOption ? theme.controlButtonActive : theme.pill,
-                      (grayscaleMode || !fftEdgeEnhance) && "pointer-events-none opacity-45",
+                      (grayscaleMode || fftEdgeEnhanceStrength <= 0) && "pointer-events-none opacity-45",
                     )}
                     onClick={() => setEdgeColorPickerOpen((current) => !current)}
                     title={edgeColorButtonTitle}

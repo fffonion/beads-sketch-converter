@@ -2,6 +2,7 @@ use crate::detector_signal::{
     build_column_edge_projection, build_luma, build_row_edge_projection, smooth_projection,
 };
 use crate::fft::estimate_period_from_fft;
+use std::collections::HashMap;
 
 pub(crate) fn enhance_edges_fft_in_place(
     rgba: &mut [u8],
@@ -30,15 +31,16 @@ pub(crate) fn enhance_edges_fft_in_place(
 
     let dominant_period = estimate_dominant_edge_period(&luma, width, height);
     let strength_norm = strength / 100.0;
-    let bridge_span = ((dominant_period * 0.24) + 1.0 + strength_norm * 3.0)
+    let strength_response = strength_norm;
+    let bridge_span = (1.0 + strength_response * ((dominant_period * 0.24) + 2.0))
         .round()
         .clamp(1.0, 6.0) as usize;
-    let dilation_radius = ((dominant_period * 0.14) + 0.8 + strength_norm * 1.8)
+    let dilation_radius = (1.0 + strength_response * ((dominant_period * 0.14) + 1.6))
         .round()
         .clamp(1.0, 3.0) as usize;
     let (strong_mask, connected_mask) =
-        build_edge_masks(&luma, width, height, bridge_span, dilation_radius, strength_norm);
-    let stroke_mask = build_stroke_mask(
+        build_edge_masks(&luma, width, height, bridge_span, dilation_radius, strength_response);
+    let (stroke_mask, bridge_mask) = build_stroke_masks(
         &luma,
         &blurred_luma,
         &detail_luma,
@@ -47,42 +49,43 @@ pub(crate) fn enhance_edges_fft_in_place(
         width,
         height,
         bridge_span.min(4),
-        (dilation_radius + 1).min(4),
-        strength_norm,
+        strength_response,
     );
     if strong_mask.iter().all(|value| *value == 0) || connected_mask.iter().all(|value| *value == 0)
     {
         return false;
     }
 
-    let core_boost = 0.58 + strength_norm * 1.28;
-    let bridge_boost = 0.28 + strength_norm * 0.66;
-    let stroke_mix = 0.54 + strength_norm * 0.22;
-    let bridge_mix = 0.34 + strength_norm * 0.3;
+    let core_boost = 1.86 * strength_response;
+    let bridge_boost = 0.94 * strength_response;
+    let stroke_mix = 0.76 * strength_response;
+    let bridge_mix = 0.64 * strength_response;
     let neighbor_radius = (bridge_span + dilation_radius).clamp(2, 5);
     let mut changed = false;
 
     for y in 0..height {
         for x in 0..width {
             let pixel_index = y * width + x;
-            if connected_mask[pixel_index] == 0 {
+            let is_stroke = stroke_mask[pixel_index] != 0;
+            let is_bridge = bridge_mask[pixel_index] != 0;
+            if !is_stroke && !is_bridge {
                 continue;
             }
 
             let base = pixel_index * 4;
-            let is_stroke = stroke_mask[pixel_index] != 0;
             let boost = if is_stroke {
                 core_boost
-            } else if strong_mask[pixel_index] != 0 {
-                core_boost * 0.82
             } else {
                 bridge_boost
             };
             let neighbor = sample_stroke_neighbor_color(
                 &source,
                 &stroke_mask,
+                &strong_mask,
+                &connected_mask,
                 &luma,
                 &detail_luma,
+                luma[pixel_index],
                 width,
                 height,
                 x,
@@ -97,9 +100,15 @@ pub(crate) fn enhance_edges_fft_in_place(
                 if let Some(target) = neighbor {
                     let mix = if is_stroke { stroke_mix } else { bridge_mix };
                     value = value * (1.0 - mix) + target[channel] * mix;
+                    let halo_allowance = if is_stroke {
+                        14.0 + (1.0 - strength_response) * 8.0
+                    } else {
+                        18.0 + (1.0 - strength_response) * 10.0
+                    };
+                    value = value.min((target[channel] + halo_allowance).max(source_value));
                 }
                 if is_stroke {
-                    value -= (6.0 + strength_norm * 10.0)
+                    value -= (16.0 * strength_response)
                         * ((220.0 - luma[pixel_index]).max(0.0) / 220.0);
                 }
                 let next = value.round().clamp(0.0, 255.0) as u8;
@@ -224,7 +233,7 @@ fn build_edge_masks(
     (strong_mask, connected)
 }
 
-fn build_stroke_mask(
+fn build_stroke_masks(
     luma: &[f32],
     blurred_luma: &[f32],
     detail_luma: &[f32],
@@ -233,9 +242,8 @@ fn build_stroke_mask(
     width: usize,
     height: usize,
     bridge_span: usize,
-    dilation_radius: usize,
     strength_norm: f32,
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<u8>) {
     let pixel_count = width * height;
     let mut seed_mask = vec![0_u8; pixel_count];
     let dark_side_threshold = 2.0 + strength_norm * 6.0;
@@ -262,18 +270,19 @@ fn build_stroke_mask(
 
     let horizontal_bridge = bridge_mask_rows(&seed_mask, width, height, bridge_span);
     let vertical_bridge = bridge_mask_columns(&seed_mask, width, height, bridge_span);
-    let mut combined = seed_mask;
+    let mut bridge_mask = vec![0_u8; pixel_count];
     for index in 0..pixel_count {
-        if horizontal_bridge[index] != 0 || vertical_bridge[index] != 0 {
-            combined[index] = 1;
+        if connected_mask[index] == 0 || seed_mask[index] != 0 {
+            continue;
         }
+        bridge_mask[index] = u8::from(horizontal_bridge[index] != 0 || vertical_bridge[index] != 0);
     }
 
-    let mut stroke = dilate_mask(&combined, width, height, dilation_radius);
     for index in 0..pixel_count {
-        stroke[index] = u8::from(stroke[index] != 0 && connected_mask[index] != 0);
+        seed_mask[index] = u8::from(seed_mask[index] != 0 && connected_mask[index] != 0);
     }
-    stroke
+
+    (seed_mask, bridge_mask)
 }
 
 fn bridge_mask_rows(mask: &[u8], width: usize, height: usize, max_gap: usize) -> Vec<u8> {
@@ -386,45 +395,81 @@ fn dilate_mask(mask: &[u8], width: usize, height: usize, radius: usize) -> Vec<u
 fn sample_stroke_neighbor_color(
     rgba: &[u8],
     stroke_mask: &[u8],
+    strong_mask: &[u8],
+    connected_mask: &[u8],
     luma: &[f32],
     detail_luma: &[f32],
+    source_luma: f32,
     width: usize,
     height: usize,
     x: usize,
     y: usize,
     radius: usize,
 ) -> Option<[f32; 3]> {
-    let mut sum = [0.0_f32; 3];
-    let mut weight_sum = 0.0_f32;
+    let mut buckets = HashMap::<u16, StrokeColorBucket>::new();
+    let max_candidate_luma = (source_luma + 48.0).min(208.0);
 
     for sample_y in y.saturating_sub(radius)..=(y + radius).min(height.saturating_sub(1)) {
         for sample_x in x.saturating_sub(radius)..=(x + radius).min(width.saturating_sub(1)) {
             let index = sample_y * width + sample_x;
-            if stroke_mask[index] == 0 {
+            if luma[index] > max_candidate_luma {
                 continue;
             }
 
             let distance = x.abs_diff(sample_x).max(y.abs_diff(sample_y)) as f32;
+            let structure_bonus = if stroke_mask[index] != 0 {
+                56.0
+            } else if strong_mask[index] != 0 {
+                24.0
+            } else if connected_mask[index] != 0 {
+                8.0
+            } else {
+                0.0
+            };
             let weight = (255.0 - luma[index]).max(12.0)
                 + detail_luma[index].abs() * 3.0
-                + (radius as f32 - distance).max(0.0) * 14.0;
+                + (radius as f32 - distance).max(0.0) * 14.0
+                + structure_bonus;
             let base = index * 4;
-            weight_sum += weight;
-            sum[0] += rgba[base] as f32 * weight;
-            sum[1] += rgba[base + 1] as f32 * weight;
-            sum[2] += rgba[base + 2] as f32 * weight;
+            let bucket_key = quantize_stroke_color_bucket(rgba[base], rgba[base + 1], rgba[base + 2]);
+            let bucket = buckets.entry(bucket_key).or_default();
+            bucket.weight_sum += weight;
+            bucket.weighted_rgb_sum[0] += rgba[base] as f32 * weight;
+            bucket.weighted_rgb_sum[1] += rgba[base + 1] as f32 * weight;
+            bucket.weighted_rgb_sum[2] += rgba[base + 2] as f32 * weight;
+            bucket.weighted_luma_sum += luma[index] * weight;
         }
     }
 
-    if weight_sum <= 0.0 {
-        return None;
-    }
+    let dominant_bucket = buckets.values().max_by(|left, right| {
+        left.weight_sum
+            .total_cmp(&right.weight_sum)
+            .then_with(|| {
+                let left_luma = left.weighted_luma_sum / left.weight_sum.max(1e-6);
+                let right_luma = right.weighted_luma_sum / right.weight_sum.max(1e-6);
+                right_luma.total_cmp(&left_luma)
+            })
+    })?;
 
     Some([
-        sum[0] / weight_sum,
-        sum[1] / weight_sum,
-        sum[2] / weight_sum,
+        dominant_bucket.weighted_rgb_sum[0] / dominant_bucket.weight_sum,
+        dominant_bucket.weighted_rgb_sum[1] / dominant_bucket.weight_sum,
+        dominant_bucket.weighted_rgb_sum[2] / dominant_bucket.weight_sum,
     ])
+}
+
+#[derive(Default)]
+struct StrokeColorBucket {
+    weight_sum: f32,
+    weighted_rgb_sum: [f32; 3],
+    weighted_luma_sum: f32,
+}
+
+fn quantize_stroke_color_bucket(red: u8, green: u8, blue: u8) -> u16 {
+    let red_bucket = (red / 32) as u16;
+    let green_bucket = (green / 32) as u16;
+    let blue_bucket = (blue / 32) as u16;
+    (red_bucket << 6) | (green_bucket << 3) | blue_bucket
 }
 
 fn box_blur_rgba(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
