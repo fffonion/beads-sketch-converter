@@ -5,6 +5,7 @@ import {
   lazy,
   startTransition,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -87,7 +88,7 @@ const CHART_SHARE_QR_CANVAS_FILL = "#FFF8ED";
 const CHART_SHARE_QR_CARD_FILL = "#FFFFFF";
 const GRAYSCALE_BASE_COLOR_SYSTEM_ID = "mard_221";
 const DEFAULT_CONTRAST = 0;
-const DEFAULT_GRAYSCALE_CONTRAST = 0;
+const DEFAULT_GRAYSCALE_CONTRAST = 100;
 const DEFAULT_RENDER_STYLE_BIAS = 100;
 const DEFAULT_GRAYSCALE_RENDER_STYLE_BIAS = 0;
 const DEFAULT_GRAYSCALE_DISABLED_LABELS = ["H1", "H6", "H22", "H10"] as const;
@@ -1433,6 +1434,14 @@ export default function App() {
     commitEditorSnapshot(draft, disabledResultLabelsRef.current);
   }
 
+  const handleGlobalBrushPointerRelease = useEffectEvent(() => {
+    const shouldFinalize = paintActiveRef.current;
+    paintActiveRef.current = false;
+    if (shouldFinalize) {
+      finalizeBrushStroke();
+    }
+  });
+
   function handleUndo() {
     if (result?.editingLocked) {
       return;
@@ -2128,14 +2137,49 @@ export default function App() {
     setPindouTimerElapsedMs(0);
   }
 
-  useEffect(() => {
-    const handlePointerUp = () => {
-      const shouldFinalize = paintActiveRef.current;
-      paintActiveRef.current = false;
-      if (shouldFinalize) {
-        finalizeBrushStroke();
+  const handleGlobalEditorKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) {
+      return;
+    }
+    if (isTypingElement(event.target)) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key === "z" && !event.shiftKey) {
+      if (editorHistoryIndexRef.current <= 0) {
+        return;
       }
-    };
+      event.preventDefault();
+      handleUndo();
+      return;
+    }
+
+    if (key === "y" || (key === "z" && event.shiftKey)) {
+      if (
+        editorHistoryIndexRef.current < 0 ||
+        editorHistoryIndexRef.current >= editorHistoryRef.current.length - 1
+      ) {
+        return;
+      }
+      event.preventDefault();
+      handleRedo();
+      return;
+    }
+
+    if (key === "s") {
+      if (!saveChartRef.current) {
+        return;
+      }
+      event.preventDefault();
+      saveChartRef.current();
+    }
+  });
+
+  useEffect(() => {
+    function handlePointerUp() {
+      handleGlobalBrushPointerRelease();
+    }
 
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
@@ -2143,53 +2187,18 @@ export default function App() {
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, []);
+  }, [handleGlobalBrushPointerRelease]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) {
-        return;
-      }
-      if (isTypingElement(event.target)) {
-        return;
-      }
-
-      const key = event.key.toLowerCase();
-      if (key === "z" && !event.shiftKey) {
-        if (editorHistoryIndexRef.current <= 0) {
-          return;
-        }
-        event.preventDefault();
-        handleUndo();
-        return;
-      }
-
-      if (key === "y" || (key === "z" && event.shiftKey)) {
-        if (
-          editorHistoryIndexRef.current < 0 ||
-          editorHistoryIndexRef.current >= editorHistoryRef.current.length - 1
-        ) {
-          return;
-        }
-        event.preventDefault();
-        handleRedo();
-        return;
-      }
-
-      if (key === "s") {
-        if (!saveChartRef.current) {
-          return;
-        }
-        event.preventDefault();
-        saveChartRef.current();
-      }
+      handleGlobalEditorKeyDown(event);
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, []);
+  }, [handleGlobalEditorKeyDown]);
 
   useEffect(() => {
     setSelectedLabel((previous) => {
