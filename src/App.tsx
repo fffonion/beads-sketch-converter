@@ -1,5 +1,5 @@
 ﻿import clsx from "clsx";
-import { ImageUp, LaptopMinimal, Moon, Sun, X } from "lucide-react";
+import { ImageUp, Languages, LaptopMinimal, Moon, Sun, X } from "lucide-react";
 import {
   Suspense,
   lazy,
@@ -16,6 +16,7 @@ import { BrandWordmark } from "./components/brand-wordmark";
 import { LanguageSwitch, ThemeSwitch } from "./components/controls";
 import { OriginalPreviewCard } from "./components/preview-cards";
 import { SidebarPanel } from "./components/sidebar-panel";
+import { MobileWorkspaceLoadingFallback, WorkspaceBusyIndicator } from "./components/workspace-busy-overlay";
 import {
   applyDisabledColorReplacements,
   buildDisabledLabelsByCoverage,
@@ -72,6 +73,17 @@ import {
   scheduleWorkspaceStageBusyProcessing,
   shouldShowWorkspacePanelsSuspenseLoading,
 } from "./lib/workspace-busy-state";
+import {
+  parseStoredPindouTimerState,
+  serializePindouTimerState,
+} from "./lib/pindou-timer-storage";
+import {
+  getMobileHeaderChromeLayout,
+  getMobileHeaderChromeMetrics,
+  getMobileLandingLayout,
+  isMobileLikeEnvironment,
+  shouldUseMobileWorkspaceShell,
+} from "./lib/workspace-layout";
 import type { EditorPanelMode } from "./components/pixel-editor-panel";
 
 type GridMode = "auto" | "manual";
@@ -86,6 +98,7 @@ const localeStorageKey = "pindou-convert-locale";
 const themeStorageKey = "pindou-convert-theme";
 const pindouBeadShapeStorageKey = "pindou-convert-pindou-bead-shape";
 const pindouBoardThemeStorageKey = "pindou-convert-pindou-board-theme";
+const pindouTimerStorageKey = "pindou-convert-pindou-timer";
 const EMPTY_SELECTION_LABEL = "__EMPTY__";
 const APP_BRAND_TITLE = "拼豆豆";
 const APP_BRAND_TITLE_MOBILE = "拼豆豆";
@@ -162,6 +175,14 @@ function readInitialPindouBoardTheme(): PindouBoardTheme {
     : "gray";
 }
 
+function readInitialPindouTimerState() {
+  if (typeof window === "undefined") {
+    return parseStoredPindouTimerState(null);
+  }
+
+  return parseStoredPindouTimerState(window.localStorage.getItem(pindouTimerStorageKey));
+}
+
 function isTypingElement(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -184,23 +205,6 @@ type FullscreenCapableDocument = Document & {
   webkitExitFullscreen?: () => Promise<void> | void;
   webkitFullscreenElement?: Element | null;
 };
-
-function isMobileLikeUserAgent() {
-  if (typeof navigator === "undefined") {
-    return false;
-  }
-
-  const userAgent = navigator.userAgent.toLowerCase();
-  const matchesMobileUa =
-    /android|iphone|ipad|ipod|mobile|tablet|silk|kindle|playbook|opera mini|iemobile/.test(
-      userAgent,
-    );
-  const isTouchMac =
-    userAgent.includes("macintosh") &&
-    typeof navigator.maxTouchPoints === "number" &&
-    navigator.maxTouchPoints > 1;
-  return matchesMobileUa || isTouchMac;
-}
 
 function getFullscreenElement() {
   if (typeof document === "undefined") {
@@ -256,13 +260,19 @@ function WorkspacePanelsSuspenseFallback({
   busy,
   readyHint,
   minHeightClassName = "min-h-[520px]",
+  mobileApp = false,
 }: {
   isDark: boolean;
   busy: boolean;
   readyHint: string;
   minHeightClassName?: string;
+  mobileApp?: boolean;
 }) {
   const theme = getThemeClasses(isDark);
+
+  if (mobileApp && busy) {
+    return <MobileWorkspaceLoadingFallback isDark={isDark} />;
+  }
 
   return (
     <section
@@ -279,17 +289,7 @@ function WorkspacePanelsSuspenseFallback({
         )}
       >
         {busy ? (
-          <div className="flex w-full max-w-[320px] flex-col items-center px-4">
-            <div className={clsx("relative h-2 w-full overflow-hidden rounded-full", isDark ? "bg-stone-800/80" : "bg-stone-300/80")}>
-              <div
-                className={clsx(
-                  "absolute inset-y-0 w-1/3 rounded-full",
-                  isDark ? "bg-amber-200/90" : "bg-amber-700/85",
-                )}
-                style={{ animation: "pindou-indeterminate 1.2s ease-in-out infinite" }}
-              />
-            </div>
-          </div>
+          <WorkspaceBusyIndicator isDark={isDark} />
         ) : (
           readyHint
         )}
@@ -756,10 +756,11 @@ export default function App() {
   const [pindouBoardTheme, setPindouBoardTheme] = useState<PindouBoardTheme>(
     readInitialPindouBoardTheme,
   );
+  const initialPindouTimerState = useMemo(readInitialPindouTimerState, []);
   const [pindouZoom, setPindouZoom] = useState(1);
-  const [pindouTimerRunning, setPindouTimerRunning] = useState(false);
-  const [pindouTimerElapsedMs, setPindouTimerElapsedMs] = useState(0);
-  const pindouTimerStartedAtRef = useRef<number | null>(null);
+  const [pindouTimerRunning, setPindouTimerRunning] = useState(initialPindouTimerState.running);
+  const [pindouTimerElapsedMs, setPindouTimerElapsedMs] = useState(initialPindouTimerState.elapsedMs);
+  const pindouTimerStartedAtRef = useRef<number | null>(initialPindouTimerState.startedAt);
   const [chartExportTitle, setChartExportTitle] = useState("");
   const [chartWatermarkText, setChartWatermarkText] = useState("");
   const [chartWatermarkImageDataUrl, setChartWatermarkImageDataUrl] = useState<string | null>(null);
@@ -793,7 +794,14 @@ export default function App() {
 
   const t = getMessages(locale);
   const isDark = themeMode === "dark" || (themeMode === "system" && systemPrefersDark);
-  const useBrowserFullscreenForPindou = isMobileLikeUserAgent();
+  const mobileEnvironment =
+    typeof navigator === "undefined"
+      ? false
+      : isMobileLikeEnvironment({
+        userAgent: navigator.userAgent ?? "",
+        maxTouchPoints: typeof navigator.maxTouchPoints === "number" ? navigator.maxTouchPoints : 0,
+      });
+  const useBrowserFullscreenForPindou = mobileEnvironment;
   const theme = getThemeClasses(isDark);
   const chartCodeInputClassName = clsx(
     "min-h-[120px] w-full rounded-md border px-3 py-2 text-sm leading-6 shadow-inner outline-none transition",
@@ -839,6 +847,40 @@ export default function App() {
   const editorGridHeight = currentEditorSnapshot?.gridHeight ?? result?.gridHeight ?? 0;
   const workspaceBusy = getWorkspaceUiBusy(busy, editorRefreshBusy);
   const workspaceStageBusy = getWorkspaceStageBusy(busy, editorRefreshBusy);
+  const useMobileWorkspace = shouldUseMobileWorkspaceShell({
+    userAgent: typeof navigator === "undefined" ? "" : (navigator.userAgent ?? ""),
+    maxTouchPoints:
+      typeof navigator !== "undefined" && typeof navigator.maxTouchPoints === "number"
+        ? navigator.maxTouchPoints
+        : 0,
+  });
+  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.innerWidth > window.innerHeight;
+  });
+  const mobileHeaderChrome = getMobileHeaderChromeMetrics();
+  const mobileHeaderLayout = getMobileHeaderChromeLayout();
+  const mobileHeaderOffset = `calc(env(safe-area-inset-top) + ${mobileHeaderChrome.minHeightPx}px + ${mobileHeaderChrome.topInsetRem + mobileHeaderChrome.verticalPaddingRem}rem)`;
+  const mobileLandingLayout = getMobileLandingLayout({
+    useMobileWorkspace,
+    isLandscapeViewport,
+  });
+
+  useEffect(() => {
+    function syncLandscapeViewport() {
+      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
+    }
+
+    syncLandscapeViewport();
+    window.addEventListener("resize", syncLandscapeViewport);
+    window.addEventListener("orientationchange", syncLandscapeViewport);
+    return () => {
+      window.removeEventListener("resize", syncLandscapeViewport);
+      window.removeEventListener("orientationchange", syncLandscapeViewport);
+    };
+  }, []);
   const renderedEditorCells = useMemo(
     () =>
       getRenderedEditableCells(
@@ -2181,6 +2223,21 @@ export default function App() {
     };
   }, [pindouTimerRunning]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      pindouTimerStorageKey,
+      serializePindouTimerState({
+        elapsedMs: pindouTimerElapsedMs,
+        running: pindouTimerRunning,
+        startedAt: pindouTimerStartedAtRef.current,
+      }),
+    );
+  }, [pindouTimerElapsedMs, pindouTimerRunning]);
+
   function handlePindouTimerToggle() {
     if (pindouTimerRunning) {
       const startedAt = pindouTimerStartedAtRef.current;
@@ -2596,17 +2653,53 @@ export default function App() {
                 busy={shouldShowWorkspacePanelsSuspenseLoading(Boolean(file), workspaceBusy)}
                 readyHint={t.readyHint}
                 minHeightClassName="min-h-screen"
+                mobileApp={useMobileWorkspace}
               />
             }
           >
             <WorkspacePanels
             t={t}
+            file={file}
             inputUrl={inputUrl}
+            sourceBadge={sourceBadge}
+            sourceFocusViewOpen={sourceFocusViewOpen}
+            onSourceFocusViewOpenChange={setSourceFocusViewOpen}
+            cropMode={cropMode}
+            onCropModeChange={setCropMode}
             cropRect={cropRect}
+            displayCropRect={previewCropRect}
+            onCropChange={handleManualCropChange}
             result={result}
             busy={workspaceBusy}
             stageBusy={workspaceStageBusy}
             isDark={isDark}
+            gridMode={gridMode}
+            onGridModeChange={handleGridModeChange}
+            gridWidth={gridWidth}
+            gridHeight={gridHeight}
+            onGridWidthChange={handleGridWidthChange}
+            onGridHeightChange={handleGridHeightChange}
+            followSourceRatio={followSourceRatio}
+            onFollowSourceRatioChange={setFollowSourceRatio}
+            grayscaleMode={grayscaleMode}
+            onGrayscaleModeChange={handleGrayscaleModeChange}
+            contrast={contrast}
+            onContrastChange={handleContrastChange}
+            renderStyleBias={renderStyleBias}
+            onRenderStyleBiasChange={handleRenderStyleBiasChange}
+            reduceColors={reduceColors}
+            onReduceColorsChange={handleReduceColorsChange}
+            reduceTolerance={reduceTolerance}
+            onReduceToleranceChange={setReduceTolerance}
+            preSharpen={preSharpen}
+            onPreSharpenChange={setPreSharpen}
+            preSharpenStrength={preSharpenStrength}
+            onPreSharpenStrengthChange={setPreSharpenStrength}
+            fftEdgeEnhanceStrength={fftEdgeEnhanceStrength}
+            fftEdgeEnhanceOverrideLabel={fftEdgeEnhanceOverrideLabel}
+            onFftEdgeEnhanceStrengthChange={setFftEdgeEnhanceStrength}
+            onFftEdgeEnhanceOverrideLabelChange={setFftEdgeEnhanceOverrideLabel}
+            onFileSelection={handleFileSelection}
             editTool={editTool}
             onEditToolChange={handleEditToolChange}
             editZoom={editZoom}
@@ -2647,6 +2740,7 @@ export default function App() {
             focusViewOpen={pindouFocusViewOpen}
             onFocusViewOpenChange={handlePindouFocusViewOpenChange}
             focusOnly
+            layout={useMobileWorkspace ? "mobile" : "desktop"}
             preferredEditorMode={editorPanelMode}
             preferredEditorModeSeed={inputUrl}
             onPreferredEditorModeChange={setEditorPanelMode}
@@ -2715,42 +2809,116 @@ export default function App() {
 
   return (
     <main className={clsx("min-h-screen transition-colors", theme.page)}>
-      <div className="mx-auto max-w-[1760px] px-2 pt-3 sm:px-4 sm:pt-4 lg:px-6 lg:pt-6">
+      <div
+        className={clsx(
+          "mx-auto max-w-[1760px]",
+          useMobileWorkspace ? "px-0 pt-0" : "px-2 pt-3 sm:px-4 sm:pt-4 lg:px-6 lg:pt-6",
+        )}
+      >
         <div
           data-header-root
           className={clsx(
-            "flex min-h-[44px] min-w-0 flex-nowrap items-center gap-1.5 rounded-[10px] border px-2 py-2 backdrop-blur transition-colors sm:min-h-0 sm:gap-3 sm:px-4",
+            useMobileWorkspace
+              ? "fixed inset-x-0 top-0 z-[95] flex min-w-0 flex-nowrap items-center border-b px-3 backdrop-blur transition-colors"
+              : "flex min-h-[44px] min-w-0 flex-nowrap items-center gap-1.5 rounded-[10px] border px-2 py-2 backdrop-blur transition-colors sm:min-h-0 sm:gap-3 sm:px-4",
+            useMobileWorkspace ? "rounded-none border-x-0 border-t-0" : "",
             theme.controlShell,
           )}
+          style={
+            useMobileWorkspace
+              ? {
+                  minHeight: `${mobileHeaderChrome.minHeightPx}px`,
+                  paddingTop: `calc(env(safe-area-inset-top) + ${mobileHeaderChrome.topInsetRem}rem)`,
+                  paddingBottom: `${mobileHeaderChrome.verticalPaddingRem}rem`,
+                }
+              : undefined
+          }
         >
-          <div className={clsx("hidden h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border sm:flex", theme.pill)}>
+          <div
+            className={clsx(
+              "h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border",
+              useMobileWorkspace ? "hidden" : "hidden sm:flex",
+              theme.pill,
+            )}
+          >
             <BrandLogo className="h-9 w-9" />
           </div>
           <div
             data-header-brand
-            className="flex min-w-0 translate-x-1 -translate-y-0.5 items-center sm:translate-x-0 sm:flex-1 sm:-translate-y-0.5"
+            className={clsx(
+              "flex min-w-0 items-center",
+              useMobileWorkspace
+                ? mobileHeaderLayout.centerBrand
+                  ? "absolute left-1/2 -translate-x-1/2"
+                  : "flex-1"
+                : "translate-x-1 -translate-y-0.5 sm:translate-x-0 sm:flex-1 sm:-translate-y-0.5",
+            )}
           >
+            {useMobileWorkspace && mobileHeaderLayout.showBrandLogo ? (
+              <span
+                className={clsx(
+                  "mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border",
+                  theme.pill,
+                )}
+              >
+                <BrandLogo className="h-5 w-5" />
+              </span>
+            ) : null}
             <h1 className="min-w-0 leading-none">
               <span className="sr-only">{APP_BRAND_TITLE}</span>
-              <BrandWordmark
-                className="block h-auto w-[84px] max-w-none sm:h-10 sm:w-auto"
-                isDark={isDark}
-              />
+              <span
+                className={clsx("block", useMobileWorkspace ? "" : "w-[84px] sm:w-auto")}
+                style={useMobileWorkspace ? { width: `${mobileHeaderChrome.brandWidthPx}px` } : undefined}
+              >
+                <BrandWordmark
+                  className={clsx(
+                    "block h-auto max-w-none",
+                    useMobileWorkspace ? "w-full" : "w-[84px] sm:h-10 sm:w-auto",
+                  )}
+                  isDark={isDark}
+                />
+              </span>
             </h1>
           </div>
           <div
             className={clsx(
-              "ml-auto flex shrink-0 items-center rounded-[10px] border px-1.5 py-1 backdrop-blur md:hidden",
-              theme.controlShell,
+              useMobileWorkspace && mobileHeaderLayout.overlayTrailingControls
+                ? "absolute right-3 top-1/2 z-10 -translate-y-1/2"
+                : "ml-auto",
+              mobileHeaderLayout.usePlainIconControls
+                ? clsx("flex shrink-0 items-center gap-1.5", useMobileWorkspace ? "" : "md:hidden")
+                : clsx(
+                    "flex shrink-0 items-center rounded-[10px] border px-0.5 py-0.5 backdrop-blur",
+                    useMobileWorkspace ? "" : "md:hidden",
+                  ),
+              mobileHeaderLayout.usePlainIconControls ? "" : theme.controlShell,
             )}
           >
-            <div className={clsx("flex items-center gap-1 rounded-[8px] p-0.5", theme.controlSegment)}>
+            <div
+              className={clsx(
+                mobileHeaderLayout.usePlainIconControls
+                  ? "flex items-center gap-1.5"
+                  : clsx("flex items-center gap-1 rounded-[8px] p-0.5", theme.controlSegment),
+              )}
+            >
               <button
                 aria-label={t.themeLabel}
-                className="flex h-7 w-7 items-center justify-center rounded-[6px] border border-[#d8c2a3] bg-[#f3dec0] text-[#24170f] transition"
+                className={clsx(
+                  "flex items-center justify-center transition",
+                  mobileHeaderLayout.usePlainIconControls
+                    ? clsx(
+                        "rounded-none border-0 bg-transparent p-0",
+                        isDark ? "text-stone-300" : "text-[#6c573f]",
+                      )
+                    : "rounded-[8px] border border-[#d8c2a3] bg-[#f3dec0] text-[#24170f]",
+                )}
                 onClick={() =>
                   setThemeMode(themeMode === "light" ? "dark" : themeMode === "dark" ? "system" : "light")
                 }
+                style={{
+                  width: `${mobileHeaderChrome.controlButtonPx}px`,
+                  height: `${mobileHeaderChrome.controlButtonPx}px`,
+                }}
                 title={t.themeLabel}
                 type="button"
               >
@@ -2764,16 +2932,37 @@ export default function App() {
               </button>
               <button
                 aria-label={t.languageLabel}
-                className="flex h-7 w-7 items-center justify-center rounded-[6px] border border-[#d8c2a3] bg-[#f3dec0] text-[11px] font-semibold text-[#24170f] transition"
+                className={clsx(
+                  "flex items-center justify-center transition",
+                  mobileHeaderLayout.usePlainIconControls
+                    ? clsx(
+                        "rounded-none border-0 bg-transparent p-0",
+                        isDark ? "text-stone-300" : "text-[#6c573f]",
+                      )
+                    : "rounded-[8px] border border-[#d8c2a3] bg-[#f3dec0] text-[10px] font-semibold text-[#24170f]",
+                )}
                 onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}
+                style={{
+                  width: `${mobileHeaderChrome.controlButtonPx}px`,
+                  height: `${mobileHeaderChrome.controlButtonPx}px`,
+                }}
                 title={t.languageLabel}
                 type="button"
               >
-                {locale === "zh-CN" ? "中" : "En"}
+                {mobileHeaderLayout.usePlainIconControls ? (
+                  <Languages className="h-4 w-4" />
+                ) : locale === "zh-CN" ? (
+                  "中"
+                ) : (
+                  "En"
+                )}
               </button>
             </div>
           </div>
-          <div data-header-controls-desktop className="ml-auto hidden shrink-0 items-center gap-1 md:flex">
+          <div
+            data-header-controls-desktop
+            className={clsx("ml-auto hidden shrink-0 items-center gap-1", useMobileWorkspace ? "" : "md:flex")}
+          >
             <ThemeSwitch
               themeLabel={t.themeLabel}
               themeMode={themeMode}
@@ -2792,6 +2981,7 @@ export default function App() {
         </div>
       </div>
 
+      <div style={useMobileWorkspace ? { paddingTop: mobileHeaderOffset } : undefined}>
       {topError ? (
         <div className="mx-auto max-w-[1760px] px-4 pt-3 lg:px-6">
           <div className={clsx("rounded-[10px] border px-4 py-3 text-sm", theme.errorBox)}>
@@ -2801,10 +2991,10 @@ export default function App() {
       ) : null}
 
       {!file ? (
-        <div className="mx-auto flex min-h-[calc(100vh-8rem)] max-w-[1760px] items-center justify-center px-4 pb-8 pt-6 lg:px-6">
+        <div className={useMobileWorkspace ? mobileLandingLayout.wrapperClassName : "mx-auto flex min-h-[calc(100vh-8rem)] max-w-[1760px] items-center justify-center px-4 pb-8 pt-6 lg:px-6"}>
           <section
             className={clsx(
-              "w-full max-w-[640px] rounded-[14px] border p-6 text-center backdrop-blur transition-all sm:p-8",
+              useMobileWorkspace ? mobileLandingLayout.cardClassName : "w-full max-w-[640px] rounded-[14px] border p-6 text-center backdrop-blur transition-all sm:p-8",
               theme.panel,
               landingDragActive
                 ? "scale-[1.01] border-[#7F684D] shadow-[0_18px_54px_rgba(54,34,16,0.16)]"
@@ -2815,69 +3005,142 @@ export default function App() {
             onDragLeave={handleLandingDragLeave}
             onDrop={handleLandingDrop}
           >
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[10px] border sm:h-16 sm:w-16" >
-              <ImageUp className={clsx("h-6 w-6 sm:h-7 sm:w-7", theme.cardTitle)} />
-            </div>
-            <h2 className={clsx("mt-5 text-2xl font-semibold sm:text-3xl", theme.cardTitle)}>
-              {t.sourceLandingTitle}
-            </h2>
-            {t.sourcePrivacyNote ? (
-              <p className={clsx("mt-2 text-xs", theme.cardMuted)}>
-                {t.sourcePrivacyNote}
-              </p>
-            ) : null}
+            <div className={mobileLandingLayout.contentClassName}>
+              <div className={clsx(useMobileWorkspace && mobileLandingLayout.compactLandscape ? "text-left" : "text-center")}>
+                <div className={clsx("flex items-center", useMobileWorkspace && mobileLandingLayout.compactLandscape ? "justify-start" : "justify-center")}>
+                  <div className={clsx("flex items-center justify-center rounded-[10px] border", useMobileWorkspace && mobileLandingLayout.compactLandscape ? "h-11 w-11" : "h-14 w-14 sm:h-16 sm:w-16")}>
+                    <ImageUp className={clsx(useMobileWorkspace && mobileLandingLayout.compactLandscape ? "h-5 w-5" : "h-6 w-6 sm:h-7 sm:w-7", theme.cardTitle)} />
+                  </div>
+                </div>
+                <h2 className={clsx(theme.cardTitle, useMobileWorkspace && mobileLandingLayout.compactLandscape ? "mt-3 text-[1.7rem] font-semibold leading-tight" : "mt-5 text-2xl font-semibold sm:text-3xl")}>
+                  {t.sourceLandingTitle}
+                </h2>
+                {t.sourcePrivacyNote ? (
+                  <p className={clsx(theme.cardMuted, useMobileWorkspace && mobileLandingLayout.compactLandscape ? "mt-2 text-xs leading-relaxed" : "mt-2 text-xs")}>
+                    {t.sourcePrivacyNote}
+                  </p>
+                ) : null}
 
-            <label className={clsx("mx-auto mt-6 flex max-w-[320px] cursor-pointer items-center justify-center gap-2 rounded-md border px-5 py-3 text-sm font-medium transition", theme.primaryButton)}>
-              <ImageUp className="h-4 w-4" />
-              <span>{t.sourceChooseImage}</span>
-              <input
-                className="hidden"
-                type="file"
-                accept="image/*"
-                onChange={(event) => handleFileSelection(event.target.files?.[0] ?? null)}
-              />
-            </label>
-            <p className={clsx("mt-3 text-xs transition-colors", landingDragActive ? theme.cardTitle : theme.cardMuted)}>
-              {landingDragActive ? t.sourceDropActive : t.sourceDropHint}
-            </p>
-
-            <div className="mt-6 w-full">
-              <div className="flex items-center gap-4">
-                <div className={clsx("h-px flex-1", theme.divider)} />
-                <p className={clsx("shrink-0 text-sm font-semibold", theme.cardTitle)}>
-                  {t.sourceChartCodeTitle}
+                <label
+                  className={clsx(
+                    "flex cursor-pointer items-center justify-center gap-2 rounded-md border text-sm font-medium transition",
+                    useMobileWorkspace && mobileLandingLayout.compactLandscape
+                      ? "mt-4 w-full max-w-[280px] px-4 py-2.5"
+                      : "mx-auto mt-6 max-w-[320px] px-5 py-3",
+                    theme.primaryButton,
+                  )}
+                >
+                  <ImageUp className="h-4 w-4" />
+                  <span>{t.sourceChooseImage}</span>
+                  <input
+                    className="hidden"
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => handleFileSelection(event.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <p className={clsx("text-xs transition-colors", useMobileWorkspace && mobileLandingLayout.compactLandscape ? "mt-2" : "mt-3", landingDragActive ? theme.cardTitle : theme.cardMuted)}>
+                  {landingDragActive ? t.sourceDropActive : t.sourceDropHint}
                 </p>
-                <div className={clsx("h-px flex-1", theme.divider)} />
               </div>
-              <textarea
-                className={clsx(
-                  "mt-4 resize-none transition-[border-color,background-color,box-shadow,transform]",
-                  chartCodeInputClassName,
-                  landingChartCodeInvalid &&
-                    (isDark
-                      ? "animate-[pindou-input-shake_0.42s_ease-in-out_2] border-rose-300/45 bg-[#2a1116] text-rose-100 shadow-[0_0_0_1px_rgba(253,164,175,0.16)]"
-                      : "animate-[pindou-input-shake_0.42s_ease-in-out_2] border-rose-500/45 bg-[#fff0f1] shadow-[0_0_0_1px_rgba(244,63,94,0.14)]"),
-                  landingChartImportBusy && "opacity-70",
-                )}
-                aria-invalid={landingChartCodeInvalid}
-                placeholder={t.sourceChartCodePlaceholder}
-                readOnly={landingChartImportBusy}
-                value={landingChartCode}
-                onChange={(event) => setLandingChartCode(event.target.value)}
-              />
+
+              <div className={clsx(useMobileWorkspace && mobileLandingLayout.compactLandscape ? "min-w-0" : "mt-6 w-full")}>
+                <div className="flex items-center gap-4">
+                  <div className={clsx("h-px flex-1", theme.divider)} />
+                  <p className={clsx("shrink-0 text-sm font-semibold", theme.cardTitle)}>
+                    {t.sourceChartCodeTitle}
+                  </p>
+                  <div className={clsx("h-px flex-1", theme.divider)} />
+                </div>
+                <textarea
+                  className={clsx(
+                    "resize-none transition-[border-color,background-color,box-shadow,transform]",
+                    useMobileWorkspace && mobileLandingLayout.compactLandscape ? "mt-3 min-h-[168px]" : "mt-4",
+                    chartCodeInputClassName,
+                    landingChartCodeInvalid &&
+                      (isDark
+                        ? "animate-[pindou-input-shake_0.42s_ease-in-out_2] border-rose-300/45 bg-[#2a1116] text-rose-100 shadow-[0_0_0_1px_rgba(253,164,175,0.16)]"
+                        : "animate-[pindou-input-shake_0.42s_ease-in-out_2] border-rose-500/45 bg-[#fff0f1] shadow-[0_0_0_1px_rgba(244,63,94,0.14)]"),
+                    landingChartImportBusy && "opacity-70",
+                  )}
+                  aria-invalid={landingChartCodeInvalid}
+                  placeholder={t.sourceChartCodePlaceholder}
+                  readOnly={landingChartImportBusy}
+                  value={landingChartCode}
+                  onChange={(event) => setLandingChartCode(event.target.value)}
+                />
+              </div>
             </div>
           </section>
         </div>
       ) : (
         <div
           className={clsx(
-            "mx-auto grid min-h-0 max-w-[1760px] gap-4 px-4 pb-6 pt-4 lg:grid-cols-[minmax(320px,22vw)_minmax(0,1fr)] lg:gap-6 lg:px-6 lg:pt-4",
+            useMobileWorkspace
+              ? "mx-auto flex min-h-0 max-w-[1760px] flex-col px-2 pb-5 pt-3 lg:px-6 lg:pt-4"
+              : "mx-auto grid min-h-0 max-w-[1760px] gap-4 px-4 pb-6 pt-4 lg:grid-cols-[minmax(320px,22vw)_minmax(0,1fr)] lg:gap-6 lg:px-6 lg:pt-4",
             editorPanelMode === "chart"
               ? "lg:items-start lg:overflow-visible"
               : "lg:h-[calc(100vh-5rem)] lg:overflow-hidden",
           )}
         >
-          <SidebarPanel
+          {!useMobileWorkspace ? (
+            <SidebarPanel
+              t={t}
+              file={file}
+              inputUrl={inputUrl}
+              sourceBadge={sourceBadge}
+              sourceFocusViewOpen={sourceFocusViewOpen}
+              onSourceFocusViewOpenChange={setSourceFocusViewOpen}
+              cropMode={cropMode}
+              onCropModeChange={setCropMode}
+              cropRect={cropRect}
+              displayCropRect={previewCropRect}
+              onCropChange={handleManualCropChange}
+              busy={busy}
+              isDark={isDark}
+              gridMode={gridMode}
+              onGridModeChange={handleGridModeChange}
+              gridWidth={gridWidth}
+              gridHeight={gridHeight}
+              onGridWidthChange={handleGridWidthChange}
+              onGridHeightChange={handleGridHeightChange}
+              followSourceRatio={followSourceRatio}
+              onFollowSourceRatioChange={setFollowSourceRatio}
+              paletteOptions={paletteOptions}
+              grayscaleMode={grayscaleMode}
+              onGrayscaleModeChange={handleGrayscaleModeChange}
+              contrast={contrast}
+              onContrastChange={handleContrastChange}
+              renderStyleBias={renderStyleBias}
+              onRenderStyleBiasChange={handleRenderStyleBiasChange}
+              reduceColors={reduceColors}
+              onReduceColorsChange={handleReduceColorsChange}
+              reduceTolerance={reduceTolerance}
+              onReduceToleranceChange={setReduceTolerance}
+              preSharpen={preSharpen}
+              onPreSharpenChange={setPreSharpen}
+              preSharpenStrength={preSharpenStrength}
+              onPreSharpenStrengthChange={setPreSharpenStrength}
+              fftEdgeEnhanceStrength={fftEdgeEnhanceStrength}
+              fftEdgeEnhanceOverrideLabel={fftEdgeEnhanceOverrideLabel}
+              onFftEdgeEnhanceStrengthChange={setFftEdgeEnhanceStrength}
+              onFftEdgeEnhanceOverrideLabelChange={setFftEdgeEnhanceOverrideLabel}
+              onFileSelection={handleFileSelection}
+            />
+          ) : null}
+
+          <Suspense
+            fallback={
+              <WorkspacePanelsSuspenseFallback
+                isDark={isDark}
+                busy={shouldShowWorkspacePanelsSuspenseLoading(Boolean(file), workspaceBusy)}
+                readyHint={t.readyHint}
+                mobileApp={useMobileWorkspace}
+              />
+            }
+          >
+            <WorkspacePanels
             t={t}
             file={file}
             inputUrl={inputUrl}
@@ -2889,7 +3152,9 @@ export default function App() {
             cropRect={cropRect}
             displayCropRect={previewCropRect}
             onCropChange={handleManualCropChange}
-            busy={busy}
+            result={result}
+            busy={workspaceBusy}
+            stageBusy={workspaceStageBusy}
             isDark={isDark}
             gridMode={gridMode}
             onGridModeChange={handleGridModeChange}
@@ -2899,7 +3164,6 @@ export default function App() {
             onGridHeightChange={handleGridHeightChange}
             followSourceRatio={followSourceRatio}
             onFollowSourceRatioChange={setFollowSourceRatio}
-            paletteOptions={paletteOptions}
             grayscaleMode={grayscaleMode}
             onGrayscaleModeChange={handleGrayscaleModeChange}
             contrast={contrast}
@@ -2919,25 +3183,6 @@ export default function App() {
             onFftEdgeEnhanceStrengthChange={setFftEdgeEnhanceStrength}
             onFftEdgeEnhanceOverrideLabelChange={setFftEdgeEnhanceOverrideLabel}
             onFileSelection={handleFileSelection}
-          />
-
-          <Suspense
-            fallback={
-              <WorkspacePanelsSuspenseFallback
-                isDark={isDark}
-                busy={shouldShowWorkspacePanelsSuspenseLoading(Boolean(file), workspaceBusy)}
-                readyHint={t.readyHint}
-              />
-            }
-          >
-            <WorkspacePanels
-            t={t}
-            inputUrl={inputUrl}
-            cropRect={cropRect}
-            result={result}
-            busy={workspaceBusy}
-            stageBusy={workspaceStageBusy}
-            isDark={isDark}
             editTool={editTool}
             onEditToolChange={handleEditToolChange}
             editZoom={editZoom}
@@ -2977,6 +3222,7 @@ export default function App() {
             paintActiveRef={paintActiveRef}
             focusViewOpen={pindouFocusViewOpen}
             onFocusViewOpenChange={handlePindouFocusViewOpenChange}
+            layout={useMobileWorkspace ? "mobile" : "desktop"}
             preferredEditorMode={editorPanelMode}
             preferredEditorModeSeed={inputUrl}
             onPreferredEditorModeChange={setEditorPanelMode}
@@ -3040,6 +3286,7 @@ export default function App() {
           </Suspense>
         </div>
       )}
+      </div>
 
       {file && sourceFocusViewOpen ? (
         <div

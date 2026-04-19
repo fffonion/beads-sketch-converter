@@ -71,6 +71,10 @@ export interface Messages {
   editorTabPindou: string;
   editorTabChartSettings: string;
   editorTabChartLocked: string;
+  mobileWorkspaceImageProcess: string;
+  mobileWorkspacePixelDraw: string;
+  mobileWorkspacePindou: string;
+  mobileWorkspaceExport: string;
   chartSettingsChartTitle: string;
   chartSettingsChartTitlePlaceholder: string;
   chartSettingsPreview: string;
@@ -186,7 +190,7 @@ export const messages: Record<Locale, Messages> = {
     themeDark: "深色",
     themeSystem: "跟随系统",
     sourceTitle: "原图",
-    sourceLandingTitle: "导入图片，或导入现有图纸",
+    sourceLandingTitle: "转换图像，或导入现有图纸",
     sourcePrivacyNote: "全部处理都在浏览器内完成，不会上传到服务器。",
     sourceChartCodeTitle: "也可以导入图纸码",
     sourceChartCodePlaceholder: "",
@@ -240,11 +244,15 @@ export const messages: Record<Locale, Messages> = {
     downloadPng: "导出图纸",
     editorTitle: "像素编辑",
     editorSubtitle: "点击格子可改色，或删除、补上任意像素。",
-    editorTabEdit: "画图图",
+    editorTabEdit: "像素画",
     editorTabEditLocked: "不许编辑",
-    editorTabPindou: "拼豆豆",
-    editorTabChartSettings: "导出出",
+    editorTabPindou: "拼豆",
+    editorTabChartSettings: "导出",
     editorTabChartLocked: "不许导出",
+    mobileWorkspaceImageProcess: "图片处理",
+    mobileWorkspacePixelDraw: "像素画",
+    mobileWorkspacePindou: "拼豆",
+    mobileWorkspaceExport: "导出",
     chartSettingsChartTitle: "图纸标题",
     chartSettingsChartTitlePlaceholder: "拼豆图纸",
     chartSettingsPreview: "预览图",
@@ -413,6 +421,10 @@ export const messages: Record<Locale, Messages> = {
     editorTabPindou: "Pindou Mode",
     editorTabChartSettings: "Export Settings",
     editorTabChartLocked: "No Export",
+    mobileWorkspaceImageProcess: "Image Process",
+    mobileWorkspacePixelDraw: "Pixel Draw",
+    mobileWorkspacePindou: "Pindou",
+    mobileWorkspaceExport: "Export",
     chartSettingsChartTitle: "Chart Title",
     chartSettingsChartTitlePlaceholder: "Bead Chart",
     chartSettingsPreview: "Preview",

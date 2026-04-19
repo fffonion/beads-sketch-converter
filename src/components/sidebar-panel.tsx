@@ -2,32 +2,35 @@
 import * as Label from "@radix-ui/react-label";
 import clsx from "clsx";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import type { Messages } from "../lib/i18n";
+import { getMobileCardSpacingTokens } from "../lib/mobile-card-spacing";
 import type { NormalizedCropRect } from "../lib/chart-processor";
 import { getThemeClasses } from "../lib/theme";
 import { CollapsibleSection, NumberSliderField, SliderRow, SwitchRow } from "./controls";
 import { HoneycombColorGrid, type HoneycombColorOption } from "./pixel-editor-color-picker";
-import { getPopoverViewportLayout } from "./popover-layout";
 import { OriginalPreviewCard } from "./preview-cards";
 
 type GridMode = "auto" | "manual";
 const EDGE_COLOR_AUTO_LABEL = "__EDGE_COLOR_AUTO__";
-const EDGE_COLOR_POPUP_PREFERRED_WIDTH = 296;
-const EDGE_COLOR_POPUP_VIEWPORT_MARGIN = 12;
-const EDGE_COLOR_POPUP_GAP = 8;
-const EDGE_COLOR_POPUP_ESTIMATED_HEIGHT = 336;
 
-export function shouldCloseEdgeColorPickerPopup(
-  target: Node | null,
-  anchor: Pick<Element, "contains"> | null,
-  popup: Pick<Element, "contains"> | null,
-) {
-  if (!target) {
-    return true;
-  }
+export function getImageProcessTabLayout(mode: GridMode) {
+  return {
+    showAutoDescription: mode === "auto",
+    showManualSizing: mode === "manual",
+    sections:
+      mode === "auto"
+        ? (["auto-description", "shared-controls"] as const)
+        : (["manual-sizing", "shared-controls"] as const),
+    seamlessTopSpacing: true,
+  };
+}
 
-  return !anchor?.contains(target) && !popup?.contains(target);
+export function getEdgeColorPickerInlineLayout() {
+  return {
+    renderInlineSection: true,
+    sectionWidthMode: "full" as const,
+    honeycombScale: 2,
+  };
 }
 
 export function SidebarPanel({
@@ -72,6 +75,7 @@ export function SidebarPanel({
   onFftEdgeEnhanceStrengthChange,
   onFftEdgeEnhanceOverrideLabelChange,
   onFileSelection,
+  variant = "desktop",
 }: {
   t: Messages;
   file: File | null;
@@ -114,24 +118,21 @@ export function SidebarPanel({
   onFftEdgeEnhanceStrengthChange: (value: number) => void;
   onFftEdgeEnhanceOverrideLabelChange: (value: string | null) => void;
   onFileSelection: (file: File | null) => void;
+  variant?: "desktop" | "mobile-app";
 }) {
   const theme = getThemeClasses(isDark);
-  const edgeColorPickerRef = useRef<HTMLDivElement | null>(null);
-  const edgeColorPopupRef = useRef<HTMLDivElement | null>(null);
+  const mobileApp = variant === "mobile-app";
+  const mobileCardSpacing = getMobileCardSpacingTokens();
+  const edgeColorInlinePanelRef = useRef<HTMLDivElement | null>(null);
   const [collapsedSections, setCollapsedSections] = useState(() => {
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
     return {
       source: false,
-      grid: isMobile,
+      grid: false,
     };
   });
   const [edgeColorPickerOpen, setEdgeColorPickerOpen] = useState(false);
-  const [edgeColorPopupLayout, setEdgeColorPopupLayout] = useState<{
-    left: number;
-    top: number;
-    width: number;
-  } | null>(null);
-  const [portalReady, setPortalReady] = useState(false);
+  const [edgeColorInlinePanelWidth, setEdgeColorInlinePanelWidth] = useState(0);
+  const edgeColorInlineLayout = getEdgeColorPickerInlineLayout();
   const fftEdgeEnhanceOverrideOption =
     fftEdgeEnhanceOverrideLabel
       ? paletteOptions.find((entry) => entry.label === fftEdgeEnhanceOverrideLabel) ?? null
@@ -164,6 +165,228 @@ export function SidebarPanel({
     ],
     [paletteOptions, t.edgeColorAuto],
   );
+  function renderSharedImageControls({
+    includeLeadingDivider = true,
+  }: {
+    includeLeadingDivider?: boolean;
+  } = {}) {
+    return (
+      <div className="space-y-4">
+        {includeLeadingDivider ? <div className={clsx("h-px", theme.divider)} /> : null}
+        <SwitchRow
+          id="grayscale-mode"
+          title={t.grayscaleModeTitle}
+          description=""
+          checked={grayscaleMode}
+          onCheckedChange={onGrayscaleModeChange}
+          isDark={isDark}
+        />
+        <div className="space-y-3">
+          <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.contrastTitle}</p>
+          <SliderRow
+            id="contrast"
+            value={contrast}
+            min={-100}
+            max={100}
+            step={1}
+            onValueChange={onContrastChange}
+            isDark={isDark}
+          />
+        </div>
+        <div className={clsx("h-px", theme.divider)} />
+        <div className="space-y-3">
+          <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.renderStyleBiasTitle}</p>
+          <div className={clsx("flex items-center justify-between text-xs", theme.cardMuted)}>
+            <span>{t.renderStyleBiasRealistic}</span>
+            <span>{t.renderStyleBiasPixelArt}</span>
+          </div>
+          <SliderRow
+            id="render-style-bias"
+            value={renderStyleBias}
+            min={0}
+            max={100}
+            step={1}
+            onValueChange={onRenderStyleBiasChange}
+            isDark={isDark}
+          />
+        </div>
+        <div className={clsx("h-px", theme.divider)} />
+        <SwitchRow
+          id="reduce-colors"
+          title={t.reduceColorsTitle}
+          description=""
+          checked={grayscaleMode ? false : reduceColors}
+          onCheckedChange={onReduceColorsChange}
+          disabled={grayscaleMode}
+          isDark={isDark}
+        />
+        <SliderRow
+          id="reduce-tolerance"
+          value={reduceTolerance}
+          min={0}
+          max={255}
+          step={1}
+          disabled={grayscaleMode || !reduceColors}
+          onValueChange={onReduceToleranceChange}
+          isDark={isDark}
+        />
+
+        <div className={clsx("h-px", theme.divider)} />
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <Label.Root
+              className={clsx("text-xs font-semibold uppercase tracking-[0.14em]", theme.cardMuted)}
+              htmlFor="fft-edge-enhance-strength"
+            >
+              {t.fftEdgeEnhanceTitle}
+            </Label.Root>
+            <div className="shrink-0">
+              <button
+                className={clsx(
+                  "flex h-9 w-9 items-center justify-center rounded-full border transition",
+                  fftEdgeEnhanceOverrideOption ? theme.controlButtonActive : theme.pill,
+                  fftEdgeEnhanceStrength <= 0 && "pointer-events-none opacity-45",
+                )}
+                onClick={() => setEdgeColorPickerOpen((current) => !current)}
+                title={edgeColorButtonTitle}
+                type="button"
+              >
+                {fftEdgeEnhanceOverrideOption ? (
+                  <span
+                    className="h-5 w-5 rounded-full border border-black/10"
+                    style={{ backgroundColor: fftEdgeEnhanceOverrideOption.hex }}
+                  />
+                ) : (
+                  <span
+                    className={clsx(
+                      "flex h-5 w-5 items-center justify-center rounded-full border border-dashed text-[10px] font-semibold",
+                      theme.cardMuted,
+                    )}
+                  >
+                    A
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
+          <SliderRow
+            id="fft-edge-enhance-strength"
+            value={fftEdgeEnhanceStrength}
+            min={-100}
+            max={100}
+            step={1}
+            onValueChange={onFftEdgeEnhanceStrengthChange}
+            isDark={isDark}
+          />
+          {edgeColorPickerOpen && edgeColorInlineLayout.renderInlineSection ? (
+            <div
+              ref={edgeColorInlinePanelRef}
+              className={clsx("w-full rounded-[12px] border p-3", theme.controlShell)}
+            >
+              <div
+                className={clsx("mb-3 text-xs font-semibold uppercase tracking-[0.12em]", theme.cardMuted)}
+              >
+                {t.edgeColorOverride}
+              </div>
+              <div className="max-h-[420px] overflow-x-hidden overflow-y-auto">
+                <HoneycombColorGrid
+                  isDark={isDark}
+                  selectedLabel={fftEdgeEnhanceOverrideLabel ?? EDGE_COLOR_AUTO_LABEL}
+                  options={sortedEdgeColorPickerOptions}
+                  width={Math.max(240, edgeColorInlinePanelWidth - 24)}
+                  height={mobileApp ? 420 : 440}
+                  sizeScale={edgeColorInlineLayout.honeycombScale}
+                  onSelectLabel={(label) => {
+                    onFftEdgeEnhanceOverrideLabelChange(
+                      label === EDGE_COLOR_AUTO_LABEL ? null : label,
+                    );
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className={clsx("h-px", theme.divider)} />
+
+        <SwitchRow
+          id="pre-sharpen"
+          title={t.preSharpenTitle}
+          description=""
+          checked={grayscaleMode ? false : preSharpen}
+          onCheckedChange={onPreSharpenChange}
+          disabled={grayscaleMode}
+          isDark={isDark}
+        />
+        <SliderRow
+          id="pre-sharpen-strength"
+          value={preSharpenStrength}
+          min={0}
+          max={100}
+          step={1}
+          disabled={grayscaleMode || !preSharpen}
+          onValueChange={onPreSharpenStrengthChange}
+          isDark={isDark}
+        />
+      </div>
+    );
+  }
+
+  function renderImageProcessTabContent(mode: GridMode) {
+    const imageProcessTabLayout = getImageProcessTabLayout(mode);
+
+    return (
+      <Tabs.Content value={mode} className="space-y-0 outline-none">
+        {imageProcessTabLayout.showAutoDescription ? (
+          <div className={clsx(mobileCardSpacing.contentSpacing, "text-sm", theme.cardMuted)}>
+            {t.gridAutoDescription}
+          </div>
+        ) : null}
+
+        {imageProcessTabLayout.showManualSizing ? (
+          <div className={mobileCardSpacing.contentSpacing}>
+            <div className={clsx("grid sm:grid-cols-2", mobileCardSpacing.stackedGap)}>
+              <NumberSliderField
+                id="grid-width"
+                label={t.gridWidth}
+                value={gridWidth}
+                onChange={onGridWidthChange}
+                min={1}
+                max={156}
+                isDark={isDark}
+                mobileSliderOnly
+              />
+              <NumberSliderField
+                id="grid-height"
+                label={t.gridHeight}
+                value={gridHeight}
+                onChange={onGridHeightChange}
+                min={1}
+                max={156}
+                isDark={isDark}
+                mobileSliderOnly
+              />
+            </div>
+            <div className={mobileCardSpacing.followUpSpacing}>
+              <SwitchRow
+                id="follow-source-ratio"
+                title={t.gridFollowRatio}
+                description=""
+                checked={followSourceRatio}
+                onCheckedChange={onFollowSourceRatioChange}
+                isDark={isDark}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {renderSharedImageControls({
+          includeLeadingDivider:
+            imageProcessTabLayout.showAutoDescription || imageProcessTabLayout.showManualSizing,
+        })}
+      </Tabs.Content>
+    );
+  }
 
   function toggleSection(section: keyof typeof collapsedSections) {
     setCollapsedSections((current) => ({
@@ -173,74 +396,41 @@ export function SidebarPanel({
   }
 
   useEffect(() => {
-    setPortalReady(true);
-  }, []);
-
-  useEffect(() => {
     if (!edgeColorPickerOpen) {
-      setEdgeColorPopupLayout(null);
       return;
     }
 
-    function handlePointerDown(event: PointerEvent) {
-      if (
-        shouldCloseEdgeColorPickerPopup(
-          event.target as Node | null,
-          edgeColorPickerRef.current,
-          edgeColorPopupRef.current,
-        )
-      ) {
-        setEdgeColorPickerOpen(false);
+    if (!edgeColorInlinePanelRef.current) {
+      return;
+    }
+    const panelElement = edgeColorInlinePanelRef.current!;
+
+    function syncInlinePanelWidth() {
+      const nextWidth = Math.floor(panelElement.getBoundingClientRect().width);
+      if (nextWidth > 0) {
+        setEdgeColorInlinePanelWidth((current) => (current === nextWidth ? current : nextWidth));
       }
     }
 
-    function syncEdgeColorPopupLayout() {
-      const anchor = edgeColorPickerRef.current;
-      if (!anchor) {
-        return;
-      }
-
-      const rect = anchor.getBoundingClientRect();
-      const popupHeight =
-        edgeColorPopupRef.current?.getBoundingClientRect().height ??
-        EDGE_COLOR_POPUP_ESTIMATED_HEIGHT;
-      const viewportLayout = getPopoverViewportLayout({
-        anchorRight: rect.right,
-        preferredWidth: EDGE_COLOR_POPUP_PREFERRED_WIDTH,
-        viewportWidth: window.innerWidth,
-        viewportMargin: EDGE_COLOR_POPUP_VIEWPORT_MARGIN,
-      });
-      setEdgeColorPopupLayout({
-        left: viewportLayout.left,
-        top: Math.max(
-          EDGE_COLOR_POPUP_VIEWPORT_MARGIN,
-          rect.top - popupHeight - EDGE_COLOR_POPUP_GAP,
-        ),
-        width: viewportLayout.width,
-      });
-    }
-
-    syncEdgeColorPopupLayout();
-    const postRenderSync = window.requestAnimationFrame(syncEdgeColorPopupLayout);
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("resize", syncEdgeColorPopupLayout);
-    window.addEventListener("scroll", syncEdgeColorPopupLayout, true);
+    syncInlinePanelWidth();
+    const observer = new ResizeObserver(syncInlinePanelWidth);
+    observer.observe(panelElement);
     return () => {
-      window.cancelAnimationFrame(postRenderSync);
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("resize", syncEdgeColorPopupLayout);
-      window.removeEventListener("scroll", syncEdgeColorPopupLayout, true);
+      observer.disconnect();
     };
   }, [edgeColorPickerOpen]);
 
   return (
     <section
       className={clsx(
-        "scrollbar-none min-h-0 overflow-y-auto rounded-[14px] border pb-4 pl-4 pr-3 pt-4 backdrop-blur transition-colors sm:rounded-[16px] sm:pb-5 sm:pl-5 sm:pr-4 sm:pt-5 lg:h-full lg:self-start xl:rounded-[18px]",
-        theme.panel,
+        mobileApp
+          ? "scrollbar-none min-h-0 overflow-y-auto px-2 pb-3 pt-1"
+          : "scrollbar-none min-h-0 overflow-y-auto rounded-[14px] border pb-4 pl-4 pr-3 pt-4 backdrop-blur transition-colors sm:rounded-[16px] sm:pb-5 sm:pl-5 sm:pr-4 sm:pt-5 lg:h-full lg:self-start xl:rounded-[18px]",
+        mobileApp ? "" : theme.panel,
       )}
+      style={mobileApp ? { paddingBottom: "calc(env(safe-area-inset-bottom) + 5rem)" } : undefined}
     >
-      <div className="space-y-5">
+      <div className={clsx(mobileApp ? "space-y-2.5" : "space-y-5")}>
         <OriginalPreviewCard
           title=""
           file={file}
@@ -264,6 +454,7 @@ export function SidebarPanel({
           onFocusViewOpenChange={onSourceFocusViewOpenChange}
           collapsed={collapsedSections.source}
           onToggleCollapsed={() => toggleSection("source")}
+          variant={mobileApp ? "mobile-app" : "default"}
         />
 
         <CollapsibleSection
@@ -271,8 +462,9 @@ export function SidebarPanel({
           collapsed={collapsedSections.grid}
           onToggle={() => toggleSection("grid")}
           isDark={isDark}
+          variant={mobileApp ? "mobile-app" : "default"}
         >
-          <Tabs.Root className="mt-4" value={gridMode} onValueChange={(value) => onGridModeChange(value as GridMode)}>
+          <Tabs.Root value={gridMode} onValueChange={(value) => onGridModeChange(value as GridMode)}>
             <Tabs.List className={clsx("grid grid-cols-2 rounded-lg p-1", theme.segmented)}>
               <Tabs.Trigger
                 value="auto"
@@ -287,213 +479,9 @@ export function SidebarPanel({
                 {t.gridManual}
               </Tabs.Trigger>
             </Tabs.List>
-
-            <Tabs.Content value="auto" className={clsx("mt-4 rounded-lg p-4 text-sm", theme.subtlePanel)}>
-              {t.gridAutoDescription}
-            </Tabs.Content>
-
-            <Tabs.Content value="manual" className={clsx("mt-4 rounded-lg p-4", theme.subtlePanel)}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumberSliderField
-                  id="grid-width"
-                  label={t.gridWidth}
-                  value={gridWidth}
-                  onChange={onGridWidthChange}
-                  min={1}
-                  max={156}
-                  isDark={isDark}
-                  mobileSliderOnly
-                />
-                <NumberSliderField
-                  id="grid-height"
-                  label={t.gridHeight}
-                  value={gridHeight}
-                  onChange={onGridHeightChange}
-                  min={1}
-                  max={156}
-                  isDark={isDark}
-                  mobileSliderOnly
-                />
-              </div>
-              <div className="mt-4">
-                <SwitchRow
-                  id="follow-source-ratio"
-                  title={t.gridFollowRatio}
-                  description=""
-                  checked={followSourceRatio}
-                  onCheckedChange={onFollowSourceRatioChange}
-                  isDark={isDark}
-                />
-              </div>
-            </Tabs.Content>
+            {renderImageProcessTabContent("auto")}
+            {renderImageProcessTabContent("manual")}
           </Tabs.Root>
-          <div className="mt-5 space-y-4">
-            <div className={clsx("h-px", theme.divider)} />
-            <SwitchRow
-              id="grayscale-mode"
-              title={t.grayscaleModeTitle}
-              description=""
-              checked={grayscaleMode}
-              onCheckedChange={onGrayscaleModeChange}
-              isDark={isDark}
-            />
-            <div className="space-y-3">
-              <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.contrastTitle}</p>
-              <SliderRow
-                id="contrast"
-                value={contrast}
-                min={-100}
-                max={100}
-                step={1}
-                onValueChange={onContrastChange}
-                isDark={isDark}
-              />
-            </div>
-            <div className={clsx("h-px", theme.divider)} />
-            <div className="space-y-3">
-              <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.renderStyleBiasTitle}</p>
-              <div className={clsx("flex items-center justify-between text-xs", theme.cardMuted)}>
-                <span>{t.renderStyleBiasRealistic}</span>
-                <span>{t.renderStyleBiasPixelArt}</span>
-              </div>
-              <SliderRow
-                id="render-style-bias"
-                value={renderStyleBias}
-                min={0}
-                max={100}
-                step={1}
-                onValueChange={onRenderStyleBiasChange}
-                isDark={isDark}
-              />
-            </div>
-            <div className={clsx("h-px", theme.divider)} />
-            <SwitchRow
-              id="reduce-colors"
-              title={t.reduceColorsTitle}
-              description=""
-              checked={grayscaleMode ? false : reduceColors}
-              onCheckedChange={onReduceColorsChange}
-              disabled={grayscaleMode}
-              isDark={isDark}
-            />
-            <SliderRow
-              id="reduce-tolerance"
-              value={reduceTolerance}
-              min={0}
-              max={255}
-              step={1}
-              disabled={grayscaleMode || !reduceColors}
-              onValueChange={onReduceToleranceChange}
-              isDark={isDark}
-            />
-
-            <div className={clsx("h-px", theme.divider)} />
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <Label.Root
-                  className={clsx("text-xs font-semibold uppercase tracking-[0.14em]", theme.cardMuted)}
-                  htmlFor="fft-edge-enhance-strength"
-                >
-                  {t.fftEdgeEnhanceTitle}
-                </Label.Root>
-                <div ref={edgeColorPickerRef} className="relative shrink-0">
-                  <button
-                    className={clsx(
-                      "flex h-9 w-9 items-center justify-center rounded-full border transition",
-                      fftEdgeEnhanceOverrideOption ? theme.controlButtonActive : theme.pill,
-                      fftEdgeEnhanceStrength <= 0 && "pointer-events-none opacity-45",
-                    )}
-                    onClick={() => setEdgeColorPickerOpen((current) => !current)}
-                    title={edgeColorButtonTitle}
-                    type="button"
-                  >
-                    {fftEdgeEnhanceOverrideOption ? (
-                      <span
-                        className="h-5 w-5 rounded-full border border-black/10"
-                        style={{ backgroundColor: fftEdgeEnhanceOverrideOption.hex }}
-                      />
-                    ) : (
-                      <span
-                        className={clsx(
-                          "flex h-5 w-5 items-center justify-center rounded-full border border-dashed text-[10px] font-semibold",
-                          theme.cardMuted,
-                        )}
-                      >
-                        A
-                      </span>
-                    )}
-                  </button>
-                  {edgeColorPickerOpen && portalReady && edgeColorPopupLayout
-                      ? createPortal(
-                        <div
-                          ref={edgeColorPopupRef}
-                          className={clsx(
-                            "fixed z-20 rounded-[10px] border p-3 shadow-2xl",
-                            theme.controlShell,
-                          )}
-                          style={{
-                            left: edgeColorPopupLayout.left,
-                            top: edgeColorPopupLayout.top,
-                            width: edgeColorPopupLayout.width,
-                          }}
-                        >
-                          <div className={clsx("mb-2 text-xs font-semibold uppercase tracking-[0.12em]", theme.cardMuted)}>
-                            {t.edgeColorOverride}
-                          </div>
-                          <div className="max-h-[260px] overflow-auto pr-1">
-                            <HoneycombColorGrid
-                              isDark={isDark}
-                              selectedLabel={fftEdgeEnhanceOverrideLabel ?? EDGE_COLOR_AUTO_LABEL}
-                              options={sortedEdgeColorPickerOptions}
-                              width={edgeColorPopupLayout.width - 24}
-                              height={240}
-                              onSelectLabel={(label) => {
-                                onFftEdgeEnhanceOverrideLabelChange(
-                                  label === EDGE_COLOR_AUTO_LABEL ? null : label,
-                                );
-                                setEdgeColorPickerOpen(false);
-                              }}
-                            />
-                          </div>
-                        </div>,
-                        document.body,
-                      )
-                    : null}
-                </div>
-              </div>
-              <SliderRow
-                id="fft-edge-enhance-strength"
-                value={fftEdgeEnhanceStrength}
-                min={-100}
-                max={100}
-                step={1}
-                onValueChange={onFftEdgeEnhanceStrengthChange}
-                isDark={isDark}
-              />
-            </div>
-
-            <div className={clsx("h-px", theme.divider)} />
-
-            <SwitchRow
-              id="pre-sharpen"
-              title={t.preSharpenTitle}
-              description=""
-              checked={grayscaleMode ? false : preSharpen}
-              onCheckedChange={onPreSharpenChange}
-              disabled={grayscaleMode}
-              isDark={isDark}
-            />
-            <SliderRow
-              id="pre-sharpen-strength"
-              value={preSharpenStrength}
-              min={0}
-              max={100}
-              step={1}
-              disabled={grayscaleMode || !preSharpen}
-              onValueChange={onPreSharpenStrengthChange}
-              isDark={isDark}
-            />
-          </div>
         </CollapsibleSection>
       </div>
     </section>

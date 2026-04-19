@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { NormalizedCropRect } from "../lib/chart-processor";
+import { getMobileCardSpacingTokens } from "../lib/mobile-card-spacing";
 import { getThemeClasses } from "../lib/theme";
 
 type ResizeHandle = "nw" | "ne" | "sw" | "se";
@@ -56,6 +57,7 @@ export function OriginalPreviewCard({
   focusOnly = false,
   collapsed = false,
   onToggleCollapsed,
+  variant = "default",
 }: {
   title: string;
   file: File | null;
@@ -80,8 +82,11 @@ export function OriginalPreviewCard({
   focusOnly?: boolean;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  variant?: "default" | "mobile-app";
 }) {
   const theme = getThemeClasses(isDark);
+  const mobileApp = variant === "mobile-app";
+  const mobileCardSpacing = getMobileCardSpacingTokens();
   const imageRef = useRef<HTMLImageElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -216,12 +221,14 @@ export function OriginalPreviewCard({
   return (
     <section
       className={clsx(
-        "rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:rounded-[18px]",
+        mobileApp
+          ? `rounded-[14px] border ${mobileCardSpacing.sectionPadding} backdrop-blur transition-colors`
+          : "rounded-[14px] border p-4 backdrop-blur transition-colors sm:rounded-[16px] sm:p-5 xl:rounded-[18px]",
         focusOnly ? "flex h-full min-h-0 w-full flex-col" : "",
         theme.panel,
       )}
     >
-      <div className="flex flex-col gap-4">
+      <div className={clsx("flex flex-col", mobileApp ? mobileCardSpacing.stackedGap : "gap-4")}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             {title ? <p className={clsx("text-sm font-semibold", theme.cardTitle)}>{title}</p> : null}
@@ -246,7 +253,9 @@ export function OriginalPreviewCard({
           <div className="flex shrink-0 gap-2">
             <button
               className={clsx(
-                "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                mobileApp
+                  ? "flex h-11 w-11 items-center justify-center rounded-[10px] text-xs font-semibold transition"
+                  : "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
                 theme.pill,
               )}
               aria-label={sourceChooseImage}
@@ -259,8 +268,10 @@ export function OriginalPreviewCard({
             {file ? (
               <>
                 <button
-                  className={clsx(
-                    "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                    className={clsx(
+                    mobileApp
+                      ? "flex h-11 w-11 items-center justify-center rounded-[10px] text-xs font-semibold transition"
+                      : "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
                     cropMode ? theme.primaryButton : theme.pill,
                   )}
                   aria-label={cropEdit}
@@ -271,8 +282,10 @@ export function OriginalPreviewCard({
                   <Crop aria-hidden="true" className="h-4 w-4" />
                 </button>
                 <button
-                  className={clsx(
-                    "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                    className={clsx(
+                    mobileApp
+                      ? "flex h-11 w-11 items-center justify-center rounded-[10px] text-xs font-semibold transition"
+                      : "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
                     cropRect ? theme.primaryButton : theme.disabledButton,
                   )}
                   aria-label={cropReset}
@@ -287,7 +300,9 @@ export function OriginalPreviewCard({
             {onToggleCollapsed && !focusOnly ? (
               <button
                 className={clsx(
-                  "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
+                  mobileApp
+                    ? "flex h-10 w-10 items-center justify-center rounded-[10px] text-xs font-semibold transition"
+                    : "flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold transition sm:h-8 sm:w-8",
                   theme.pill,
                 )}
                 aria-label={title || sourceBadge?.label || "toggle"}
@@ -325,8 +340,9 @@ export function OriginalPreviewCard({
       {!collapsed ? (
         <div
           className={clsx(
-            "mt-4 flex items-center justify-center overflow-hidden rounded-[10px] sm:rounded-[12px]",
-            focusOnly ? "min-h-0 flex-1" : "min-h-[220px] sm:min-h-[280px]",
+            mobileApp ? mobileCardSpacing.followUpSpacing : "mt-4",
+            "flex items-center justify-center overflow-hidden rounded-[10px] sm:rounded-[12px]",
+            focusOnly ? "min-h-0 flex-1" : mobileApp ? "min-h-[200px]" : "min-h-[220px] sm:min-h-[280px]",
             theme.previewStage,
           )}
         >
@@ -355,7 +371,9 @@ export function OriginalPreviewCard({
               {onFocusViewOpenChange ? (
                 <button
                   className={clsx(
-                    "absolute right-2 top-2 z-30 flex h-9 w-9 items-center justify-center rounded-md border text-xs font-semibold shadow-sm backdrop-blur-sm transition sm:h-8 sm:w-8",
+                    mobileApp
+                      ? "absolute right-2 top-2 z-30 flex h-11 w-11 items-center justify-center rounded-[10px] border text-xs font-semibold shadow-sm backdrop-blur-sm transition"
+                      : "absolute right-2 top-2 z-30 flex h-9 w-9 items-center justify-center rounded-md border text-xs font-semibold shadow-sm backdrop-blur-sm transition sm:h-8 sm:w-8",
                     focusViewOpen || focusOnly ? theme.primaryButton : theme.pill,
                   )}
                   aria-label={focusViewOpen || focusOnly ? sourceExitFocus : sourceFocusView}

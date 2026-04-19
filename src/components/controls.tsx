@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { ChevronDown, LaptopMinimal, Languages, Moon, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Locale } from "../lib/i18n";
+import { getMobileCardSpacingTokens } from "../lib/mobile-card-spacing";
 import { getThemeClasses, type ThemeMode } from "../lib/theme";
 
 export function ThemeSwitch({
@@ -35,7 +36,7 @@ export function ThemeSwitch({
           <button
             key={value}
             className={clsx(
-              "flex h-7 w-7 items-center justify-center rounded-[6px] transition",
+              "flex h-10 w-10 items-center justify-center rounded-[8px] transition sm:h-7 sm:w-7 sm:rounded-[6px]",
               themeMode === value ? theme.controlButtonActive : theme.controlButtonIdle,
             )}
             onClick={() => setThemeMode(value)}
@@ -78,7 +79,7 @@ export function LanguageSwitch({
       <div className={clsx("grid grid-cols-2 rounded-[8px] p-0.5", theme.controlSegment)}>
         <button
           className={clsx(
-            "min-w-[38px] rounded-[6px] px-1.5 py-1 text-xs font-semibold transition",
+            "min-h-10 min-w-[44px] rounded-[8px] px-2 py-1.5 text-xs font-semibold transition sm:min-h-0 sm:min-w-[38px] sm:rounded-[6px] sm:px-1.5 sm:py-1",
             locale === "zh-CN" ? theme.controlButtonActive : theme.controlButtonIdle,
           )}
           onClick={() => setLocale("zh-CN")}
@@ -89,7 +90,7 @@ export function LanguageSwitch({
         </button>
         <button
           className={clsx(
-            "min-w-[38px] rounded-[6px] px-1.5 py-1 text-xs font-semibold transition",
+            "min-h-10 min-w-[44px] rounded-[8px] px-2 py-1.5 text-xs font-semibold transition sm:min-h-0 sm:min-w-[38px] sm:rounded-[6px] sm:px-1.5 sm:py-1",
             locale === "en-US" ? theme.controlButtonActive : theme.controlButtonIdle,
           )}
           onClick={() => setLocale("en-US")}
@@ -361,6 +362,7 @@ export function CollapsibleSection({
   collapsed,
   onToggle,
   isDark,
+  variant = "default",
   children,
 }: {
   title: string;
@@ -368,14 +370,19 @@ export function CollapsibleSection({
   collapsed: boolean;
   onToggle: () => void;
   isDark: boolean;
+  variant?: "default" | "mobile-app";
   children: ReactNode;
 }) {
   const theme = getThemeClasses(isDark);
+  const mobileApp = variant === "mobile-app";
+  const mobileCardSpacing = getMobileCardSpacingTokens();
 
   return (
     <section
       className={clsx(
-        "rounded-[10px] border p-4 transition-colors sm:rounded-[12px] xl:rounded-[14px]",
+        mobileApp
+          ? `rounded-[14px] border ${mobileCardSpacing.sectionPadding} transition-colors`
+          : "rounded-[10px] border p-4 transition-colors sm:rounded-[12px] xl:rounded-[14px]",
         theme.card,
       )}
     >
@@ -390,7 +397,7 @@ export function CollapsibleSection({
         </div>
         <span
           className={clsx(
-            "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition",
+            "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border transition sm:h-8 sm:w-8 sm:rounded-md",
             theme.pill,
           )}
         >
@@ -400,7 +407,7 @@ export function CollapsibleSection({
           />
         </span>
       </button>
-      {!collapsed ? <div className="mt-4">{children}</div> : null}
+      {!collapsed ? <div className={mobileApp ? "mt-3" : "mt-4"}>{children}</div> : null}
     </section>
   );
 }

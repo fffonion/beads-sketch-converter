@@ -1,36 +1,29 @@
 import { expect, test } from "bun:test";
-import { shouldCloseEdgeColorPickerPopup } from "../src/components/sidebar-panel";
+import {
+  getEdgeColorPickerInlineLayout,
+  getImageProcessTabLayout,
+} from "../src/components/sidebar-panel";
 
-function makeContainsTarget(target: Node) {
-  return {
-    contains(candidate: Node | null) {
-      return candidate === target;
-    },
-  };
-}
-
-test("edge color popup outside-click detection should stay open for clicks inside the popup portal", () => {
-  const popupTarget = {} as Node;
-
-  expect(
-    shouldCloseEdgeColorPickerPopup(
-      popupTarget,
-      null,
-      makeContainsTarget(popupTarget),
-    ),
-  ).toBe(false);
+test("edge color picker should render as a full-width inline section with double-size honeycomb cells", () => {
+  expect(getEdgeColorPickerInlineLayout()).toEqual({
+    renderInlineSection: true,
+    sectionWidthMode: "full",
+    honeycombScale: 2,
+  });
 });
 
-test("edge color popup outside-click detection should close for clicks outside both anchor and popup", () => {
-  const anchorTarget = {} as Node;
-  const popupTarget = {} as Node;
-  const outsideTarget = {} as Node;
+test("image process tabs should switch between auto description and manual sizing controls", () => {
+  expect(getImageProcessTabLayout("auto")).toEqual({
+    showAutoDescription: true,
+    showManualSizing: false,
+    sections: ["auto-description", "shared-controls"],
+    seamlessTopSpacing: true,
+  });
 
-  expect(
-    shouldCloseEdgeColorPickerPopup(
-      outsideTarget,
-      makeContainsTarget(anchorTarget),
-      makeContainsTarget(popupTarget),
-    ),
-  ).toBe(true);
+  expect(getImageProcessTabLayout("manual")).toEqual({
+    showAutoDescription: false,
+    showManualSizing: true,
+    sections: ["manual-sizing", "shared-controls"],
+    seamlessTopSpacing: true,
+  });
 });
