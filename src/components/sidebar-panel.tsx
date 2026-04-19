@@ -25,6 +25,40 @@ export function getImageProcessTabLayout(mode: GridMode) {
   };
 }
 
+export function getSidebarPanelMobileLayout({
+  mobileApp,
+  isLandscapeViewport,
+}: {
+  mobileApp: boolean;
+  isLandscapeViewport: boolean;
+}) {
+  if (!mobileApp) {
+    return {
+      useTwoColumn: false,
+      contentClassName: "space-y-5",
+      previewColumnClassName: "",
+      controlsColumnClassName: "",
+    };
+  }
+
+  if (isLandscapeViewport) {
+    return {
+      useTwoColumn: true,
+      contentClassName:
+        "grid min-h-0 grid-cols-[minmax(248px,0.88fr)_minmax(0,1.12fr)] items-start gap-3",
+      previewColumnClassName: "min-h-0",
+      controlsColumnClassName: "min-h-0",
+    };
+  }
+
+  return {
+    useTwoColumn: false,
+    contentClassName: "space-y-2.5",
+    previewColumnClassName: "",
+    controlsColumnClassName: "",
+  };
+}
+
 export function getEdgeColorPickerInlineLayout() {
   return {
     renderInlineSection: true,
@@ -123,6 +157,12 @@ export function SidebarPanel({
   const theme = getThemeClasses(isDark);
   const mobileApp = variant === "mobile-app";
   const mobileCardSpacing = getMobileCardSpacingTokens();
+  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.innerWidth > window.innerHeight;
+  });
   const edgeColorInlinePanelRef = useRef<HTMLDivElement | null>(null);
   const [collapsedSections, setCollapsedSections] = useState(() => {
     return {
@@ -133,6 +173,10 @@ export function SidebarPanel({
   const [edgeColorPickerOpen, setEdgeColorPickerOpen] = useState(false);
   const [edgeColorInlinePanelWidth, setEdgeColorInlinePanelWidth] = useState(0);
   const edgeColorInlineLayout = getEdgeColorPickerInlineLayout();
+  const mobileLayout = getSidebarPanelMobileLayout({
+    mobileApp,
+    isLandscapeViewport,
+  });
   const fftEdgeEnhanceOverrideOption =
     fftEdgeEnhanceOverrideLabel
       ? paletteOptions.find((entry) => entry.label === fftEdgeEnhanceOverrideLabel) ?? null
@@ -420,6 +464,22 @@ export function SidebarPanel({
     };
   }, [edgeColorPickerOpen]);
 
+  useEffect(() => {
+    if (!mobileApp || typeof window === "undefined") {
+      return;
+    }
+
+    function syncLandscapeViewport() {
+      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
+    }
+
+    syncLandscapeViewport();
+    window.addEventListener("resize", syncLandscapeViewport);
+    return () => {
+      window.removeEventListener("resize", syncLandscapeViewport);
+    };
+  }, [mobileApp]);
+
   return (
     <section
       className={clsx(
@@ -430,59 +490,63 @@ export function SidebarPanel({
       )}
       style={mobileApp ? { paddingBottom: "calc(env(safe-area-inset-bottom) + 5rem)" } : undefined}
     >
-      <div className={clsx(mobileApp ? "space-y-2.5" : "space-y-5")}>
-        <OriginalPreviewCard
-          title=""
-          file={file}
-          url={inputUrl}
-          busy={busy}
-          emptyText={t.sourceEmpty}
-          sourceChooseImage={t.sourceChooseImage}
-          sourceFocusView={t.sourceFocusView}
-          sourceExitFocus={t.sourceExitFocus}
-          sourceBadge={sourceBadge}
-          onFileSelection={onFileSelection}
-          cropReset={t.cropReset}
-          cropEdit={t.cropEdit}
-          cropMode={cropMode}
-          onCropModeChange={onCropModeChange}
-          cropRect={cropRect}
-          displayCropRect={displayCropRect}
-          onCropChange={onCropChange}
-          isDark={isDark}
-          focusViewOpen={sourceFocusViewOpen}
-          onFocusViewOpenChange={onSourceFocusViewOpenChange}
-          collapsed={collapsedSections.source}
-          onToggleCollapsed={() => toggleSection("source")}
-          variant={mobileApp ? "mobile-app" : "default"}
-        />
+      <div className={clsx(mobileLayout.contentClassName)}>
+        <div className={clsx(mobileLayout.previewColumnClassName)}>
+          <OriginalPreviewCard
+            title=""
+            file={file}
+            url={inputUrl}
+            busy={busy}
+            emptyText={t.sourceEmpty}
+            sourceChooseImage={t.sourceChooseImage}
+            sourceFocusView={t.sourceFocusView}
+            sourceExitFocus={t.sourceExitFocus}
+            sourceBadge={sourceBadge}
+            onFileSelection={onFileSelection}
+            cropReset={t.cropReset}
+            cropEdit={t.cropEdit}
+            cropMode={cropMode}
+            onCropModeChange={onCropModeChange}
+            cropRect={cropRect}
+            displayCropRect={displayCropRect}
+            onCropChange={onCropChange}
+            isDark={isDark}
+            focusViewOpen={sourceFocusViewOpen}
+            onFocusViewOpenChange={onSourceFocusViewOpenChange}
+            collapsed={collapsedSections.source}
+            onToggleCollapsed={() => toggleSection("source")}
+            variant={mobileApp ? "mobile-app" : "default"}
+          />
+        </div>
 
-        <CollapsibleSection
-          title={t.gridTitle}
-          collapsed={collapsedSections.grid}
-          onToggle={() => toggleSection("grid")}
-          isDark={isDark}
-          variant={mobileApp ? "mobile-app" : "default"}
-        >
-          <Tabs.Root value={gridMode} onValueChange={(value) => onGridModeChange(value as GridMode)}>
-            <Tabs.List className={clsx("grid grid-cols-2 rounded-lg p-1", theme.segmented)}>
-              <Tabs.Trigger
-                value="auto"
-                className={clsx("rounded-md px-4 py-2 text-sm font-semibold outline-none transition", theme.segmentedTrigger)}
-              >
-                {t.gridAuto}
-              </Tabs.Trigger>
-              <Tabs.Trigger
-                value="manual"
-                className={clsx("rounded-md px-4 py-2 text-sm font-semibold outline-none transition", theme.segmentedTrigger)}
-              >
-                {t.gridManual}
-              </Tabs.Trigger>
-            </Tabs.List>
-            {renderImageProcessTabContent("auto")}
-            {renderImageProcessTabContent("manual")}
-          </Tabs.Root>
-        </CollapsibleSection>
+        <div className={clsx(mobileLayout.controlsColumnClassName)}>
+          <CollapsibleSection
+            title={t.gridTitle}
+            collapsed={collapsedSections.grid}
+            onToggle={() => toggleSection("grid")}
+            isDark={isDark}
+            variant={mobileApp ? "mobile-app" : "default"}
+          >
+            <Tabs.Root value={gridMode} onValueChange={(value) => onGridModeChange(value as GridMode)}>
+              <Tabs.List className={clsx("grid grid-cols-2 rounded-lg p-1", theme.segmented)}>
+                <Tabs.Trigger
+                  value="auto"
+                  className={clsx("rounded-md px-4 py-2 text-sm font-semibold outline-none transition", theme.segmentedTrigger)}
+                >
+                  {t.gridAuto}
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  value="manual"
+                  className={clsx("rounded-md px-4 py-2 text-sm font-semibold outline-none transition", theme.segmentedTrigger)}
+                >
+                  {t.gridManual}
+                </Tabs.Trigger>
+              </Tabs.List>
+              {renderImageProcessTabContent("auto")}
+              {renderImageProcessTabContent("manual")}
+            </Tabs.Root>
+          </CollapsibleSection>
+        </div>
       </div>
     </section>
   );

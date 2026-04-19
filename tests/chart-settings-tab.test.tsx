@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ChartSettingsTab } from "../src/components/chart-settings-tab";
+import {
+  ChartSettingsTab,
+  getMobileChartSettingsLayout,
+} from "../src/components/chart-settings-tab";
 import { messages } from "../src/lib/i18n";
 
 function renderChartSettingsTab({
@@ -94,6 +97,33 @@ test("mobile chart settings preview should use a fixed 3:4 frame instead of sizi
   });
 
   expect(markup).toContain("aspect-[3/4] w-full");
+});
+
+test("mobile landscape chart settings should switch to a two-column export layout", () => {
+  expect(
+    getMobileChartSettingsLayout({
+      mobileApp: true,
+      isLandscapeViewport: true,
+    }),
+  ).toEqual({
+    useTwoColumn: true,
+    wrapperClassName:
+      "grid min-h-0 grid-cols-[minmax(270px,0.94fr)_minmax(0,1.06fr)] items-start gap-3 px-2 py-1",
+    leadColumnClassName: "min-h-0 space-y-2",
+    settingsColumnClassName: "min-h-0 space-y-2",
+  });
+
+  expect(
+    getMobileChartSettingsLayout({
+      mobileApp: true,
+      isLandscapeViewport: false,
+    }),
+  ).toEqual({
+    useTwoColumn: false,
+    wrapperClassName: "flex flex-col gap-2 px-2 py-1",
+    leadColumnClassName: "",
+    settingsColumnClassName: "",
+  });
 });
 
 test("mobile chart settings preview image should stay centered inside the fixed frame", () => {

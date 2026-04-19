@@ -69,6 +69,40 @@ function MobileSettingsItem({
   );
 }
 
+export function getMobileChartSettingsLayout({
+  mobileApp,
+  isLandscapeViewport,
+}: {
+  mobileApp: boolean;
+  isLandscapeViewport: boolean;
+}) {
+  if (!mobileApp) {
+    return {
+      useTwoColumn: false,
+      wrapperClassName: "flex flex-col gap-2 px-2 py-1",
+      leadColumnClassName: "",
+      settingsColumnClassName: "",
+    };
+  }
+
+  if (isLandscapeViewport) {
+    return {
+      useTwoColumn: true,
+      wrapperClassName:
+        "grid min-h-0 grid-cols-[minmax(270px,0.94fr)_minmax(0,1.06fr)] items-start gap-3 px-2 py-1",
+      leadColumnClassName: "min-h-0 space-y-2",
+      settingsColumnClassName: "min-h-0 space-y-2",
+    };
+  }
+
+  return {
+    useTwoColumn: false,
+    wrapperClassName: "flex flex-col gap-2 px-2 py-1",
+    leadColumnClassName: "",
+    settingsColumnClassName: "",
+  };
+}
+
 export function ChartSettingsTab({
   t,
   isDark,
@@ -157,9 +191,19 @@ export function ChartSettingsTab({
   const theme = getThemeClasses(isDark);
   const mobileApp = variant === "mobile-app";
   const mobileCardSpacing = getMobileCardSpacingTokens();
+  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.innerWidth > window.innerHeight;
+  });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const settingsColumnRef = useRef<HTMLDivElement | null>(null);
   const [rightSidebarHeight, setRightSidebarHeight] = useState<number | null>(null);
+  const mobileLayout = getMobileChartSettingsLayout({
+    mobileApp,
+    isLandscapeViewport,
+  });
   const chartSectionClassName = clsx(
     mobileApp ? "rounded-[14px] border p-3" : "rounded-md border p-3",
     isDark ? "border-white/12 bg-white/[0.035]" : "border-stone-300 bg-white/78",
@@ -240,6 +284,22 @@ export function ChartSettingsTab({
     };
   }, []);
 
+  useEffect(() => {
+    if (!mobileApp || typeof window === "undefined") {
+      return;
+    }
+
+    function syncLandscapeViewport() {
+      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
+    }
+
+    syncLandscapeViewport();
+    window.addEventListener("resize", syncLandscapeViewport);
+    return () => {
+      window.removeEventListener("resize", syncLandscapeViewport);
+    };
+  }, [mobileApp]);
+
   if (mobileApp) {
     return (
       <section className="flex w-full flex-col overflow-visible">
@@ -250,8 +310,9 @@ export function ChartSettingsTab({
           type="file"
           onChange={(event) => void onChartWatermarkImageFile(event.target.files?.[0] ?? null)}
         />
-        <div className="flex flex-col gap-2 px-2 py-1">
-          <MobileSettingsGroup isDark={isDark} tone="subtle">
+        <div className={mobileLayout.wrapperClassName}>
+          <div className={mobileLayout.leadColumnClassName}>
+            <MobileSettingsGroup isDark={isDark} tone="subtle">
             <MobileSettingsItem isDark={isDark}>
               <div className={clsx("flex flex-col", mobileCardSpacing.stackedGap)}>
                 <div className="flex items-center justify-between gap-3">
@@ -380,9 +441,11 @@ export function ChartSettingsTab({
                 </div>
               </div>
             </MobileSettingsItem>
-          </MobileSettingsGroup>
+            </MobileSettingsGroup>
+          </div>
 
-          <MobileSettingsGroup isDark={isDark} tone="plain">
+          <div className={mobileLayout.settingsColumnClassName}>
+            <MobileSettingsGroup isDark={isDark} tone="plain">
             <MobileSettingsItem isDark={isDark}>
               <label className={clsx("flex flex-col", mobileCardSpacing.stackedGap)}>
                 <span className={clsx("text-sm font-semibold", theme.cardTitle)}>{t.chartSettingsChartTitle}</span>
@@ -450,7 +513,7 @@ export function ChartSettingsTab({
             </MobileSettingsItem>
           </MobileSettingsGroup>
 
-          <MobileSettingsGroup isDark={isDark} tone="plain">
+            <MobileSettingsGroup isDark={isDark} tone="plain">
             <MobileSettingsItem isDark={isDark}>
               <SwitchRow
                 id="chart-include-guides"
@@ -546,7 +609,8 @@ export function ChartSettingsTab({
                 disabled={chartLockEditing}
               />
             </MobileSettingsItem>
-          </MobileSettingsGroup>
+            </MobileSettingsGroup>
+          </div>
         </div>
       </section>
     );
