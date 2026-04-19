@@ -28,7 +28,13 @@ import {
   shouldShowChartHeaderDetails,
   processImageFile,
 } from "../src/lib/chart-processor";
-import { detectChartBoardWithWasm, enhanceEdgesWithFftWasm } from "../src/lib/detecter";
+import {
+  __debugGetDetectorCacheStats,
+  __debugResetDetectorCaches,
+  computeDetailSignalWithWasm,
+  detectChartBoardWithWasm,
+  enhanceEdgesWithFftWasm,
+} from "../src/lib/detecter";
 
 const fixtureDir = join(import.meta.dir, "fixtures");
 const sampleImagePath = join(fixtureDir, "bangboo_4.jpeg");
@@ -197,6 +203,106 @@ function getRasterPixelAlpha(
 ) {
   const pixelIndex = (y * raster.width + x) * 4;
   return raster.data[pixelIndex + 3]!;
+}
+
+async function withMockedRasterImage<T>(
+  raster: { width: number; height: number; data: Uint8ClampedArray },
+  run: () => Promise<T>,
+) {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const noop = () => {};
+  const canvasContext = new Proxy(
+    {
+      drawImage: noop,
+      getImageData() {
+        return {
+          width: raster.width,
+          height: raster.height,
+          data: new Uint8ClampedArray(raster.data),
+        };
+      },
+      measureText() {
+        return { width: 0 };
+      },
+      createLinearGradient() {
+        return { addColorStop: noop };
+      },
+      createRadialGradient() {
+        return { addColorStop: noop };
+      },
+      setLineDash: noop,
+      getLineDash() {
+        return [];
+      },
+    } as Record<string, unknown>,
+    {
+      get(target, property) {
+        if (property in target) {
+          return target[property as keyof typeof target];
+        }
+        return noop;
+      },
+    },
+  );
+
+  const createElement = (tagName: string) => {
+    if (tagName !== "canvas") {
+      throw new Error(`unexpected element: ${tagName}`);
+    }
+
+    return {
+      width: raster.width,
+      height: raster.height,
+      getContext() {
+        return canvasContext;
+      },
+      toBlob(callback: BlobCallback) {
+        callback(new Blob([PNG_SIGNATURE], { type: "image/png" }));
+      },
+    } as HTMLCanvasElement;
+  };
+
+  globalThis.createImageBitmap = (async () =>
+    ({
+      width: raster.width,
+      height: raster.height,
+      close() {},
+    }) as ImageBitmap) as typeof globalThis.createImageBitmap;
+  globalThis.document = { createElement } as Document;
+  globalThis.Image = class {
+    onload: null | (() => void) = null;
+    onerror: null | (() => void) = null;
+    width = 1;
+    height = 1;
+
+    set src(_value: string) {
+      queueMicrotask(() => {
+        this.onload?.();
+      });
+    }
+  } as typeof Image;
+
+  try {
+    return await run();
+  } finally {
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
+  }
+}
+
+function hexToLuma(hex: string | null) {
+  if (!hex) {
+    return 255;
+  }
+
+  const normalized = hex.startsWith("#") ? hex.slice(1) : hex;
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  return red * 0.299 + green * 0.587 + blue * 0.114;
 }
 
 function readUint32(bytes: Uint8Array, offset: number) {
@@ -576,6 +682,482 @@ test("photo color reduction should preserve transparent pixels", () => {
   expect(getRasterPixel(reduced.image, 0, 0)).toEqual([0, 0, 0]);
   expect(getRasterPixelAlpha(reduced.image, 0, 0)).toBe(0);
   expect(getRasterPixelAlpha(reduced.image, 1, 0)).toBe(255);
+});
+
+test("converted-image sampling should preserve thin x-like detail at small grid sizes", async () => {
+  const raster = buildSolidRaster(96, 96, [218, 198, 194]);
+  for (let step = 0; step < 28; step += 1) {
+    const primaryX = 34 + step;
+    const secondaryX = 61 - step;
+    const y = 34 + step;
+    setRasterPixel(raster, primaryX, y, [82, 28, 34]);
+    setRasterPixel(raster, secondaryX, y, [82, 28, 34]);
+  }
+
+  const file = new File(["stub"], "thin-x-detail.png", { type: "image/png" });
+  const result = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 6,
+      gridHeight: 6,
+      reduceColors: true,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  const centralIndexes = [1 * 6 + 1, 1 * 6 + 4, 2 * 6 + 2, 2 * 6 + 3, 3 * 6 + 2, 3 * 6 + 3, 4 * 6 + 1, 4 * 6 + 4];
+  const darkCentralCells = centralIndexes.filter((index) => hexToLuma(result.cells[index]?.hex ?? null) < 120);
+
+  expect(result.detectionMode).toBe("converted-from-image");
+  expect(darkCentralCells.length).toBeGreaterThanOrEqual(2);
+});
+
+test("converted-image style bias above 75 should not reintroduce near-color noise while keeping dark detail", async () => {
+  const raster = buildSolidRaster(5, 5, [214, 220, 232]);
+  setRasterPixel(raster, 2, 2, [194, 203, 220]);
+  setRasterPixel(raster, 0, 0, [186, 197, 214]);
+  setRasterPixel(raster, 1, 4, [202, 211, 228]);
+  setRasterPixel(raster, 4, 2, [84, 84, 84]);
+  const file = new File(["stub"], "style-bias-cleanup.png", { type: "image/png" });
+
+  const baseline = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 5,
+      gridHeight: 5,
+      renderStyleBias: 75,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+  const stylized = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 5,
+      gridHeight: 5,
+      renderStyleBias: 100,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  expect(stylized.originalUniqueColors).toBeLessThanOrEqual(baseline.originalUniqueColors);
+  expect(hexToLuma(stylized.cells[2 * 5 + 4]?.hex ?? null)).toBeLessThan(120);
+});
+
+test("converted-image pixel-art end should stay at least as flat as the 75-style baseline while preserving dark structure", async () => {
+  const raster = buildSolidRaster(6, 6, [214, 220, 232]);
+  setRasterPixel(raster, 2, 2, [194, 203, 220]);
+  setRasterPixel(raster, 2, 3, [202, 211, 228]);
+  setRasterPixel(raster, 3, 2, [186, 197, 214]);
+  setRasterPixel(raster, 3, 3, [208, 216, 234]);
+  setRasterPixel(raster, 0, 5, [72, 72, 72]);
+  setRasterPixel(raster, 1, 5, [72, 72, 72]);
+  const file = new File(["stub"], "style-bias-pixel-end.png", { type: "image/png" });
+
+  const baseline = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 6,
+      gridHeight: 6,
+      renderStyleBias: 75,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+  const pixelArt = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 6,
+      gridHeight: 6,
+      renderStyleBias: 100,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  expect(pixelArt.paletteColorsUsed).toBeLessThanOrEqual(baseline.paletteColorsUsed);
+  expect(hexToLuma(pixelArt.cells[5 * 6 + 0]?.hex ?? null)).toBeLessThan(100);
+});
+
+test("converted-image color reduction should lower final palette colors on a photo fixture as tolerance increases", async () => {
+  const raster = loadRasterWithPowerShell(sampleImagePath);
+  const file = new File(["stub"], "bangboo-4-photo.jpeg", { type: "image/jpeg" });
+
+  const lowTolerance = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 40,
+      gridHeight: 40,
+      renderStyleBias: 100,
+      reduceColors: true,
+      reduceTolerance: 0,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+  const highTolerance = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 40,
+      gridHeight: 40,
+      renderStyleBias: 100,
+      reduceColors: true,
+      reduceTolerance: 96,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  expect(highTolerance.paletteColorsUsed).toBeLessThan(lowTolerance.paletteColorsUsed);
+});
+
+test("converted-image style bias 100 should merge near-color blocks more aggressively than the 75 baseline without erasing dark structure", async () => {
+  const raster = buildSolidRaster(10, 10, [214, 220, 232]);
+  const softBodyTones: Array<[number, number, number]> = [
+    [194, 203, 220],
+    [202, 211, 228],
+    [186, 197, 214],
+    [208, 216, 234],
+    [176, 189, 210],
+    [198, 209, 224],
+  ];
+  for (let y = 1; y <= 8; y += 1) {
+    for (let x = 2; x <= 7; x += 1) {
+      setRasterPixel(raster, x, y, softBodyTones[(x + y) % softBodyTones.length]!);
+    }
+  }
+  for (let y = 1; y <= 8; y += 1) {
+    setRasterPixel(raster, 2, y, [42, 44, 52]);
+    setRasterPixel(raster, 7, y, [42, 44, 52]);
+  }
+  for (let y = 3; y <= 9; y += 1) {
+    setRasterPixel(raster, 5, y, [30, 32, 38]);
+  }
+  setRasterPixel(raster, 4, 2, [244, 236, 210]);
+  setRasterPixel(raster, 5, 2, [244, 236, 210]);
+  setRasterPixel(raster, 6, 4, [110, 182, 205]);
+  setRasterPixel(raster, 6, 5, [86, 164, 196]);
+
+  const file = new File(["stub"], "style-bias-merge.png", { type: "image/png" });
+
+  const baseline = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 10,
+      gridHeight: 10,
+      renderStyleBias: 75,
+      reduceColors: true,
+      reduceTolerance: 72,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+  const stylized = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 10,
+      gridHeight: 10,
+      renderStyleBias: 100,
+      reduceColors: true,
+      reduceTolerance: 72,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  const baselineDarkStructure = baseline.cells.filter((cell, index) =>
+    index % 10 === 5 && hexToLuma(cell.hex ?? null) < 65,
+  ).length;
+  const stylizedDarkStructure = stylized.cells.filter((cell, index) =>
+    index % 10 === 5 && hexToLuma(cell.hex ?? null) < 65,
+  ).length;
+
+  expect(stylized.paletteColorsUsed).toBeLessThanOrEqual(baseline.paletteColorsUsed - 1);
+  expect(stylizedDarkStructure).toBeGreaterThanOrEqual(baselineDarkStructure);
+});
+
+test("converted-image style bias 100 should merge similar large regions across the image while preserving strong boundary colors", async () => {
+  const raster = buildSolidRaster(20, 20, [241, 237, 237]);
+  for (let y = 2; y <= 17; y += 1) {
+    for (let x = 2; x <= 17; x += 1) {
+      setRasterPixel(raster, x, y, [187, 207, 237]);
+    }
+  }
+  for (let y = 3; y <= 8; y += 1) {
+    for (let x = 3; x <= 6; x += 1) {
+      setRasterPixel(raster, x, y, [205, 232, 255]);
+    }
+  }
+  for (let y = 11; y <= 16; y += 1) {
+    for (let x = 12; x <= 15; x += 1) {
+      setRasterPixel(raster, x, y, [205, 232, 255]);
+    }
+  }
+  for (let y = 2; y <= 17; y += 1) {
+    setRasterPixel(raster, 11, y, [47, 43, 47]);
+  }
+
+  const file = new File(["stub"], "style-bias-global-merge.png", { type: "image/png" });
+
+  const baseline = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 20,
+      gridHeight: 20,
+      renderStyleBias: 75,
+      reduceColors: true,
+      reduceTolerance: 72,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+  const stylized = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 20,
+      gridHeight: 20,
+      renderStyleBias: 100,
+      reduceColors: true,
+      reduceTolerance: 72,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  const baselineBoundaryCells = baseline.cells.filter((cell, index) =>
+    index % 20 === 11 && hexToLuma(cell.hex ?? null) < 70,
+  ).length;
+  const stylizedBoundaryCells = stylized.cells.filter((cell, index) =>
+    index % 20 === 11 && hexToLuma(cell.hex ?? null) < 70,
+  ).length;
+
+  expect(baseline.paletteColorsUsed).toBeGreaterThanOrEqual(4);
+  expect(stylized.paletteColorsUsed).toBeLessThanOrEqual(3);
+  expect(stylizedBoundaryCells).toBeGreaterThanOrEqual(baselineBoundaryCells);
+});
+
+test("converted-image style bias 100 should allow similar boundary colors to merge into one darker outline without collapsing into fill colors", async () => {
+  const raster = buildSolidRaster(12, 12, [241, 237, 237]);
+  for (let y = 3; y <= 8; y += 1) {
+    for (let x = 3; x <= 8; x += 1) {
+      setRasterPixel(raster, x, y, [187, 207, 237]);
+    }
+  }
+  for (let x = 2; x <= 9; x += 1) {
+    setRasterPixel(raster, x, 2, [47, 43, 47]);
+    setRasterPixel(raster, x, 9, [29, 20, 20]);
+  }
+  for (let y = 2; y <= 9; y += 1) {
+    setRasterPixel(raster, 2, y, [47, 43, 47]);
+    setRasterPixel(raster, 9, y, [29, 20, 20]);
+  }
+
+  const file = new File(["stub"], "style-bias-boundary-merge.png", { type: "image/png" });
+
+  const stylized = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 12,
+      gridHeight: 12,
+      renderStyleBias: 100,
+      reduceColors: true,
+      reduceTolerance: 72,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  const darkBoundaryLabels = new Set(
+    stylized.cells
+      .filter((cell, index) => {
+        const row = Math.floor(index / 12);
+        const column = index % 12;
+        const onBoundary =
+          (row === 2 || row === 9) && column >= 2 && column <= 9 ||
+          (column === 2 || column === 9) && row >= 2 && row <= 9;
+        return onBoundary && hexToLuma(cell.hex ?? null) < 80;
+      })
+      .map((cell) => cell.label),
+  );
+
+  expect(darkBoundaryLabels.size).toBe(1);
+  expect(stylized.paletteColorsUsed).toBeLessThanOrEqual(3);
+});
+
+test("converted-image color reduction should merge local near-color chatter without erasing a dark edge", async () => {
+  const raster = buildSolidRaster(12, 8, [214, 220, 232]);
+  for (let y = 0; y < 8; y += 1) {
+    setRasterPixel(raster, 5, y, [32, 36, 48]);
+  }
+  for (const [x, y, color] of [
+    [1, 1, [194, 203, 220]],
+    [2, 1, [202, 211, 228]],
+    [1, 2, [186, 197, 214]],
+    [2, 2, [208, 216, 234]],
+    [8, 4, [188, 204, 222]],
+    [9, 4, [198, 212, 230]],
+    [8, 5, [182, 198, 216]],
+    [9, 5, [206, 218, 236]],
+  ] as Array<[number, number, [number, number, number]]>) {
+    setRasterPixel(raster, x, y, color);
+  }
+
+  const file = new File(["stub"], "post-palette-reduce.png", { type: "image/png" });
+  const baseline = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 12,
+      gridHeight: 8,
+      renderStyleBias: 50,
+      reduceColors: true,
+      reduceTolerance: 0,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+  const reduced = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 12,
+      gridHeight: 8,
+      renderStyleBias: 50,
+      reduceColors: true,
+      reduceTolerance: 72,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  const baselineDarkEdgeCells = baseline.cells.filter((cell, index) =>
+    index % 12 === 5 && hexToLuma(cell.hex ?? null) < 90,
+  ).length;
+  const reducedDarkEdgeCells = reduced.cells.filter((cell, index) =>
+    index % 12 === 5 && hexToLuma(cell.hex ?? null) < 90,
+  ).length;
+
+  expect(reduced.paletteColorsUsed).toBeLessThan(baseline.paletteColorsUsed);
+  expect(reducedDarkEdgeCells).toBeGreaterThanOrEqual(baselineDarkEdgeCells);
+});
+
+test("converted-image reprocessing should not recompute original-only wasm work for post-processing changes", async () => {
+  __debugResetDetectorCaches();
+
+  const raster = buildSolidRaster(120, 84, [210, 220, 230]);
+  for (let index = 0; index < 30; index += 1) {
+    setRasterPixel(raster, 26 + index, 14 + index, [42, 58, 80]);
+    setRasterPixel(raster, 90 - index, 14 + index, [42, 58, 80]);
+  }
+
+  const file = new File(["stub"], "reprocess-cache.png", { type: "image/png" });
+
+  await withMockedRasterImage(raster, async () => {
+    await processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 5,
+      gridHeight: 6,
+      renderStyleBias: 100,
+      reduceColors: true,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 100,
+    });
+
+    const afterFirst = __debugGetDetectorCacheStats();
+
+    await processImageFile(file, {
+      gridMode: "manual",
+      gridWidth: 5,
+      gridHeight: 6,
+      renderStyleBias: 100,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: true,
+      preSharpenStrength: 45,
+      fftEdgeEnhanceStrength: 100,
+    });
+
+    const afterSecond = __debugGetDetectorCacheStats();
+
+    expect(afterFirst.detailMisses).toBe(1);
+    expect(afterFirst.fftMisses).toBe(1);
+    expect(afterSecond.detailMisses).toBe(1);
+    expect(afterSecond.fftMisses).toBe(1);
+  });
+});
+
+test("photo color reduction should keep protected structured detail while still merging isolated noise", () => {
+  const raster = buildSolidRaster(5, 5, [200, 200, 200]);
+  setRasterPixel(raster, 2, 2, [182, 182, 182]);
+  setRasterPixel(raster, 0, 0, [188, 188, 188]);
+
+  const protectedMask = new Uint8Array(25);
+  protectedMask[2 * 5 + 2] = 1;
+
+  const reduced = reduceColorsPhotoshopStyle(raster, 20, {
+    preserveEdges: true,
+    protectedMask,
+  } as never);
+
+  expect(getRasterPixel(reduced.image, 2, 2)).toEqual([182, 182, 182]);
+  expect(getRasterPixel(reduced.image, 0, 0)).toEqual([200, 200, 200]);
+});
+
+test("photo color reduction should merge near-color chatter into its own local block instead of crossing a hard edge", () => {
+  const raster = buildSolidRaster(5, 3, [200, 200, 200]);
+  setRasterPixel(raster, 0, 0, [194, 194, 194]);
+  setRasterPixel(raster, 2, 0, [40, 40, 40]);
+  setRasterPixel(raster, 2, 1, [40, 40, 40]);
+  setRasterPixel(raster, 2, 2, [40, 40, 40]);
+  setRasterPixel(raster, 3, 0, [190, 190, 190]);
+  setRasterPixel(raster, 4, 0, [190, 190, 190]);
+  setRasterPixel(raster, 3, 1, [190, 190, 190]);
+  setRasterPixel(raster, 4, 1, [190, 190, 190]);
+  setRasterPixel(raster, 3, 2, [190, 190, 190]);
+  setRasterPixel(raster, 4, 2, [190, 190, 190]);
+
+  const reduced = reduceColorsPhotoshopStyle(raster, 15, { preserveEdges: true });
+
+  expect(getRasterPixel(reduced.image, 0, 0)).toEqual([200, 200, 200]);
+  expect(getRasterPixel(reduced.image, 2, 1)).toEqual([40, 40, 40]);
+  expect(getRasterPixel(reduced.image, 4, 1)).toEqual([190, 190, 190]);
+});
+
+test("detail signal should not protect most cells on chart-like fixture noise", async () => {
+  const raster = loadRasterWithPowerShell(exportedChartImagePath);
+  const gridWidth = 40;
+  const gridHeight = Math.max(1, Math.round((raster.height / raster.width) * gridWidth));
+  const detail = await computeDetailSignalWithWasm(raster, gridWidth, gridHeight);
+  const protectedCount = Array.from(detail?.protectedMask ?? []).reduce((sum, value) => sum + value, 0);
+  const protectedRatio = protectedCount / Math.max(1, detail?.protectedMask.length ?? 1);
+
+  expect(detail).not.toBeNull();
+  expect(protectedRatio).toBeLessThan(0.2);
 });
 
 test("fft edge enhancement should strengthen a broken thin outline neighborhood", async () => {

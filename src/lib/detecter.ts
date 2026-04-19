@@ -6,7 +6,17 @@ interface WasmDetectorExports {
   detect_chart(ptr: number, len: number, width: number, height: number): number;
   detect_pixel_art(ptr: number, len: number, width: number, height: number): number;
   enhance_edges(ptr: number, len: number, width: number, height: number, strength: number): number;
+  detail_signal(
+    ptr: number,
+    len: number,
+    width: number,
+    height: number,
+    gridWidth: number,
+    gridHeight: number,
+  ): number;
   result_ptr(): number;
+  detail_result_ptr(): number;
+  detail_result_len(): number;
 }
 
 interface RasterImageLike {
@@ -37,9 +47,46 @@ export interface WasmAutoDetection {
   confidence: number;
 }
 
+export interface WasmDetailSignal {
+  protectedMask: Uint8Array;
+  suggestedRgb: Array<[number, number, number] | null>;
+  energy: Float32Array;
+  contrast: Float32Array;
+}
+
+interface DetectorCacheStats {
+  fftHits: number;
+  fftMisses: number;
+  detailHits: number;
+  detailMisses: number;
+}
+
 const wasmUrl = new URL("../wasm/detecter.wasm", import.meta.url);
 let detectorPromise: Promise<WasmDetectorExports | null> | null = null;
 let detectorCallQueue: Promise<void> = Promise.resolve();
+let fftEnhanceCache = new WeakMap<RasterImageLike, Map<string, Promise<RasterImageLike>>>();
+let detailSignalCache = new WeakMap<RasterImageLike, Map<string, Promise<WasmDetailSignal | null>>>();
+let detectorCacheStats: DetectorCacheStats = {
+  fftHits: 0,
+  fftMisses: 0,
+  detailHits: 0,
+  detailMisses: 0,
+};
+
+export function __debugGetDetectorCacheStats(): DetectorCacheStats {
+  return { ...detectorCacheStats };
+}
+
+export function __debugResetDetectorCaches() {
+  fftEnhanceCache = new WeakMap();
+  detailSignalCache = new WeakMap();
+  detectorCacheStats = {
+    fftHits: 0,
+    fftMisses: 0,
+    detailHits: 0,
+    detailMisses: 0,
+  };
+}
 
 export async function detectChartBoardWithWasm(
   raster: RasterImageLike,
@@ -147,40 +194,135 @@ export async function enhanceEdgesWithFftWasm(
     };
   }
 
-  return await runInDetectorQueue(async () => {
-    const exports = await loadWasmDetector();
-    if (!exports) {
-      return {
-        width: raster.width,
-        height: raster.height,
-        data: new Uint8ClampedArray(raster.data),
-      };
-    }
+  return await getCachedDetectorResult(
+    fftEnhanceCache,
+    raster,
+    `fft:${Math.round(normalizedStrength * 1000)}`,
+    "fft",
+    () =>
+      runInDetectorQueue(async () => {
+        const exports = await loadWasmDetector();
+        if (!exports) {
+          return {
+            width: raster.width,
+            height: raster.height,
+            data: new Uint8ClampedArray(raster.data),
+          };
+        }
 
-    const length = raster.data.length;
-    const pointer = exports.alloc(length);
-    try {
-      const inputBuffer = new Uint8Array(exports.memory.buffer, pointer, length);
-      inputBuffer.set(raster.data);
-      const changed = exports.enhance_edges(
-        pointer,
-        length,
-        raster.width,
-        raster.height,
-        Math.round(normalizedStrength * 1000),
-      );
-      const outputBuffer = new Uint8Array(exports.memory.buffer, pointer, length);
-      return {
-        width: raster.width,
-        height: raster.height,
-        data: changed
-          ? new Uint8ClampedArray(outputBuffer)
-          : new Uint8ClampedArray(raster.data),
-      };
-    } finally {
-      exports.dealloc(pointer, length);
-    }
-  });
+        const length = raster.data.length;
+        const pointer = exports.alloc(length);
+        try {
+          const inputBuffer = new Uint8Array(exports.memory.buffer, pointer, length);
+          inputBuffer.set(raster.data);
+          const changed = exports.enhance_edges(
+            pointer,
+            length,
+            raster.width,
+            raster.height,
+            Math.round(normalizedStrength * 1000),
+          );
+          const outputBuffer = new Uint8Array(exports.memory.buffer, pointer, length);
+          return {
+            width: raster.width,
+            height: raster.height,
+            data: changed
+              ? new Uint8ClampedArray(outputBuffer)
+              : new Uint8ClampedArray(raster.data),
+          };
+        } finally {
+          exports.dealloc(pointer, length);
+        }
+      }),
+  );
+}
+
+export async function computeDetailSignalWithWasm(
+  raster: RasterImageLike,
+  gridWidth: number,
+  gridHeight: number,
+): Promise<WasmDetailSignal | null> {
+  if (
+    gridWidth <= 0 ||
+    gridHeight <= 0 ||
+    raster.width <= 0 ||
+    raster.height <= 0 ||
+    raster.data.length !== raster.width * raster.height * 4
+  ) {
+    return null;
+  }
+
+  return await getCachedDetectorResult(
+    detailSignalCache,
+    raster,
+    `detail:${gridWidth}:${gridHeight}`,
+    "detail",
+    () =>
+      runInDetectorQueue(async () => {
+        const exports = await loadWasmDetector();
+        if (!exports) {
+          return null;
+        }
+
+        const length = raster.data.length;
+        const pointer = exports.alloc(length);
+        try {
+          new Uint8Array(exports.memory.buffer, pointer, length).set(raster.data);
+          const ok = exports.detail_signal(
+            pointer,
+            length,
+            raster.width,
+            raster.height,
+            gridWidth,
+            gridHeight,
+          );
+          if (!ok) {
+            return null;
+          }
+
+          const resultPtr = exports.detail_result_ptr();
+          const resultLen = exports.detail_result_len();
+          if (!resultPtr || resultLen <= 1) {
+            return null;
+          }
+
+          const raw = new Int32Array(exports.memory.buffer, resultPtr, resultLen);
+          const cellCount = raw[0] ?? 0;
+          if (cellCount !== gridWidth * gridHeight) {
+            return null;
+          }
+
+          const protectedMask = new Uint8Array(cellCount);
+          const suggestedRgb = Array.from(
+            { length: cellCount },
+            () => null as [number, number, number] | null,
+          );
+          const energy = new Float32Array(cellCount);
+          const contrast = new Float32Array(cellCount);
+
+          for (let index = 0; index < cellCount; index += 1) {
+            const offset = 1 + index * 6;
+            const isProtected = (raw[offset] ?? 0) > 0;
+            const red = raw[offset + 3] ?? 0;
+            const green = raw[offset + 4] ?? 0;
+            const blue = raw[offset + 5] ?? 0;
+            protectedMask[index] = Number(isProtected);
+            energy[index] = (raw[offset + 1] ?? 0) / 1000;
+            contrast[index] = (raw[offset + 2] ?? 0) / 1000;
+            suggestedRgb[index] = isProtected ? [red, green, blue] : null;
+          }
+
+          return {
+            protectedMask,
+            suggestedRgb,
+            energy,
+            contrast,
+          };
+        } finally {
+          exports.dealloc(pointer, length);
+        }
+      }),
+  );
 }
 
 async function detectAutoCandidatesWithWasm(
@@ -206,6 +348,43 @@ async function detectAutoCandidatesWithWasm(
       exports.dealloc(pointer, length);
     }
   });
+}
+
+function getCachedDetectorResult<T>(
+  cacheRoot: WeakMap<RasterImageLike, Map<string, Promise<T>>>,
+  raster: RasterImageLike,
+  key: string,
+  kind: "fft" | "detail",
+  build: () => Promise<T>,
+) {
+  let cache = cacheRoot.get(raster);
+  if (!cache) {
+    cache = new Map<string, Promise<T>>();
+    cacheRoot.set(raster, cache);
+  }
+
+  const existing = cache.get(key);
+  if (existing) {
+    if (kind === "fft") {
+      detectorCacheStats.fftHits += 1;
+    } else {
+      detectorCacheStats.detailHits += 1;
+    }
+    return existing;
+  }
+
+  if (kind === "fft") {
+    detectorCacheStats.fftMisses += 1;
+  } else {
+    detectorCacheStats.detailMisses += 1;
+  }
+
+  const result = build().catch((error) => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, result);
+  return result;
 }
 
 async function detectWithWasm(

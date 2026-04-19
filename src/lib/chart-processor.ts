@@ -1,9 +1,11 @@
 ﻿import QRCode from "qrcode";
 import {
+  computeDetailSignalWithWasm,
   detectAutoRasterWithWasm,
   detectChartBoardWithWasm,
   enhanceEdgesWithFftWasm,
   type WasmAutoDetection,
+  type WasmDetailSignal,
 } from "./detecter";
 import { createEmbeddedChartQrDataUrl } from "./chart-qr";
 import {
@@ -23,6 +25,23 @@ import {
 import { drawBrandWordmark, measureBrandWordmarkWidth } from "./brand-wordmark";
 import { sharedColorSystemById, sharedColorSystemDefinitions } from "./color-system-data";
 import { getPindouBoardThemeShades, type PindouBoardTheme } from "./pindou-board-theme";
+import {
+  buildImageStyleProfile,
+  buildLogicalProtectionMask,
+  mergeSmallColorClusters,
+  sampleConvertedImageGrid,
+  stylizeLogicalRaster,
+} from "./image-conversion";
+import {
+  buildCellBoundaryMask,
+  buildMergeArtifactProtectionMask,
+  buildStrongArtifactProtectionMask,
+  cellToRgb as guidedCellToRgb,
+  pickDominantDarkCell,
+  projectSourceEdgeActivation,
+  projectSourceEdgeGradientActivation,
+  selectSourceGuidedBoundaryIndices,
+} from "./source-edge-guided-post";
 
 const GRID_SEPARATOR_COLOR = "#C9C4BC";
 const BOARD_FRAME_COLOR = "#111111";
@@ -55,12 +74,26 @@ const rasterCache = new WeakMap<File, Promise<RasterImage>>();
 const croppedRasterCache = new WeakMap<RasterImage, Map<string, RasterImage>>();
 const autoDetectionCache = new WeakMap<RasterImage, Promise<WasmAutoDetection | null>>();
 const logicalGridCache = new WeakMap<RasterImage, Map<string, Promise<RasterImage>>>();
+const convertedGridCache = new WeakMap<RasterImage, Map<string, Promise<ConvertedImageGridResult>>>();
 
 interface PaletteColor {
   label: string;
   hex: string;
   rgb: Rgb;
   oklab: Oklab;
+}
+
+interface SourceGuidedEdgeData {
+  edgeLogical: RasterImage;
+  deltaActivation: Float32Array;
+  gradientActivation: Float32Array;
+}
+
+interface ConvertedImageGridResult {
+  logical: RasterImage;
+  protectedMask: Uint8Array | null;
+  mergeProtectedMask: Uint8Array | null;
+  edgeGuide: SourceGuidedEdgeData | null;
 }
 
 export interface ColorSystemOption {
@@ -125,6 +158,7 @@ export interface ChartExportSettings {
 
 export interface ReduceColorsOptions {
   preserveEdges?: boolean;
+  protectedMask?: Uint8Array | null;
 }
 
 export interface ColorCount {
@@ -155,6 +189,13 @@ interface OutlineBridgeCandidate {
 interface RepresentativePixel {
   rgb: Rgb;
   alpha: number;
+}
+
+interface DetailSignalResult {
+  protectedMask: Uint8Array;
+  suggestedRgb: Array<Rgb | null>;
+  energy: Float32Array;
+  contrast: Float32Array;
 }
 
 export interface PaletteOption {
@@ -501,7 +542,7 @@ export function getPaletteOptions(colorSystemId = "mard_221", grayscaleMode = fa
 }
 
 function getDefaultRenderStyleBias(grayscaleMode: boolean) {
-  return grayscaleMode ? 0 : 100;
+  return grayscaleMode ? 0 : 75;
 }
 
 export function debugMatchLogicalRasterToPalette(
@@ -586,6 +627,24 @@ function getCachedCropRaster(
   return cropped;
 }
 
+function getCachedCropBoxRaster(source: RasterImage, cropBox: CropBox) {
+  let cache = croppedRasterCache.get(source);
+  if (!cache) {
+    cache = new Map<string, RasterImage>();
+    croppedRasterCache.set(source, cache);
+  }
+
+  const key = `box:${cropBox.join(":")}`;
+  const existing = cache.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const cropped = cropRaster(source, cropBox);
+  cache.set(key, cropped);
+  return cropped;
+}
+
 function getCachedAutoDetection(source: RasterImage) {
   let cached = autoDetectionCache.get(source);
   if (!cached) {
@@ -622,6 +681,30 @@ function getCachedLogicalGrid(
   return logical;
 }
 
+function getCachedConvertedGrid(
+  source: RasterImage,
+  key: string,
+  build: () => ConvertedImageGridResult | Promise<ConvertedImageGridResult>,
+) {
+  let cache = convertedGridCache.get(source);
+  if (!cache) {
+    cache = new Map<string, Promise<ConvertedImageGridResult>>();
+    convertedGridCache.set(source, cache);
+  }
+
+  const existing = cache.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const converted = Promise.resolve(build()).catch((error) => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, converted);
+  return converted;
+}
+
 export async function processImageFile(
   file: File,
   options: ProcessOptions,
@@ -642,8 +725,9 @@ export async function processImageFile(
     0,
     Math.min(100, options.renderStyleBias ?? getDefaultRenderStyleBias(grayscaleMode)),
   );
-  const pixelArtBias = renderStyleBias / 100;
-  const ditherStrength = 1 - pixelArtBias;
+  const imageStyleProfile = buildImageStyleProfile(renderStyleBias);
+  const legacyPixelArtBias = renderStyleBias / 100;
+  const legacyDitherStrength = 1 - legacyPixelArtBias;
   const paletteDefinition = getPaletteDefinition(options.colorSystemId);
   const matchingPaletteDefinition = getMatchingPaletteDefinition(
     paletteDefinition.id,
@@ -656,8 +740,11 @@ export async function processImageFile(
   const effectiveEdgeEnhanceStrength = projectEdgeEnhanceStrength(rawEdgeEnhanceStrength);
   const positiveEdgeEnhanceStrength = Math.max(0, effectiveEdgeEnhanceStrength);
   const negativeEdgeEnhanceStrength = Math.max(0, -effectiveEdgeEnhanceStrength);
-  const effectivePreSharpen = grayscaleMode ? false : options.preSharpen;
+  const effectivePostSharpen = grayscaleMode ? false : options.preSharpen;
   let logical: RasterImage;
+  let logicalProtectedMask: Uint8Array | null = null;
+  let logicalMergeProtectedMask: Uint8Array | null = null;
+  let sourceEdgeGuide: SourceGuidedEdgeData | null = null;
   let gridWidth: number;
   let gridHeight: number;
   let detectionMode: string;
@@ -670,17 +757,38 @@ export async function processImageFile(
       throw new Error(processMessages.nonPixelArtError);
     }
 
-    logical = await getCachedLogicalGrid(
-      source,
-      `auto:${wasmDetection.kind}:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${renderStyleBias}`,
-      () => sampleRegularGrid(
-        cropRaster(source, wasmDetection.cropBox),
-        wasmDetection.gridWidth,
-        wasmDetection.gridHeight,
-        wasmDetection.kind === "chart" ? "chart-edge" : "patch",
-        pixelArtBias,
-      ),
-    );
+    if (wasmDetection.kind === "chart") {
+      const detectedCrop = getCachedCropBoxRaster(source, wasmDetection.cropBox);
+      logical = await getCachedLogicalGrid(
+        source,
+        `auto:chart:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${renderStyleBias}`,
+        () => sampleRegularGrid(
+          detectedCrop,
+          wasmDetection.gridWidth,
+          wasmDetection.gridHeight,
+          "chart-edge",
+          legacyPixelArtBias,
+        ),
+      );
+      logicalProtectedMask = null;
+    } else {
+      const detectedCrop = getCachedCropBoxRaster(source, wasmDetection.cropBox);
+      const converted = await getCachedConvertedGrid(
+        detectedCrop,
+        `auto:pixel:v4:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${renderStyleBias}:${positiveEdgeEnhanceStrength > 0 || renderStyleBias > 75 ? 1 : 0}`,
+        () => convertCroppedImageToLogicalGrid(
+          detectedCrop,
+          wasmDetection.gridWidth,
+          wasmDetection.gridHeight,
+          renderStyleBias,
+          positiveEdgeEnhanceStrength > 0 || renderStyleBias > 75,
+        ),
+      );
+      logical = converted.logical;
+      logicalProtectedMask = converted.protectedMask;
+      logicalMergeProtectedMask = converted.mergeProtectedMask;
+      sourceEdgeGuide = converted.edgeGuide;
+    }
     gridWidth = wasmDetection.gridWidth;
     gridHeight = wasmDetection.gridHeight;
     detectionMode =
@@ -698,20 +806,22 @@ export async function processImageFile(
 
     gridWidth = options.gridWidth;
     gridHeight = options.gridHeight;
-    logical = await getCachedLogicalGrid(
-      source,
-      `manual:v7:${gridWidth}:${gridHeight}:${renderStyleBias}:${effectivePreSharpen ? 1 : 0}:${options.preSharpenStrength}:${effectiveEdgeEnhanceStrength.toFixed(4)}`,
-      () => convertImageToLogicalGrid(
-        source,
+    const centeredSource = centerCropToRatio(source, gridWidth / gridHeight);
+    const converted = await getCachedConvertedGrid(
+      centeredSource,
+      `manual:v10:${gridWidth}:${gridHeight}:${renderStyleBias}:${positiveEdgeEnhanceStrength > 0 || renderStyleBias > 75 ? 1 : 0}`,
+      () => convertCroppedImageToLogicalGrid(
+        centeredSource,
         gridWidth,
         gridHeight,
-        effectivePreSharpen,
-        options.preSharpenStrength,
-        positiveEdgeEnhanceStrength,
-        "patch",
-        pixelArtBias,
+        renderStyleBias,
+        positiveEdgeEnhanceStrength > 0 || renderStyleBias > 75,
       ),
     );
+    logical = converted.logical;
+    logicalProtectedMask = converted.protectedMask;
+    logicalMergeProtectedMask = converted.mergeProtectedMask;
+    sourceEdgeGuide = converted.edgeGuide;
     detectionMode = "converted-from-image";
   }
 
@@ -734,43 +844,66 @@ export async function processImageFile(
         ? false
         : options.reduceColors;
   const appliedEdgeEnhanceStrength =
-    detectionMode === "converted-from-image" ? effectiveEdgeEnhanceStrength : 0;
+    detectionMode === "converted-from-image" || detectionMode === "detected-wasm-pixel"
+      ? effectiveEdgeEnhanceStrength
+      : 0;
 
   const originalUniqueColors = countUniqueColors(logical.data);
   let reducedUniqueColors = originalUniqueColors;
-  if (effectiveReduceColors) {
+  const usesImagePixelPipeline =
+    detectionMode === "converted-from-image" || detectionMode === "detected-wasm-pixel";
+  if (effectiveReduceColors && !usesImagePixelPipeline) {
     const reduced = reduceColorsPhotoshopStyle(logical, options.reduceTolerance, {
-      preserveEdges: detectionMode === "converted-from-image",
+      preserveEdges: usesImagePixelPipeline,
+      protectedMask: usesImagePixelPipeline ? logicalProtectedMask : null,
     });
     logical = reduced.image;
     reducedUniqueColors = reduced.reducedUniqueColors;
   }
 
+  if (usesImagePixelPipeline && effectivePostSharpen) {
+    logical = applySharpen(logical, options.preSharpenStrength);
+  }
+
   let matched = matchPalette(logical, matchingPaletteDefinition, {
-    ditherStrength,
+    ditherStrength: usesImagePixelPipeline ? imageStyleProfile.ditherStrength : legacyDitherStrength,
   });
-  if (positiveEdgeEnhanceStrength > 0 && detectionMode === "converted-from-image") {
+  if (positiveEdgeEnhanceStrength > 0 && usesImagePixelPipeline) {
     const fftEdgeEnhanceOverrideColor =
       options.fftEdgeEnhanceOverrideLabel
         ? matchingPaletteDefinition.byLabel.get(options.fftEdgeEnhanceOverrideLabel) ?? null
         : null;
+    const overrideCell =
+      fftEdgeEnhanceOverrideColor
+        ? {
+            label: fftEdgeEnhanceOverrideColor.label,
+            hex: fftEdgeEnhanceOverrideColor.hex,
+            source: "detected" as const,
+          }
+        : null;
+    const sourceGuided =
+      sourceEdgeGuide
+        ? applySourceGuidedPostEdgeEnhance(
+            matched.cells,
+            gridWidth,
+            gridHeight,
+            positiveEdgeEnhanceStrength,
+            sourceEdgeGuide,
+            matchingPaletteDefinition,
+            overrideCell,
+          )
+        : matched.cells;
     matched = {
       cells: enhancePixelOutlineContinuity(
-        matched.cells,
+        sourceGuided,
         gridWidth,
         gridHeight,
         positiveEdgeEnhanceStrength,
-        fftEdgeEnhanceOverrideColor
-          ? {
-              label: fftEdgeEnhanceOverrideColor.label,
-              hex: fftEdgeEnhanceOverrideColor.hex,
-              source: "detected",
-            }
-          : null,
+        overrideCell,
         ),
     };
   }
-  if (negativeEdgeEnhanceStrength > 0 && detectionMode === "converted-from-image") {
+  if (negativeEdgeEnhanceStrength > 0 && usesImagePixelPipeline) {
     matched = {
       cells: easePixelOutlineThickness(
         matched.cells,
@@ -779,6 +912,30 @@ export async function processImageFile(
         negativeEdgeEnhanceStrength,
       ),
     };
+  }
+  if (usesImagePixelPipeline) {
+    const remappedStyleBias = Math.min(100, (renderStyleBias / 75) * 100);
+    const styleDrivenTolerance =
+      Math.max(0, (remappedStyleBias - 50) * 0.32) +
+      Math.max(0, renderStyleBias - 75) * 0.32;
+    const postMatchReduceTolerance = Math.max(
+      styleDrivenTolerance,
+      effectiveReduceColors ? options.reduceTolerance : 0,
+    );
+    if (postMatchReduceTolerance > 0) {
+      matched = {
+        cells: reduceMatchedPaletteColors(
+          matched.cells,
+          gridWidth,
+          gridHeight,
+          postMatchReduceTolerance,
+          {
+            protectedMask: logicalMergeProtectedMask,
+            renderStyleBias,
+          },
+        ),
+      };
+    }
   }
   const normalizedCells = collapseOpenBackgroundAreas(
     matched.cells,
@@ -1963,6 +2120,7 @@ function sampleRegularGrid(
   gridHeight: number,
   strategy: SamplingStrategy = "patch",
   pixelArtBias = 1,
+  detailSignal?: DetailSignalResult | null,
 ): RasterImage {
   const xEdges = buildEdges(image.width, gridWidth);
   const yEdges = buildEdges(image.height, gridHeight);
@@ -1984,11 +2142,29 @@ function sampleRegularGrid(
         pixelArtRepresentative,
         pixelArtBias,
       );
-      const index = (row * gridWidth + column) * 4;
-      data[index] = representative.rgb[0];
-      data[index + 1] = representative.rgb[1];
-      data[index + 2] = representative.rgb[2];
-      data[index + 3] = representative.alpha;
+      const cellIndex = row * gridWidth + column;
+      const detailColor = detailSignal?.suggestedRgb[cellIndex] ?? null;
+      const detailProtected = detailSignal?.protectedMask[cellIndex] === 1 && detailColor !== null;
+      const detailContrast = detailSignal?.contrast[cellIndex] ?? 0;
+      const detailEnergy = detailSignal?.energy[cellIndex] ?? 0;
+      const detailWeight = detailProtected
+        ? Math.max(0.72, Math.min(0.9, 0.72 + detailContrast * 1.4 + detailEnergy * 1.1))
+        : 0;
+      const finalRepresentative = detailProtected
+        ? {
+            rgb: [
+              clampToByte(representative.rgb[0] * (1 - detailWeight) + detailColor[0] * detailWeight),
+              clampToByte(representative.rgb[1] * (1 - detailWeight) + detailColor[1] * detailWeight),
+              clampToByte(representative.rgb[2] * (1 - detailWeight) + detailColor[2] * detailWeight),
+            ] as Rgb,
+            alpha: representative.alpha,
+          }
+        : representative;
+      const index = cellIndex * 4;
+      data[index] = finalRepresentative.rgb[0];
+      data[index + 1] = finalRepresentative.rgb[1];
+      data[index + 2] = finalRepresentative.rgb[2];
+      data[index + 3] = finalRepresentative.alpha;
     }
   }
 
@@ -2032,20 +2208,152 @@ async function convertImageToLogicalGrid(
   image: RasterImage,
   gridWidth: number,
   gridHeight: number,
-  preSharpenEnabled: boolean,
-  preSharpenStrength: number,
-  fftEdgeEnhanceStrength: number,
-  samplingStrategy: SamplingStrategy = "patch",
-  pixelArtBias = 1,
+  renderStyleBias: number,
+  includeEdgeGuide: boolean,
+): Promise<ConvertedImageGridResult> {
+  return await convertCroppedImageToLogicalGrid(
+    centerCropToRatio(image, gridWidth / gridHeight),
+    gridWidth,
+    gridHeight,
+    renderStyleBias,
+    includeEdgeGuide,
+  );
+}
+
+async function convertCroppedImageToLogicalGrid(
+  cropped: RasterImage,
+  gridWidth: number,
+  gridHeight: number,
+  renderStyleBias: number,
+  includeEdgeGuide: boolean,
+): Promise<ConvertedImageGridResult> {
+  const detailSignal = normalizeDetailSignal(
+    await computeDetailSignalWithWasm(cropped, gridWidth, gridHeight),
+    gridWidth,
+    gridHeight,
+  );
+  const sampled = sampleConvertedImageGrid(cropped, gridWidth, gridHeight, renderStyleBias);
+  let edgeGuide: SourceGuidedEdgeData | null = null;
+  if (includeEdgeGuide) {
+    const fftEnhanced = (await enhanceEdgesWithFftWasm(cropped, 100)) as RasterImage;
+    edgeGuide = {
+      edgeLogical: sampleConvertedImageGrid(
+        fftEnhanced,
+        gridWidth,
+        gridHeight,
+        Math.min(75, renderStyleBias),
+      ).logical,
+      deltaActivation: projectSourceEdgeActivation(cropped, fftEnhanced, gridWidth, gridHeight),
+      gradientActivation: projectSourceEdgeGradientActivation(cropped, fftEnhanced, gridWidth, gridHeight),
+    };
+  }
+  const detailAdjustedLogical = detailSignal
+    ? applyDetailSignalToLogicalRaster(sampled.logical, detailSignal)
+    : sampled.logical;
+  const styleArtifactMask = edgeGuide
+    ? buildStrongArtifactProtectionMask(
+        edgeGuide.deltaActivation,
+        edgeGuide.gradientActivation,
+        gridWidth,
+        gridHeight,
+        renderStyleBias,
+      )
+    : null;
+  const sourceProtectedMask = mergeBinaryMasks(detailSignal?.protectedMask ?? null, styleArtifactMask);
+  const mergeProtectedMask = edgeGuide
+    ? buildMergeArtifactProtectionMask(
+        edgeGuide.deltaActivation,
+        edgeGuide.gradientActivation,
+        gridWidth,
+        gridHeight,
+        renderStyleBias,
+      )
+    : null;
+  const protectedMask = buildLogicalProtectionMask(
+    detailAdjustedLogical,
+    sourceProtectedMask,
+  );
+  const logical =
+    sampled.profile.cleanupPasses > 0
+      ? stylizeLogicalRaster(detailAdjustedLogical, {
+          cleanupTolerance: sampled.profile.cleanupTolerance,
+          cleanupPasses: sampled.profile.cleanupPasses,
+          protectedMask,
+        })
+      : detailAdjustedLogical;
+  return {
+    logical,
+    protectedMask: buildLogicalProtectionMask(logical, sourceProtectedMask),
+    mergeProtectedMask,
+    edgeGuide,
+  };
+}
+
+function normalizeDetailSignal(
+  detailSignal: WasmDetailSignal | null,
+  gridWidth: number,
+  gridHeight: number,
+): DetailSignalResult | null {
+  if (!detailSignal) {
+    return null;
+  }
+
+  const cellCount = gridWidth * gridHeight;
+  if (
+    detailSignal.protectedMask.length !== cellCount ||
+    detailSignal.suggestedRgb.length !== cellCount ||
+    detailSignal.energy.length !== cellCount ||
+    detailSignal.contrast.length !== cellCount
+  ) {
+    return null;
+  }
+
+  return {
+    protectedMask: detailSignal.protectedMask,
+    suggestedRgb: detailSignal.suggestedRgb.map((rgb) => (rgb ? [rgb[0], rgb[1], rgb[2]] : null)),
+    energy: detailSignal.energy,
+    contrast: detailSignal.contrast,
+  };
+}
+
+function applyDetailSignalToLogicalRaster(
+  logical: RasterImage,
+  detailSignal: DetailSignalResult,
 ) {
-  let cropped = centerCropToRatio(image, gridWidth / gridHeight);
-  if (fftEdgeEnhanceStrength > 0) {
-    cropped = (await enhanceEdgesWithFftWasm(cropped, fftEdgeEnhanceStrength)) as RasterImage;
+  const data = new Uint8ClampedArray(logical.data);
+  const cellCount = logical.width * logical.height;
+  for (let index = 0; index < cellCount; index += 1) {
+    if (detailSignal.protectedMask[index] !== 1) {
+      continue;
+    }
+    const suggested = detailSignal.suggestedRgb[index];
+    if (!suggested) {
+      continue;
+    }
+    const offset = index * 4;
+    const current: Rgb = [
+      data[offset] ?? 255,
+      data[offset + 1] ?? 255,
+      data[offset + 2] ?? 255,
+    ];
+    const currentLuma = rgbToGray(current);
+    const suggestedLuma = rgbToGray(suggested);
+    if (suggestedLuma >= currentLuma - 10) {
+      continue;
+    }
+    const detailWeight = Math.max(
+      0.52,
+      Math.min(0.8, 0.52 + detailSignal.contrast[index] * 0.9 + detailSignal.energy[index] * 0.8),
+    );
+    data[offset] = clampToByte(current[0] * (1 - detailWeight) + suggested[0] * detailWeight);
+    data[offset + 1] = clampToByte(current[1] * (1 - detailWeight) + suggested[1] * detailWeight);
+    data[offset + 2] = clampToByte(current[2] * (1 - detailWeight) + suggested[2] * detailWeight);
   }
-  if (preSharpenEnabled) {
-    cropped = applySharpen(cropped, preSharpenStrength);
-  }
-  return sampleRegularGrid(cropped, gridWidth, gridHeight, samplingStrategy, pixelArtBias);
+  return {
+    width: logical.width,
+    height: logical.height,
+    data,
+  };
 }
 
 function centerCropToRatio(image: RasterImage, targetRatio: number) {
@@ -2057,12 +2365,12 @@ function centerCropToRatio(image: RasterImage, targetRatio: number) {
   if (currentRatio > targetRatio) {
     const newWidth = Math.round(image.height * targetRatio);
     const left = Math.floor((image.width - newWidth) / 2);
-    return cropRaster(image, [left, 0, left + newWidth, image.height]);
+    return getCachedCropBoxRaster(image, [left, 0, left + newWidth, image.height]);
   }
 
   const newHeight = Math.round(image.width / targetRatio);
   const top = Math.floor((image.height - newHeight) / 2);
-  return cropRaster(image, [0, top, image.width, top + newHeight]);
+  return getCachedCropBoxRaster(image, [0, top, image.width, top + newHeight]);
 }
 
 function findClosestPaletteColor(rgb: Rgb, paletteDefinition: PaletteDefinition) {
@@ -2190,6 +2498,769 @@ function matchPalette(
   return ditherStrength > 0.001
     ? matchPaletteWithErrorDiffusion(logical, paletteDefinition, ditherStrength)
     : matchPaletteNearest(logical, paletteDefinition);
+}
+
+interface MatchedPaletteReductionOptions {
+  protectedMask?: Uint8Array | null;
+  renderStyleBias?: number;
+}
+
+function reduceMatchedPaletteColors(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  tolerance: number,
+  options: MatchedPaletteReductionOptions = {},
+) {
+  const normalizedCells = cells.map((cell) => normalizeEditableCell(cell));
+  if (gridWidth <= 0 || gridHeight <= 0 || normalizedCells.length !== gridWidth * gridHeight) {
+    return normalizedCells;
+  }
+  if (tolerance <= 0) {
+    return normalizedCells;
+  }
+
+  const styleBias = Math.max(0, Math.min(100, options.renderStyleBias ?? 100));
+  const remappedStyleBias = Math.min(100, (styleBias / 75) * 100);
+  const extraMergeFactor = styleBias <= 75 ? 0 : (styleBias - 75) / 25;
+  const styleAggression = Math.max(0, remappedStyleBias - 50) / 50;
+  const effectiveTolerance = tolerance * (1 + styleAggression * 0.65 + extraMergeFactor * 0.35);
+  const speckleTolerance = Math.max(6, effectiveTolerance * 0.92);
+  const maxClusterSize = Math.max(
+    2,
+    Math.round(2 + effectiveTolerance * (0.24 + styleAggression * 0.12 + extraMergeFactor * 0.08)),
+  );
+  const commonClusterSizeLimit =
+    extraMergeFactor <= 0
+      ? 0
+      : Math.max(
+          2,
+          Math.round(2 + effectiveTolerance * 0.08 + extraMergeFactor * 4),
+        );
+  const rareLabelLimit = Math.max(
+    3,
+    Math.round(3 + effectiveTolerance * 0.08 + styleAggression * 4 + extraMergeFactor * 14),
+  );
+  const maxPasses = Math.max(1, Math.round(1 + effectiveTolerance / 28 + styleAggression + extraMergeFactor));
+  const strongBoundaryThreshold =
+    styleBias <= 75
+      ? Math.max(30, Math.min(64, 30 + effectiveTolerance * 0.22))
+      : Math.max(
+          52,
+          Math.min(128, 52 + effectiveTolerance * 0.34 + extraMergeFactor * 24),
+        );
+  const explicitProtectedMask =
+    options.protectedMask && options.protectedMask.length === normalizedCells.length
+      ? options.protectedMask
+      : null;
+
+  let current = normalizedCells.map((cell) => ({ ...cell }));
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const passProtectedMask = mergeBinaryMasks(
+      buildCellBoundaryMask(current, gridWidth, gridHeight, strongBoundaryThreshold),
+      styleBias > 75
+        ? mergeBinaryMasks(buildSilhouetteMask(current, gridWidth, gridHeight), explicitProtectedMask)
+        : explicitProtectedMask,
+    );
+    const speckleResult = smoothMatchedPaletteSpeckles(
+      current,
+      gridWidth,
+      gridHeight,
+      speckleTolerance,
+      passProtectedMask,
+    );
+    const clusterResult = mergeMatchedPaletteClusters(
+      speckleResult.cells,
+      gridWidth,
+      gridHeight,
+      effectiveTolerance,
+      maxClusterSize,
+      commonClusterSizeLimit,
+      rareLabelLimit,
+      passProtectedMask,
+    );
+    const globalMergeResult =
+      styleBias > 75
+        ? mergeMatchedPaletteLabelsGlobally(
+            clusterResult.cells,
+            effectiveTolerance,
+            passProtectedMask,
+            styleBias,
+          )
+        : { cells: clusterResult.cells, changed: false };
+    current = globalMergeResult.cells;
+    if (!speckleResult.changed && !clusterResult.changed && !globalMergeResult.changed) {
+      break;
+    }
+  }
+
+  return current;
+}
+
+function smoothMatchedPaletteSpeckles(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  tolerance: number,
+  protectedMask: Uint8Array | null,
+) {
+  const next = cells.map((cell) => ({ ...cell }));
+  let changed = false;
+
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    if (!cell.label || !cell.hex || protectedMask?.[index]) {
+      continue;
+    }
+
+    const cellHex = cell.hex;
+    const currentKey = getEditableCellKey(cell);
+    let sameKeySupport = 0;
+    const candidateBuckets = new Map<string, {
+      cell: EditableCell;
+      count: number;
+      directTouches: number;
+      distance: number;
+    }>();
+    const x = index % gridWidth;
+    const y = Math.floor(index / gridWidth);
+
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        if (dx === 0 && dy === 0) {
+          continue;
+        }
+        const neighborX = x + dx;
+        const neighborY = y + dy;
+        if (
+          neighborX < 0 ||
+          neighborY < 0 ||
+          neighborX >= gridWidth ||
+          neighborY >= gridHeight
+        ) {
+          continue;
+        }
+
+        const neighborIndex = neighborY * gridWidth + neighborX;
+        const neighbor = cells[neighborIndex];
+        if (!neighbor.label || !neighbor.hex) {
+          continue;
+        }
+
+        const neighborKey = getEditableCellKey(neighbor);
+        if (!neighborKey) {
+          continue;
+        }
+        if (neighborKey === currentKey) {
+          sameKeySupport += 1;
+          continue;
+        }
+        if (isOccupiedEditableCell(neighbor) !== isOccupiedEditableCell(cell)) {
+          continue;
+        }
+
+        const distance = measureHexDistance255(cellHex, neighbor.hex);
+        if (distance > tolerance) {
+          continue;
+        }
+
+        const bucket = candidateBuckets.get(neighborKey) ?? {
+          cell: neighbor,
+          count: 0,
+          directTouches: 0,
+          distance,
+        };
+        bucket.count += 1;
+        if (Math.abs(dx) + Math.abs(dy) === 1) {
+          bucket.directTouches += 1;
+        }
+        bucket.distance = Math.min(bucket.distance, distance);
+        candidateBuckets.set(neighborKey, bucket);
+      }
+    }
+
+    if (sameKeySupport >= 2) {
+      continue;
+    }
+
+    let bestCandidate:
+      | {
+          cell: EditableCell;
+          score: number;
+        }
+      | null = null;
+    for (const bucket of candidateBuckets.values()) {
+      if (bucket.count < 2 || (bucket.directTouches === 0 && bucket.count < 3)) {
+        continue;
+      }
+      const score = bucket.directTouches * 12 + bucket.count * 8 - bucket.distance;
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = {
+          cell: bucket.cell,
+          score,
+        };
+      }
+    }
+
+    if (!bestCandidate) {
+      continue;
+    }
+
+    next[index] = {
+      ...bestCandidate.cell,
+      source: "detected",
+    };
+    changed = true;
+  }
+
+  return {
+    cells: next,
+    changed,
+  };
+}
+
+function mergeMatchedPaletteClusters(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  tolerance: number,
+  maxClusterSize: number,
+  commonClusterSizeLimit: number,
+  rareLabelLimit: number,
+  protectedMask: Uint8Array | null,
+) {
+  const next = cells.map((cell) => ({ ...cell }));
+  const visited = new Uint8Array(cells.length);
+  const globalCounts = new Map<string, number>();
+  for (const cell of cells) {
+    const key = getEditableCellKey(cell);
+    if (!key) {
+      continue;
+    }
+    globalCounts.set(key, (globalCounts.get(key) ?? 0) + 1);
+  }
+
+  let changed = false;
+
+  for (let index = 0; index < cells.length; index += 1) {
+    if (visited[index]) {
+      continue;
+    }
+
+    const seed = cells[index];
+    const clusterKey = getEditableCellKey(seed);
+    if (!clusterKey) {
+      visited[index] = 1;
+      continue;
+    }
+
+    const clusterIndices: number[] = [];
+    const queue = [index];
+    visited[index] = 1;
+    let queueIndex = 0;
+    let touchesProtected = false;
+
+    while (queueIndex < queue.length) {
+      const currentIndex = queue[queueIndex]!;
+      queueIndex += 1;
+      clusterIndices.push(currentIndex);
+      if (protectedMask?.[currentIndex]) {
+        touchesProtected = true;
+      }
+
+      const x = currentIndex % gridWidth;
+      const y = Math.floor(currentIndex / gridWidth);
+      for (const [dx, dy] of [
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ] as const) {
+        const neighborX = x + dx;
+        const neighborY = y + dy;
+        if (
+          neighborX < 0 ||
+          neighborY < 0 ||
+          neighborX >= gridWidth ||
+          neighborY >= gridHeight
+        ) {
+          continue;
+        }
+        const neighborIndex = neighborY * gridWidth + neighborX;
+        if (visited[neighborIndex]) {
+          continue;
+        }
+        if (getEditableCellKey(cells[neighborIndex]) !== clusterKey) {
+          continue;
+        }
+        visited[neighborIndex] = 1;
+        queue.push(neighborIndex);
+      }
+    }
+
+    const clusterGlobalCount = globalCounts.get(clusterKey) ?? clusterIndices.length;
+    const canMergeCommonCluster =
+      commonClusterSizeLimit > 0 && clusterIndices.length <= commonClusterSizeLimit;
+    if (
+      touchesProtected ||
+      clusterIndices.length > maxClusterSize ||
+      (!canMergeCommonCluster && clusterGlobalCount > rareLabelLimit)
+    ) {
+      continue;
+    }
+
+    const seedHex = seed.hex;
+    if (!seedHex) {
+      continue;
+    }
+
+    const seedOccupied = isOccupiedEditableCell(seed);
+    const candidateBuckets = new Map<string, {
+      cell: EditableCell;
+      touchCount: number;
+      distance: number;
+      globalCount: number;
+    }>();
+    for (const clusterIndex of clusterIndices) {
+      const x = clusterIndex % gridWidth;
+      const y = Math.floor(clusterIndex / gridWidth);
+      for (const [dx, dy] of [
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ] as const) {
+        const neighborX = x + dx;
+        const neighborY = y + dy;
+        if (
+          neighborX < 0 ||
+          neighborY < 0 ||
+          neighborX >= gridWidth ||
+          neighborY >= gridHeight
+        ) {
+          continue;
+        }
+
+        const neighborIndex = neighborY * gridWidth + neighborX;
+        const neighbor = cells[neighborIndex];
+        const neighborKey = getEditableCellKey(neighbor);
+        if (!neighborKey || neighborKey === clusterKey) {
+          continue;
+        }
+        if (isOccupiedEditableCell(neighbor) !== seedOccupied) {
+          continue;
+        }
+
+        const distance = measureHexDistance255(seedHex, neighbor.hex);
+        if (distance > tolerance) {
+          continue;
+        }
+
+        const bucket = candidateBuckets.get(neighborKey) ?? {
+          cell: neighbor,
+          touchCount: 0,
+          distance,
+          globalCount: globalCounts.get(neighborKey) ?? 0,
+        };
+        bucket.touchCount += 1;
+        bucket.distance = Math.min(bucket.distance, distance);
+        candidateBuckets.set(neighborKey, bucket);
+      }
+    }
+
+    let bestCandidate:
+      | {
+          cell: EditableCell;
+          score: number;
+          globalCount: number;
+          touchCount: number;
+        }
+      | null = null;
+    for (const bucket of candidateBuckets.values()) {
+      if (bucket.touchCount <= 0) {
+        continue;
+      }
+      const score =
+        bucket.touchCount * 18 +
+        Math.min(bucket.globalCount, rareLabelLimit * 6) * 0.9 -
+        bucket.distance;
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = {
+          cell: bucket.cell,
+          score,
+          globalCount: bucket.globalCount,
+          touchCount: bucket.touchCount,
+        };
+      }
+    }
+
+    if (!bestCandidate) {
+      continue;
+    }
+    if (
+      canMergeCommonCluster &&
+      bestCandidate.globalCount <= clusterGlobalCount &&
+      bestCandidate.touchCount < Math.max(2, clusterIndices.length * 2)
+    ) {
+      continue;
+    }
+
+    for (const clusterIndex of clusterIndices) {
+      next[clusterIndex] = {
+        ...bestCandidate.cell,
+        source: "detected",
+      };
+    }
+    changed = true;
+  }
+
+  return {
+    cells: next,
+    changed,
+  };
+}
+
+function mergeMatchedPaletteLabelsGlobally(
+  cells: EditableCell[],
+  tolerance: number,
+  protectedMask: Uint8Array | null,
+  styleBias: number,
+) {
+  const next = cells.map((cell) => ({ ...cell }));
+  const styleAggression = Math.max(0, Math.min(100, styleBias) - 75) / 25;
+  const globalTolerance = Math.max(18, tolerance * (0.42 + styleAggression * 0.1));
+  const maxUnprotectedCount = Math.max(
+    8,
+    Math.round(8 + tolerance * 0.12 + styleAggression * 28),
+  );
+  const stats = new Map<string, {
+    cell: EditableCell;
+    totalCount: number;
+    protectedCount: number;
+    protectedIndices: number[];
+    unprotectedIndices: number[];
+    occupied: boolean;
+  }>();
+
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    const key = getEditableCellKey(cell);
+    if (!key) {
+      continue;
+    }
+    const entry = stats.get(key) ?? {
+      cell,
+      totalCount: 0,
+      protectedCount: 0,
+      protectedIndices: [],
+      unprotectedIndices: [],
+      occupied: isOccupiedEditableCell(cell),
+    };
+    entry.totalCount += 1;
+    if (protectedMask?.[index]) {
+      entry.protectedCount += 1;
+      entry.protectedIndices.push(index);
+    } else {
+      entry.unprotectedIndices.push(index);
+    }
+    stats.set(key, entry);
+  }
+
+  const ordered = [...stats.entries()].sort(
+    (left, right) => left[1].unprotectedIndices.length - right[1].unprotectedIndices.length,
+  );
+  let changed = false;
+
+  for (const [sourceKey, source] of ordered) {
+    const sourceUnprotectedCount = source.unprotectedIndices.length;
+    if (sourceUnprotectedCount === 0 || sourceUnprotectedCount > maxUnprotectedCount) {
+      continue;
+    }
+
+    const sourceHex = source.cell.hex;
+    if (!sourceHex) {
+      continue;
+    }
+
+    let bestCandidate:
+      | {
+          cell: EditableCell;
+          score: number;
+        }
+      | null = null;
+
+    for (const [candidateKey, candidate] of stats) {
+      if (candidateKey === sourceKey || candidate.totalCount <= source.totalCount) {
+        continue;
+      }
+      if (candidate.occupied !== source.occupied || !candidate.cell.hex) {
+        continue;
+      }
+
+      const distance = measureHexDistance255(sourceHex, candidate.cell.hex);
+      if (distance > globalTolerance) {
+        continue;
+      }
+
+      const score =
+        candidate.totalCount * 1.2 +
+        candidate.unprotectedIndices.length * 0.35 -
+        distance * 1.1;
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = {
+          cell: candidate.cell,
+          score,
+        };
+      }
+    }
+
+    if (!bestCandidate) {
+      continue;
+    }
+
+    for (const index of source.unprotectedIndices) {
+      next[index] = {
+        ...bestCandidate.cell,
+        source: "detected",
+      };
+    }
+    changed = true;
+  }
+
+  const maxProtectedCount = Math.max(
+    10,
+    Math.round(10 + tolerance * 0.08 + styleAggression * 18),
+  );
+  const protectedTolerance = Math.max(16, tolerance * (0.28 + styleAggression * 0.08));
+  const protectedOrdered = [...stats.entries()].sort(
+    (left, right) => left[1].protectedIndices.length - right[1].protectedIndices.length,
+  );
+
+  for (const [sourceKey, source] of protectedOrdered) {
+    const sourceProtectedCount = source.protectedIndices.length;
+    if (sourceProtectedCount === 0 || sourceProtectedCount > maxProtectedCount || !source.cell.hex) {
+      continue;
+    }
+
+    let bestCandidate:
+      | {
+          cell: EditableCell;
+          score: number;
+        }
+      | null = null;
+    const sourceLuma = rgbToGray(hexToRgb(source.cell.hex));
+
+    for (const [candidateKey, candidate] of stats) {
+      if (
+        candidateKey === sourceKey ||
+        candidate.protectedIndices.length === 0 ||
+        candidate.occupied !== source.occupied ||
+        !candidate.cell.hex
+      ) {
+        continue;
+      }
+
+      const distance = measureHexDistance255(source.cell.hex, candidate.cell.hex);
+      if (distance > protectedTolerance) {
+        continue;
+      }
+
+      const candidateLuma = rgbToGray(hexToRgb(candidate.cell.hex));
+      if (candidate.protectedIndices.length < source.protectedIndices.length) {
+        continue;
+      }
+      if (
+        candidate.protectedIndices.length === source.protectedIndices.length &&
+        candidateLuma >= sourceLuma - 1
+      ) {
+        continue;
+      }
+      const score =
+        candidate.protectedIndices.length * 1.4 +
+        candidate.totalCount * 0.35 +
+        Math.max(0, sourceLuma - candidateLuma) * 0.25 -
+        distance * 1.1;
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = {
+          cell: candidate.cell,
+          score,
+        };
+      }
+    }
+
+    if (!bestCandidate) {
+      continue;
+    }
+
+    for (const index of source.protectedIndices) {
+      next[index] = {
+        ...bestCandidate.cell,
+        source: "detected",
+      };
+    }
+    changed = true;
+  }
+
+  return {
+    cells: next,
+    changed,
+  };
+}
+
+function getEditableCellKey(cell: EditableCell) {
+  return cell.label && cell.hex ? `${cell.label}:${cell.hex.toUpperCase()}` : null;
+}
+
+function isOccupiedEditableCell(cell: EditableCell) {
+  return rgbToGray(guidedCellToRgb(cell)) < 242;
+}
+
+function mergeBinaryMasks(left: Uint8Array | null, right: Uint8Array | null) {
+  if (!left && !right) {
+    return null;
+  }
+
+  const length = left?.length ?? right?.length ?? 0;
+  const merged = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) {
+    merged[index] = (left?.[index] ?? 0) || (right?.[index] ?? 0) ? 1 : 0;
+  }
+  return merged;
+}
+
+function applySourceGuidedPostEdgeEnhance(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+  strength: number,
+  edgeGuide: SourceGuidedEdgeData,
+  paletteDefinition: PaletteDefinition,
+  overrideCell: EditableCell | null,
+): EditableCell[] {
+  const edgeMatched = collapseOpenBackgroundAreas(
+    matchPalette(edgeGuide.edgeLogical, paletteDefinition, {
+      ditherStrength: 0,
+    }).cells,
+    gridWidth,
+    gridHeight,
+  );
+  const silhouetteMask = unionBinaryMasks(
+    buildSilhouetteMask(cells, gridWidth, gridHeight),
+    buildSilhouetteMask(edgeMatched, gridWidth, gridHeight),
+  );
+  const strengthNorm = Math.max(0, Math.min(100, strength)) / 100;
+  const fallbackDarkCell =
+    overrideCell ??
+    pickDominantDarkCell(
+      edgeMatched,
+      collectMaskIndices(silhouetteMask),
+      Math.max(72, 148 - strengthNorm * 24),
+    );
+  const minDarken = fallbackDarkCell ? 6 + strengthNorm * 10 : 10 + strengthNorm * 18;
+  const maxCandidateLuma = fallbackDarkCell
+    ? Math.max(84, 176 - strengthNorm * 28)
+    : Math.max(42, 124 - strengthNorm * 52);
+  const selectedIndices = selectSourceGuidedBoundaryIndices(
+    cells,
+    edgeMatched,
+    edgeGuide.deltaActivation,
+    edgeGuide.gradientActivation,
+    gridWidth,
+    gridHeight,
+    {
+      strength,
+      boundaryMask: silhouetteMask,
+      minDarken,
+      maxCandidateLuma,
+    },
+  );
+  if (selectedIndices.length === 0) {
+    return cells;
+  }
+  return fallbackDarkCell
+    ? applyOverrideCell(cells, selectedIndices, fallbackDarkCell)
+    : applySelectedEdgeCells(cells, edgeMatched, selectedIndices);
+}
+
+function buildSilhouetteMask(cells: EditableCell[], gridWidth: number, gridHeight: number) {
+  const mask = new Uint8Array(cells.length);
+  for (let index = 0; index < cells.length; index += 1) {
+    const rgb = guidedCellToRgb(cells[index]!);
+    if (!isOccupyingCell(rgb)) {
+      continue;
+    }
+    const row = Math.floor(index / gridWidth);
+    const column = index % gridWidth;
+    for (const [rowOffset, columnOffset] of [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ] as const) {
+      const nextRow = row + rowOffset;
+      const nextColumn = column + columnOffset;
+      if (nextRow < 0 || nextRow >= gridHeight || nextColumn < 0 || nextColumn >= gridWidth) {
+        mask[index] = 1;
+        break;
+      }
+      if (!isOccupyingCell(guidedCellToRgb(cells[nextRow * gridWidth + nextColumn]!))) {
+        mask[index] = 1;
+        break;
+      }
+    }
+  }
+  return mask;
+}
+
+function isOccupyingCell(rgb: Rgb) {
+  return rgbToGray(rgb) < 242;
+}
+
+function unionBinaryMasks(left: Uint8Array, right: Uint8Array) {
+  const length = Math.min(left.length, right.length);
+  const merged = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) {
+    merged[index] = left[index] || right[index] ? 1 : 0;
+  }
+  return merged;
+}
+
+function collectMaskIndices(mask: Uint8Array) {
+  const indices: number[] = [];
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask[index]) {
+      indices.push(index);
+    }
+  }
+  return indices;
+}
+
+function applyOverrideCell(baseCells: EditableCell[], selectedIndices: number[], overrideCell: EditableCell) {
+  const selected = new Set(selectedIndices);
+  return baseCells.map((cell, index) =>
+    selected.has(index)
+      ? {
+          ...overrideCell,
+          source: "detected" as const,
+        }
+      : { ...cell },
+  );
+}
+
+function applySelectedEdgeCells(
+  baseCells: EditableCell[],
+  edgeCells: EditableCell[],
+  selectedIndices: number[],
+): EditableCell[] {
+  const selected = new Set(selectedIndices);
+  return baseCells.map((cell, index) =>
+    selected.has(index)
+      ? {
+          ...edgeCells[index],
+          source: "detected" as const,
+        }
+      : { ...cell },
+  );
 }
 
 export function enhancePixelOutlineContinuity(
@@ -2862,6 +3933,10 @@ export function reduceColorsPhotoshopStyle(
   const pixelCount = image.width * image.height;
   const inverse = new Int32Array(pixelCount);
   const preserveEdges = options.preserveEdges ?? false;
+  const protectedMask =
+    options.protectedMask && options.protectedMask.length === pixelCount
+      ? options.protectedMask
+      : null;
 
   for (let index = 0; index < pixelCount; index += 1) {
     const pixelIndex = index * 4;
@@ -2894,6 +3969,7 @@ export function reduceColorsPhotoshopStyle(
   }
 
   const rareColorLimit = getRareColorPixelLimit(pixelCount);
+  const useContentAwareMerge = preserveEdges || Boolean(protectedMask);
   const oklabByColor = uniqueColors.map((color) => rgbToOklab(color));
   const replacementByColor = new Int32Array(originalUniqueColors);
   const similarNeighborThreshold = Math.max(4, tolerance * 0.65);
@@ -2901,88 +3977,108 @@ export function reduceColorsPhotoshopStyle(
     replacementByColor[index] = index;
   }
 
-  for (let colorIndex = 0; colorIndex < originalUniqueColors; colorIndex += 1) {
-    const currentCount = counts[colorIndex] ?? 0;
-    if (currentCount <= 0 || currentCount > rareColorLimit) {
-      continue;
+  let globallyReducedImage = image;
+  if (!useContentAwareMerge) {
+    for (let colorIndex = 0; colorIndex < originalUniqueColors; colorIndex += 1) {
+      const currentCount = counts[colorIndex] ?? 0;
+      if (currentCount <= 0 || currentCount > rareColorLimit) {
+        continue;
+      }
+
+      let bestReplacement = colorIndex;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      let bestCount = -1;
+      for (let candidateIndex = 0; candidateIndex < originalUniqueColors; candidateIndex += 1) {
+        if (candidateIndex === colorIndex) {
+          continue;
+        }
+
+        const candidateCount = counts[candidateIndex] ?? 0;
+        if (candidateCount <= rareColorLimit) {
+          continue;
+        }
+
+        const distance =
+          Math.sqrt(oklabDistanceSquared(oklabByColor[colorIndex], oklabByColor[candidateIndex])) *
+          255;
+        if (distance > tolerance) {
+          continue;
+        }
+
+        if (
+          distance < bestDistance ||
+          (distance === bestDistance && candidateCount > bestCount)
+        ) {
+          bestReplacement = candidateIndex;
+          bestDistance = distance;
+          bestCount = candidateCount;
+        }
+      }
+
+      replacementByColor[colorIndex] = bestReplacement;
     }
 
-    let bestReplacement = colorIndex;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    let bestCount = -1;
-    for (let candidateIndex = 0; candidateIndex < originalUniqueColors; candidateIndex += 1) {
-      if (candidateIndex === colorIndex) {
+    const data = new Uint8ClampedArray(image.data.length);
+    for (let index = 0; index < pixelCount; index += 1) {
+      const pixelIndex = index * 4;
+      const colorIndex = inverse[index];
+      if (colorIndex < 0) {
+        data[pixelIndex] = image.data[pixelIndex];
+        data[pixelIndex + 1] = image.data[pixelIndex + 1];
+        data[pixelIndex + 2] = image.data[pixelIndex + 2];
+        data[pixelIndex + 3] = image.data[pixelIndex + 3];
         continue;
       }
-
-      const candidateCount = counts[candidateIndex] ?? 0;
-      if (candidateCount <= rareColorLimit) {
+      if (protectedMask?.[index]) {
+        data[pixelIndex] = image.data[pixelIndex];
+        data[pixelIndex + 1] = image.data[pixelIndex + 1];
+        data[pixelIndex + 2] = image.data[pixelIndex + 2];
+        data[pixelIndex + 3] = image.data[pixelIndex + 3];
         continue;
       }
-
-      const distance =
-        Math.sqrt(oklabDistanceSquared(oklabByColor[colorIndex], oklabByColor[candidateIndex])) *
-        255;
-      if (distance > tolerance) {
-        continue;
-      }
-
-      if (
-        distance < bestDistance ||
-        (distance === bestDistance && candidateCount > bestCount)
-      ) {
-        bestReplacement = candidateIndex;
-        bestDistance = distance;
-        bestCount = candidateCount;
-      }
-    }
-
-    replacementByColor[colorIndex] = bestReplacement;
-  }
-
-  const data = new Uint8ClampedArray(image.data.length);
-  for (let index = 0; index < pixelCount; index += 1) {
-    const pixelIndex = index * 4;
-    const colorIndex = inverse[index];
-    if (colorIndex < 0) {
-      data[pixelIndex] = image.data[pixelIndex];
-      data[pixelIndex + 1] = image.data[pixelIndex + 1];
-      data[pixelIndex + 2] = image.data[pixelIndex + 2];
+      const replacementIndex =
+        preserveEdges &&
+        replacementByColor[colorIndex] !== colorIndex &&
+        hasSupportingSimilarNeighbor(
+          inverse,
+          image.width,
+          image.height,
+          index,
+          oklabByColor[colorIndex],
+          (candidateIndex) => oklabByColor[candidateIndex]!,
+          similarNeighborThreshold,
+          (candidateIndex) => (counts[candidateIndex] ?? 0) <= rareColorLimit,
+        )
+          ? colorIndex
+          : replacementByColor[colorIndex];
+      const replacement = uniqueColors[replacementIndex];
+      data[pixelIndex] = replacement[0];
+      data[pixelIndex + 1] = replacement[1];
+      data[pixelIndex + 2] = replacement[2];
       data[pixelIndex + 3] = image.data[pixelIndex + 3];
-      continue;
     }
-    const replacementIndex =
-      preserveEdges &&
-      replacementByColor[colorIndex] !== colorIndex &&
-      hasSupportingSimilarNeighbor(
-        inverse,
-        image.width,
-        image.height,
-        index,
-        oklabByColor[colorIndex],
-        (candidateIndex) => oklabByColor[candidateIndex]!,
-        similarNeighborThreshold,
-        (candidateIndex) => (counts[candidateIndex] ?? 0) <= rareColorLimit,
-      )
-        ? colorIndex
-        : replacementByColor[colorIndex];
-    const replacement = uniqueColors[replacementIndex];
-    data[pixelIndex] = replacement[0];
-    data[pixelIndex + 1] = replacement[1];
-    data[pixelIndex + 2] = replacement[2];
-    data[pixelIndex + 3] = image.data[pixelIndex + 3];
+
+    globallyReducedImage = {
+      width: image.width,
+      height: image.height,
+      data,
+    };
   }
 
-  const globallyReducedImage = {
-    width: image.width,
-    height: image.height,
-    data,
-  };
+  const clusteredReducedImage =
+    useContentAwareMerge
+      ? mergeSmallColorClusters(globallyReducedImage, {
+          tolerance: Math.max(6, tolerance * 0.9),
+          protectedMask,
+          maxClusterSize: Math.max(4, rareColorLimit * 3, Math.round(tolerance * 0.35)),
+          preserveSmallSimilarNeighbors: preserveEdges,
+        })
+      : globallyReducedImage;
   const neighborhoodReducedImage = mergeRareNeighborhoodColors(
-    globallyReducedImage,
+    clusteredReducedImage,
     tolerance,
     rareColorLimit,
-    options,
+    { ...options, protectedMask },
   );
 
   return {
@@ -3034,11 +4130,18 @@ function mergeRareNeighborhoodColors(
   const nextData = new Uint8ClampedArray(image.data);
   let changed = false;
   const preserveEdges = options.preserveEdges ?? false;
+  const protectedMask =
+    options.protectedMask && options.protectedMask.length === pixelCount
+      ? options.protectedMask
+      : null;
   const similarNeighborThreshold = Math.max(4, tolerance * 0.65);
 
   for (let index = 0; index < pixelCount; index += 1) {
     const currentCode = codes[index];
     if (currentCode < 0) {
+      continue;
+    }
+    if (protectedMask?.[index]) {
       continue;
     }
     const currentCount = counts.get(currentCode) ?? 0;

@@ -18,6 +18,18 @@ const EDGE_COLOR_POPUP_VIEWPORT_MARGIN = 12;
 const EDGE_COLOR_POPUP_GAP = 8;
 const EDGE_COLOR_POPUP_ESTIMATED_HEIGHT = 336;
 
+export function shouldCloseEdgeColorPickerPopup(
+  target: Node | null,
+  anchor: Pick<Element, "contains"> | null,
+  popup: Pick<Element, "contains"> | null,
+) {
+  if (!target) {
+    return true;
+  }
+
+  return !anchor?.contains(target) && !popup?.contains(target);
+}
+
 export function SidebarPanel({
   t,
   file,
@@ -171,7 +183,13 @@ export function SidebarPanel({
     }
 
     function handlePointerDown(event: PointerEvent) {
-      if (!edgeColorPickerRef.current?.contains(event.target as Node)) {
+      if (
+        shouldCloseEdgeColorPickerPopup(
+          event.target as Node | null,
+          edgeColorPickerRef.current,
+          edgeColorPopupRef.current,
+        )
+      ) {
         setEdgeColorPickerOpen(false);
       }
     }

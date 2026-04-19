@@ -35,6 +35,7 @@ import {
   readFileAsDataUrl,
   replaceBrushArea,
   replaceLabelAcrossCells,
+  resolveMatchedColorsBase,
   summarizeMatchedColors,
   waitForNextPaint,
   type CanvasCropRect,
@@ -90,7 +91,7 @@ const CHART_SHARE_QR_CARD_FILL = "#FFFFFF";
 const GRAYSCALE_BASE_COLOR_SYSTEM_ID = "mard_221";
 const DEFAULT_CONTRAST = 0;
 const DEFAULT_GRAYSCALE_CONTRAST = 100;
-const DEFAULT_RENDER_STYLE_BIAS = 100;
+const DEFAULT_RENDER_STYLE_BIAS = 75;
 const DEFAULT_GRAYSCALE_RENDER_STYLE_BIAS = 0;
 const DEFAULT_GRAYSCALE_DISABLED_LABELS = ["H1", "H6", "H22", "H10"] as const;
 const DEFAULT_GRAYSCALE_DISABLED_HEXES = new Set(
@@ -795,9 +796,16 @@ export default function App() {
       ),
     [editorBaseCells, disabledResultLabels, paletteOptions],
   );
+  const preferProcessedMatchedColors = editorDraftCells === null && editorHistoryIndex <= 0;
   const baseMatchedColors = useMemo(
-    () => summarizeMatchedColors(editorBaseCells, paletteOptions),
-    [editorBaseCells, paletteOptions],
+    () =>
+      resolveMatchedColorsBase(
+        result?.colors,
+        editorBaseCells,
+        paletteOptions,
+        preferProcessedMatchedColors,
+      ),
+    [editorBaseCells, paletteOptions, preferProcessedMatchedColors, result?.colors],
   );
   const renderedMatchedColors = useMemo(
     () => summarizeMatchedColors(renderedEditorCells, paletteOptions),

@@ -3,6 +3,7 @@ import {
   createCanvasCropRectFromCellIndices,
   cropEditableCells,
   isFullCanvasCropRect,
+  resolveMatchedColorsBase,
 } from "../src/lib/editor-utils";
 import type { EditableCell } from "../src/lib/chart-processor";
 
@@ -35,4 +36,25 @@ test("cropEditableCells returns the cropped canvas cells with updated dimensions
   expect(cropped.gridHeight).toBe(2);
   expect(cropped.cells.map((cell) => cell.label)).toEqual(["C5", "C6", "C9", "C10"]);
   expect(isFullCanvasCropRect({ left: 0, top: 0, width: 4, height: 3 }, 4, 3)).toBe(true);
+});
+
+test("resolveMatchedColorsBase should prefer processed result colors when no local edits are active", () => {
+  const processed = [
+    { label: "H6", count: 12, hex: "#2F2B2F" },
+    { label: "C28", count: 8, hex: "#A9E5E5" },
+  ];
+  const cells = [
+    { label: "H6", hex: "#2F2B2F", source: "detected" },
+    { label: "H6", hex: "#2F2B2F", source: "detected" },
+    { label: "C28", hex: "#A9E5E5", source: "detected" },
+    { label: "M3", hex: "#C5B2BC", source: "detected" },
+  ] satisfies EditableCell[];
+
+  const matched = resolveMatchedColorsBase(processed, cells, [
+    { label: "H6", hex: "#2F2B2F" },
+    { label: "C28", hex: "#A9E5E5" },
+    { label: "M3", hex: "#C5B2BC" },
+  ], true);
+
+  expect(matched).toEqual(processed);
 });

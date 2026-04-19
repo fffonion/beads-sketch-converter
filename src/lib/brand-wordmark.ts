@@ -1,7 +1,5 @@
-import brandWordmarkPng from "../assets/brand-wordmark.png";
-
 export const BRAND_WORDMARK_TEXT = "\u62FC\u8C46\u8C46";
-export const BRAND_WORDMARK_PNG_URL = brandWordmarkPng;
+export const BRAND_WORDMARK_PNG_URL = new URL("../assets/brand-wordmark.png", import.meta.url).href;
 
 const VIEWBOX_WIDTH = 345;
 const VIEWBOX_HEIGHT = 157;

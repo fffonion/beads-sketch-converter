@@ -1,5 +1,7 @@
 ﻿import { measureHexDistance255, type EditableCell, type NormalizedCropRect } from "./chart-processor";
 
+import type { ColorCount } from "./chart-processor";
+
 export type GridAxis = "width" | "height";
 export type EditTool = "paint" | "erase" | "pick" | "fill" | "pan" | "zoom" | "crop";
 
@@ -449,6 +451,19 @@ export function summarizeMatchedColors(
       hex: paletteOptions.find((entry) => entry.label === label)?.hex ?? "#000000",
     }))
     .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+}
+
+export function resolveMatchedColorsBase(
+  processedColors: ColorCount[] | null | undefined,
+  cells: EditableCell[],
+  paletteOptions: Array<{ label: string; hex: string }>,
+  preferProcessedColors: boolean,
+) {
+  if (preferProcessedColors && processedColors?.length) {
+    return processedColors.map((entry) => ({ ...entry }));
+  }
+
+  return summarizeMatchedColors(cells, paletteOptions);
 }
 
 export function mergeDisplayMatchedColors(
