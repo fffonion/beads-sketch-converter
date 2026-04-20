@@ -59,6 +59,15 @@ test("buildPwaWorkboxConfig should include wasm and keep navigation fallback in 
   expect(buildPwaWorkboxConfig("/pdd/").navigateFallbackAllowlist[0]?.test("/pdd/index.html")).toBe(
     true,
   );
+  expect(buildPwaWorkboxConfig("/pdd/").navigateFallbackAllowlist[0]?.test("/pdd/?c=demo")).toBe(
+    true,
+  );
+  expect(
+    buildPwaWorkboxConfig("/pdd/").navigateFallbackAllowlist[0]?.test("/pdd/index.html?c=demo"),
+  ).toBe(true);
+  expect(buildPwaWorkboxConfig("/pdd/").navigateFallbackAllowlist[0]?.test("/pdd/assets/app.js")).toBe(
+    false,
+  );
 });
 
 test("vite config should expose a manifest-backed PWA build for subpath deploys", async () => {

@@ -68,11 +68,12 @@ export function buildPwaManifest(basePath: string): PwaManifestDefinition {
 export function buildPwaWorkboxConfig(basePath: string): PwaWorkboxDefinition {
   const scope = resolvePwaScope(basePath);
   const escapedScope = scope.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const scopedNavigationPattern = `^${escapedScope}(?:index\\.html)?(?:\\?.*)?$`;
 
   return {
     globPatterns: ["**/*.{js,css,html,ico,png,svg,wasm}"],
     navigateFallback: `${scope}index.html`,
-    navigateFallbackAllowlist: [new RegExp(`^${escapedScope}(?:index\\.html)?$`)],
+    navigateFallbackAllowlist: [new RegExp(scopedNavigationPattern)],
     cleanupOutdatedCaches: true,
     clientsClaim: true,
   };
