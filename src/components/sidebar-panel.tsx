@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Messages } from "../lib/i18n";
 import { getMobileCardSpacingTokens } from "../lib/mobile-card-spacing";
+import { useLandscapeViewport } from "../lib/use-landscape-viewport";
 import type { NormalizedCropRect } from "../lib/chart-processor";
 import { getThemeClasses } from "../lib/theme";
 import { CollapsibleSection, NumberSliderField, SliderRow, SwitchRow } from "./controls";
@@ -156,13 +157,9 @@ export function SidebarPanel({
 }) {
   const theme = getThemeClasses(isDark);
   const mobileApp = variant === "mobile-app";
+  const panelVariant = mobileApp ? "mobile-app" : "default";
   const mobileCardSpacing = getMobileCardSpacingTokens();
-  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    return window.innerWidth > window.innerHeight;
-  });
+  const isLandscapeViewport = useLandscapeViewport({ enabled: mobileApp });
   const edgeColorInlinePanelRef = useRef<HTMLDivElement | null>(null);
   const [collapsedSections, setCollapsedSections] = useState(() => {
     return {
@@ -464,22 +461,6 @@ export function SidebarPanel({
     };
   }, [edgeColorPickerOpen]);
 
-  useEffect(() => {
-    if (!mobileApp || typeof window === "undefined") {
-      return;
-    }
-
-    function syncLandscapeViewport() {
-      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
-    }
-
-    syncLandscapeViewport();
-    window.addEventListener("resize", syncLandscapeViewport);
-    return () => {
-      window.removeEventListener("resize", syncLandscapeViewport);
-    };
-  }, [mobileApp]);
-
   return (
     <section
       className={clsx(
@@ -515,7 +496,7 @@ export function SidebarPanel({
             onFocusViewOpenChange={onSourceFocusViewOpenChange}
             collapsed={collapsedSections.source}
             onToggleCollapsed={() => toggleSection("source")}
-            variant={mobileApp ? "mobile-app" : "default"}
+            variant={panelVariant}
           />
         </div>
 
@@ -525,7 +506,7 @@ export function SidebarPanel({
             collapsed={collapsedSections.grid}
             onToggle={() => toggleSection("grid")}
             isDark={isDark}
-            variant={mobileApp ? "mobile-app" : "default"}
+            variant={panelVariant}
           >
             <Tabs.Root value={gridMode} onValueChange={(value) => onGridModeChange(value as GridMode)}>
               <Tabs.List className={clsx("grid grid-cols-2 rounded-lg p-1", theme.segmented)}>

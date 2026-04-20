@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   getMobileWorkspaceProcessingSyncKey,
   getMobileWorkspaceBusyOverlayLayout,
+  getMobileWorkspaceContentRegionStyle,
   getMobileWorkspaceTabAccent,
   getMobileWorkspaceTabLabelStyle,
   shouldUseMobileFocusPindouLayout,
@@ -42,4 +43,12 @@ test("mobile workspace processing sync key should depend on processing state, no
       editingLocked: false,
     }),
   ).toBe("same-image::pindou::0");
+});
+
+test("mobile workspace content region should reserve bottom nav space with padding instead of percentage height math", () => {
+  expect(
+    getMobileWorkspaceContentRegionStyle("calc(env(safe-area-inset-bottom) + 4.25rem)"),
+  ).toEqual({
+    paddingBottom: "calc(env(safe-area-inset-bottom) + 4.25rem)",
+  });
 });

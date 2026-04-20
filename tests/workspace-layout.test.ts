@@ -4,6 +4,7 @@ import {
   getMobileHeaderChromeLayout,
   getMobileHeaderChromeMetrics,
   getMobileLandingLayout,
+  getMobileWorkspaceHostLayout,
   getMobileWorkspacePageForEditorMode,
   getMobileWorkspaceViewportHeightPx,
   isMobileLikeEnvironment,
@@ -129,6 +130,14 @@ test("mobile workspace viewport height should come from the measured viewport in
   expect(getMobileWorkspaceViewportHeightPx(390)).toBe(310);
   expect(getMobileWorkspaceViewportHeightPx(844)).toBe(764);
   expect(getMobileWorkspaceViewportHeightPx(0)).toBe(0);
+});
+
+test("mobile workspace host layout should establish a definite flex height chain for WebKit", () => {
+  expect(getMobileWorkspaceHostLayout()).toEqual({
+    mainClassName: "flex min-h-screen flex-col overflow-hidden",
+    wrapperClassName:
+      "mx-auto flex min-h-0 min-w-0 w-full flex-1 max-w-[1760px] flex-col px-2 pb-5 pt-3 lg:px-6 lg:pt-4",
+  });
 });
 
 test("mobile landscape landing should switch to a compact split layout", () => {

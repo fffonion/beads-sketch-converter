@@ -59,6 +59,14 @@ export function getMobileWorkspaceViewportHeightPx(
   return Math.max(0, Math.round(viewportHeight - reservedChromePx));
 }
 
+export function getMobileWorkspaceHostLayout() {
+  return {
+    mainClassName: "flex min-h-screen flex-col overflow-hidden",
+    wrapperClassName:
+      "mx-auto flex min-h-0 min-w-0 w-full flex-1 max-w-[1760px] flex-col px-2 pb-5 pt-3 lg:px-6 lg:pt-4",
+  };
+}
+
 export function getMobileLandingLayout({
   useMobileWorkspace,
   isLandscapeViewport,

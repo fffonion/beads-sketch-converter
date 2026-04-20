@@ -25,7 +25,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { CanvasStage, clampEditorZoom, clampPindouZoom } from "./canvas-stage";
 import { ChartSettingsTab } from "./chart-settings-tab";
 import { SwitchRow } from "./controls";
@@ -51,6 +51,7 @@ import { type EditableCell, type NormalizedCropRect } from "../lib/chart-process
 import { isFullCanvasCropRect, type CanvasCropRect, type EditTool } from "../lib/editor-utils";
 import { type PindouBeadShape, type PindouBoardTheme } from "../lib/pindou-board-theme";
 import { getThemeClasses } from "../lib/theme";
+import { useLandscapeViewport } from "../lib/use-landscape-viewport";
 
 export type EditorPanelMode = "edit" | "pindou" | "chart";
 const EMPTY_SELECTION_LABEL = "__EMPTY__";
@@ -709,33 +710,12 @@ export function EditModeWorkspace({
   const theme = getThemeClasses(isDark);
   const editSectionRef = useRef<HTMLElement | null>(null);
   const editStageSurfaceRef = useRef<HTMLDivElement | null>(null);
-  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return window.innerWidth > window.innerHeight;
+  const isLandscapeViewport = useLandscapeViewport({
+    enabled: mobileApp,
+    includeOrientationChange: true,
   });
   const [sideMountedEditToolRailHeight, setSideMountedEditToolRailHeight] = useState(0);
   const [mobileVisiblePanelHeight, setMobileVisiblePanelHeight] = useState(0);
-
-  useEffect(() => {
-    if (!mobileApp) {
-      return;
-    }
-
-    function syncLandscapeViewport() {
-      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
-    }
-
-    syncLandscapeViewport();
-    window.addEventListener("resize", syncLandscapeViewport);
-    window.addEventListener("orientationchange", syncLandscapeViewport);
-    return () => {
-      window.removeEventListener("resize", syncLandscapeViewport);
-      window.removeEventListener("orientationchange", syncLandscapeViewport);
-    };
-  }, [mobileApp]);
 
   useEffect(() => {
     if (!mobileApp) {
@@ -1212,12 +1192,7 @@ export function PindouModePanel({
     square: t.pindouBeadShapeSquare ?? "方块",
     circle: t.pindouBeadShapeCircle ?? "圆圈",
   };
-  const [isLandscapeViewport, setIsLandscapeViewport] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    return window.innerWidth > window.innerHeight;
-  });
+  const isLandscapeViewport = useLandscapeViewport({ enabled: focusOnly });
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   const [focusToolbarMenuOpen, setFocusToolbarMenuOpen] = useState(false);
   const [currentClock, setCurrentClock] = useState(() => formatClockTime());
@@ -1244,15 +1219,14 @@ export function PindouModePanel({
       return;
     }
 
-    function syncLandscapeViewport() {
+    function syncViewportWidth() {
       setViewportWidth(window.innerWidth);
-      setIsLandscapeViewport(window.innerWidth > window.innerHeight);
     }
 
-    syncLandscapeViewport();
-    window.addEventListener("resize", syncLandscapeViewport);
+    syncViewportWidth();
+    window.addEventListener("resize", syncViewportWidth);
     return () => {
-      window.removeEventListener("resize", syncLandscapeViewport);
+      window.removeEventListener("resize", syncViewportWidth);
     };
   }, [focusOnly]);
 
@@ -1486,6 +1460,32 @@ export function PindouModePanel({
       window.removeEventListener("orientationchange", syncMobileVisiblePanelHeight);
     };
   }, [focusOnly, mobileApp]);
+  const pindouCanvasStageProps = {
+    cells,
+    gridWidth,
+    gridHeight,
+    emptyPixelLabel: t.emptyPixel,
+    inputUrl: null,
+    overlayCropRect: null,
+    overlayEnabled: false,
+    isDark,
+    stageMode: "pindou" as const,
+    focusedLabel: focusedSketchLabel,
+    onFocusLabelChange: onFocusedSketchLabelChange,
+    paintActiveRef,
+    focusOnly,
+    flipHorizontal: pindouFlipHorizontal,
+    showPindouLabels: pindouShowLabels,
+    pindouBeadShape,
+    pindouBoardTheme,
+    pindouZoom,
+    onPindouZoomChange,
+    busy: stageBusy,
+    embeddedInPanel: !focusOnly,
+    preferContentFit,
+    footerNote: processingElapsedNote,
+    onPindouStageTap: useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined,
+  };
   const pindouStageArea = (
     <div
       className={getPindouStageAreaClassName({
@@ -1566,36 +1566,18 @@ export function PindouModePanel({
                   {focusToolbarMenuOpen ? (
                     <div className={clsx("absolute right-0 top-full -mt-px flex w-full min-w-0 flex-col gap-1.5 rounded-b-md rounded-t-none border border-t-0 p-1.5 shadow-sm backdrop-blur", theme.panel, isDark ? "border-white/14" : "border-stone-300")}>
                       <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-1.5">
-                        <div className={clsx("flex h-9 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
-                          <button
-                            className="flex h-7 min-w-0 flex-1 items-center justify-center"
-                            onClick={onPindouTimerToggle}
-                            title={pindouTimerRunning ? timerPauseLabel : timerStartLabel}
-                            type="button"
-                          >
-                            <BlinkingTimerText
-                              className={clsx("min-w-[52px] px-1.5 text-center text-xs font-semibold leading-none", theme.cardTitle)}
-                              value={timerDisplay}
-                              colonVisible={timerColonVisible}
-                            />
-                          </button>
-                          <button
-                            className={clsx("flex h-7 w-7 items-center justify-center rounded-md transition", theme.pill)}
-                            onClick={onPindouTimerToggle}
-                            title={pindouTimerRunning ? timerPauseLabel : timerStartLabel}
-                            type="button"
-                          >
-                            {pindouTimerRunning ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                          </button>
-                          <button
-                            className={clsx("flex h-7 w-7 items-center justify-center rounded-md transition", theme.pill)}
-                            onClick={onPindouTimerReset}
-                            title={timerResetLabel}
-                            type="button"
-                          >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                        <PindouTimerControl
+                          compact
+                          theme={theme}
+                          timerDisplay={timerDisplay}
+                          timerColonVisible={timerColonVisible}
+                          pindouTimerRunning={pindouTimerRunning}
+                          timerPauseLabel={timerPauseLabel}
+                          timerStartLabel={timerStartLabel}
+                          timerResetLabel={timerResetLabel}
+                          onPindouTimerToggle={onPindouTimerToggle}
+                          onPindouTimerReset={onPindouTimerReset}
+                        />
                         <div className={clsx("flex h-9 items-center rounded-md border p-0.5", theme.pill)}>
                           <PindouBeadShapeButtons
                             isDark={isDark}
@@ -1611,70 +1593,21 @@ export function PindouModePanel({
                 </div>
               ) : null}
               {landscapeRailContentMode === "swatches" ? (
-                <div className="flex min-h-0 flex-1 flex-col gap-2">
-                  <p className={clsx("px-1 text-xs", theme.cardMuted)}>{colorRailHint}</p>
-                  <div className="min-h-0 flex-1 overflow-auto pr-1">
-                    <div className={getPindouLandscapeSwatchGridClassName()}>
-                      {pindouColors.map((color) => {
-                        const active = focusedSketchLabel === color.label;
-                        return (
-                          <button
-                            key={color.label}
-                            className={clsx(
-                              "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors",
-                              active ? theme.controlButtonActive : theme.pill,
-                            )}
-                            onClick={() => onFocusedSketchLabelChange(active ? null : color.label)}
-                            title={color.label}
-                            type="button"
-                          >
-                            <span
-                              className="h-4 w-4 shrink-0 rounded-full border border-black/10"
-                              style={{ backgroundColor: color.hex }}
-                            />
-                            <span className={clsx("min-w-0 truncate text-sm font-semibold", active ? "" : theme.cardTitle)}>
-                              {color.label}
-                            </span>
-                            <span className={clsx("ml-auto shrink-0 text-[11px]", active ? "" : theme.cardMuted)}>
-                              {color.count}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
+                <PindouLandscapeSwatchRail
+                  colors={pindouColors}
+                  focusedLabel={focusedSketchLabel}
+                  onFocusLabelChange={onFocusedSketchLabelChange}
+                  colorRailHint={colorRailHint}
+                  theme={theme}
+                />
               ) : null}
             </div>
           </aside>
 
           <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
             <CanvasStage
-              cells={cells}
-              gridWidth={gridWidth}
-              gridHeight={gridHeight}
-              emptyPixelLabel={t.emptyPixel}
-              inputUrl={null}
-              overlayCropRect={null}
-              overlayEnabled={false}
-              isDark={isDark}
-              stageMode="pindou"
-              focusedLabel={focusedSketchLabel}
-              onFocusLabelChange={onFocusedSketchLabelChange}
-              paintActiveRef={paintActiveRef}
-              focusOnly={focusOnly}
-              flipHorizontal={pindouFlipHorizontal}
-              showPindouLabels={pindouShowLabels}
-              pindouBeadShape={pindouBeadShape}
-              pindouBoardTheme={pindouBoardTheme}
-              pindouZoom={pindouZoom}
-              onPindouZoomChange={onPindouZoomChange}
-              busy={stageBusy}
+              {...pindouCanvasStageProps}
               viewportClassName={useLandscapeColorRail ? "rounded-l-none" : undefined}
-              embeddedInPanel={!focusOnly}
-              preferContentFit={preferContentFit}
-              footerNote={processingElapsedNote}
-              onPindouStageTap={useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined}
             />
           </div>
         </div>
@@ -1691,30 +1624,7 @@ export function PindouModePanel({
           style={useAdaptiveMobileStageHeight && mobilePindouStageHeight > 0 ? { height: `${mobilePindouStageHeight}px` } : undefined}
         >
           <CanvasStage
-            cells={cells}
-            gridWidth={gridWidth}
-            gridHeight={gridHeight}
-            emptyPixelLabel={t.emptyPixel}
-            inputUrl={null}
-            overlayCropRect={null}
-            overlayEnabled={false}
-            isDark={isDark}
-            stageMode="pindou"
-            focusedLabel={focusedSketchLabel}
-            onFocusLabelChange={onFocusedSketchLabelChange}
-            paintActiveRef={paintActiveRef}
-            focusOnly={focusOnly}
-            flipHorizontal={pindouFlipHorizontal}
-            showPindouLabels={pindouShowLabels}
-            pindouBeadShape={pindouBeadShape}
-            pindouBoardTheme={pindouBoardTheme}
-            pindouZoom={pindouZoom}
-            onPindouZoomChange={onPindouZoomChange}
-            busy={stageBusy}
-            embeddedInPanel={!focusOnly}
-            preferContentFit={preferContentFit}
-            footerNote={processingElapsedNote}
-            onPindouStageTap={useCompactLandscapeFocusToolbar ? () => setFocusToolbarMenuOpen(false) : undefined}
+            {...pindouCanvasStageProps}
           />
           {usePortraitMobileFocusZoomBar ? (
             <div
@@ -1760,12 +1670,12 @@ export function PindouModePanel({
       {showExpandedFocusToolbar ? (
         <div className="pointer-events-none absolute left-3 right-3 top-0 z-30 flex flex-wrap justify-center gap-2">
           {isMobileUserAgent ? (
-            <div className={clsx("pointer-events-auto flex h-10 items-center gap-2 rounded-md border px-2 py-0.5 shadow-sm backdrop-blur", theme.pill)}>
-              {batteryPercent !== null ? <BatteryStatusIcon className="h-4 w-8" percent={batteryPercent} /> : null}
-              <span className={clsx("whitespace-nowrap text-sm font-semibold tabular-nums", theme.cardTitle)}>
-                {currentClock}
-              </span>
-            </div>
+            <PindouClockBadge
+              batteryPercent={batteryPercent}
+              className="pointer-events-auto shadow-sm backdrop-blur"
+              currentClock={currentClock}
+              theme={theme}
+            />
           ) : null}
           {useCompactLandscapeFocusToolbar ? (
             <button
@@ -1778,75 +1688,48 @@ export function PindouModePanel({
               <SlidersHorizontal className="h-4 w-4" />
             </button>
           ) : null}
-          <div className={clsx("pointer-events-auto flex h-10 items-center gap-1 rounded-md border pl-1 pr-0.5 py-0.5 shadow-sm backdrop-blur", theme.pill)}>
-            <BlinkingTimerText
-              className={clsx("min-w-[56px] px-2 text-center text-xs font-semibold", theme.cardTitle)}
-              value={timerDisplay}
-              colonVisible={timerColonVisible}
-            />
-            <button
-              className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-              onClick={onPindouTimerToggle}
-              title={pindouTimerRunning ? timerPauseLabel : timerStartLabel}
-              type="button"
-            >
-              {pindouTimerRunning ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-            </button>
-            <button
-              className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-              onClick={onPindouTimerReset}
-              title={timerResetLabel}
-              type="button"
-            >
-              <RotateCcw className="h-4 w-4" />
-            </button>
-          </div>
+          <PindouTimerControl
+            theme={theme}
+            timerDisplay={timerDisplay}
+            timerColonVisible={timerColonVisible}
+            pindouTimerRunning={pindouTimerRunning}
+            timerPauseLabel={timerPauseLabel}
+            timerStartLabel={timerStartLabel}
+            timerResetLabel={timerResetLabel}
+            onPindouTimerToggle={onPindouTimerToggle}
+            onPindouTimerReset={onPindouTimerReset}
+            className="pointer-events-auto shadow-sm backdrop-blur"
+          />
           {!usePortraitMobileFocusZoomBar ? (
-            <div className={clsx("pointer-events-auto flex h-10 items-center rounded-md border p-0.5 shadow-sm backdrop-blur", theme.pill)}>
-              <button
-                className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-                onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom - 0.2))}
-                title="-"
-                type="button"
-              >
-                <Minus className="h-4 w-4" />
-              </button>
-              <span className={clsx("w-12 text-center text-xs font-semibold", theme.cardTitle)}>
-                {Math.round(pindouZoom * 100)}%
-              </span>
-              <button
-                className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-                onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom + 0.2))}
-                title="+"
-                type="button"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            </div>
+            <PindouZoomControl
+              theme={theme}
+              pindouZoom={pindouZoom}
+              onPindouZoomChange={onPindouZoomChange}
+              shellClassName="pointer-events-auto shadow-sm backdrop-blur"
+            />
           ) : null}
-          <button
-            className={clsx(
-              "pointer-events-auto flex h-10 w-10 items-center justify-center rounded-md border shadow-sm backdrop-blur transition",
-              pindouFlipHorizontal ? theme.controlButtonActive : theme.pill,
-            )}
-            onClick={() => onPindouFlipHorizontalChange(!pindouFlipHorizontal)}
+          <PindouIconToggleButton
+            active={pindouFlipHorizontal}
+            className="pointer-events-auto shadow-sm backdrop-blur"
+            onToggle={() => onPindouFlipHorizontalChange(!pindouFlipHorizontal)}
+            theme={theme}
             title={flipHorizontalLabel}
-            type="button"
           >
             <FlipHorizontal className="h-4 w-4" />
-          </button>
-          <button
-            className={clsx(
-              "pointer-events-auto flex h-10 w-10 items-center justify-center rounded-md border shadow-sm backdrop-blur transition",
-              pindouShowLabels ? theme.controlButtonActive : theme.pill,
-            )}
-            onClick={() => onPindouShowLabelsChange(!pindouShowLabels)}
+          </PindouIconToggleButton>
+          <PindouIconToggleButton
+            active={pindouShowLabels}
+            className="pointer-events-auto shadow-sm backdrop-blur"
+            onToggle={() => onPindouShowLabelsChange(!pindouShowLabels)}
+            theme={theme}
             title={showLabelsLabel}
-            type="button"
           >
             <TypeIcon className="h-4 w-4" />
-          </button>
-          <div className={clsx("pointer-events-auto flex h-10 items-center gap-1 rounded-md border px-1 py-0.5 shadow-sm backdrop-blur", theme.pill)}>
+          </PindouIconToggleButton>
+          <PindouChoiceGroupShell
+            className="pointer-events-auto shadow-sm backdrop-blur"
+            theme={theme}
+          >
             <PindouBeadShapeButtons
               isDark={isDark}
               selectedShape={pindouBeadShape}
@@ -1854,8 +1737,11 @@ export function PindouModePanel({
               groupLabel={beadShapeLabel}
               onChange={onPindouBeadShapeChange}
             />
-          </div>
-          <div className={clsx("pointer-events-auto flex h-10 items-center gap-1 rounded-md border px-1 py-0.5 shadow-sm backdrop-blur", theme.pill)}>
+          </PindouChoiceGroupShell>
+          <PindouChoiceGroupShell
+            className="pointer-events-auto shadow-sm backdrop-blur"
+            theme={theme}
+          >
             <PindouBoardThemeButtons
               isDark={isDark}
               selectedTheme={pindouBoardTheme}
@@ -1863,7 +1749,7 @@ export function PindouModePanel({
               groupLabel={boardThemeLabel}
               onChange={onPindouBoardThemeChange}
             />
-          </div>
+          </PindouChoiceGroupShell>
           <button
             className={clsx(
               getPindouFocusButtonClassName({
@@ -1894,73 +1780,41 @@ export function PindouModePanel({
               "flex min-w-0 flex-wrap items-center gap-2 px-2 py-3 sm:px-2 sm:py-4 lg:px-1.5",
             )}
           >
-            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border pl-1 pr-0.5 py-0.5", theme.pill)}>
-              <BlinkingTimerText
-                className={clsx("min-w-[56px] px-2 text-center text-xs font-semibold", theme.cardTitle)}
-                value={timerDisplay}
-                colonVisible={timerColonVisible}
-              />
-              <button
-                className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-                onClick={onPindouTimerToggle}
-                title={pindouTimerRunning ? timerPauseLabel : timerStartLabel}
-                type="button"
-              >
-                {pindouTimerRunning ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              </button>
-              <button
-                className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-                onClick={onPindouTimerReset}
-                title={timerResetLabel}
-                type="button"
-              >
-                <RotateCcw className="h-4 w-4" />
-              </button>
-            </div>
-            <div className={clsx("flex h-10 shrink-0 items-center rounded-md border p-0.5", theme.pill)}>
-              <button
-                className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-                onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom - 0.2))}
-                title="-"
-                type="button"
-              >
-                <Minus className="h-4 w-4" />
-              </button>
-              <span className={clsx("w-12 text-center text-xs font-semibold", theme.cardTitle)}>
-                {Math.round(pindouZoom * 100)}%
-              </span>
-              <button
-                className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
-                onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom + 0.2))}
-                title="+"
-                type="button"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            </div>
-            <button
-              className={clsx(
-                "flex h-10 w-10 items-center justify-center rounded-md border transition",
-                pindouFlipHorizontal ? theme.controlButtonActive : theme.pill,
-              )}
-              onClick={() => onPindouFlipHorizontalChange(!pindouFlipHorizontal)}
+            <PindouTimerControl
+              theme={theme}
+              timerDisplay={timerDisplay}
+              timerColonVisible={timerColonVisible}
+              pindouTimerRunning={pindouTimerRunning}
+              timerPauseLabel={timerPauseLabel}
+              timerStartLabel={timerStartLabel}
+              timerResetLabel={timerResetLabel}
+              onPindouTimerToggle={onPindouTimerToggle}
+              onPindouTimerReset={onPindouTimerReset}
+              className="shrink-0"
+            />
+            <PindouZoomControl
+              theme={theme}
+              pindouZoom={pindouZoom}
+              onPindouZoomChange={onPindouZoomChange}
+              shellClassName="shrink-0"
+            />
+            <PindouIconToggleButton
+              active={pindouFlipHorizontal}
+              onToggle={() => onPindouFlipHorizontalChange(!pindouFlipHorizontal)}
+              theme={theme}
               title={flipHorizontalLabel}
-              type="button"
             >
               <FlipHorizontal className="h-4 w-4" />
-            </button>
-            <button
-              className={clsx(
-                "flex h-10 w-10 items-center justify-center rounded-md border transition",
-                pindouShowLabels ? theme.controlButtonActive : theme.pill,
-              )}
-              onClick={() => onPindouShowLabelsChange(!pindouShowLabels)}
+            </PindouIconToggleButton>
+            <PindouIconToggleButton
+              active={pindouShowLabels}
+              onToggle={() => onPindouShowLabelsChange(!pindouShowLabels)}
+              theme={theme}
               title={showLabelsLabel}
-              type="button"
             >
               <TypeIcon className="h-4 w-4" />
-            </button>
-            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
+            </PindouIconToggleButton>
+            <PindouChoiceGroupShell className="shrink-0" theme={theme}>
               <PindouBeadShapeButtons
                 isDark={isDark}
                 selectedShape={pindouBeadShape}
@@ -1968,8 +1822,8 @@ export function PindouModePanel({
                 groupLabel={beadShapeLabel}
                 onChange={onPindouBeadShapeChange}
               />
-            </div>
-            <div className={clsx("flex h-10 shrink-0 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill)}>
+            </PindouChoiceGroupShell>
+            <PindouChoiceGroupShell className="shrink-0" theme={theme}>
               <PindouBoardThemeButtons
                 isDark={isDark}
                 selectedTheme={pindouBoardTheme}
@@ -1977,7 +1831,7 @@ export function PindouModePanel({
                 groupLabel={boardThemeLabel}
                 onChange={onPindouBoardThemeChange}
               />
-            </div>
+            </PindouChoiceGroupShell>
             <button
               className={clsx(
                 getPindouFocusButtonClassName({
@@ -2009,96 +1863,15 @@ export function PindouModePanel({
         </p>
       ) : null}
       {!useLandscapeColorRail ? (
-        <div
-          className={clsx(
-            "w-full min-w-0 self-stretch",
-            focusOnly ? "mt-2" : colorRailMode.hintPlacement === "above" ? "mt-1" : "mt-4",
-            colorRailMode.equalWidthGrid
-              ? clsx(
-                  "grid grid-cols-4 gap-0",
-                  colorRailMode.gridOverflowMode === "page-flow"
-                    ? "pb-4"
-                    : clsx(colorRailMode.maxHeightClass, "overflow-y-auto overscroll-contain"),
-                )
-              : clsx(
-                  "flex gap-2",
-                  colorRailMode.gridOverflowMode === "page-flow"
-                    ? "flex-wrap pb-4"
-                    : colorRailMode.horizontalStrip
-                      ? "flex-nowrap overflow-x-auto overflow-y-hidden pb-1 pr-1"
-                      : clsx(colorRailMode.maxHeightClass, "overflow-auto flex-wrap overscroll-contain"),
-                ),
-          )}
-          style={getMobilePindouColorRailViewportBleedStyle(colorRailMode.fullBleed)}
-        >
-        {Array.from({
-          length: getPindouColorRailRenderSlotCount({
-            itemCount: pindouColors.length,
-            columns: colorRailMode.columns,
-            equalWidthGrid: colorRailMode.equalWidthGrid,
-          }),
-        }).map((_, index) => {
-          const color = pindouColors[index];
-          const colorRailCorners = getPindouColorRailItemCornerFlags({
-            index,
-            total: getPindouColorRailRenderSlotCount({
-              itemCount: pindouColors.length,
-              columns: colorRailMode.columns,
-              equalWidthGrid: colorRailMode.equalWidthGrid,
-            }),
-            columns: colorRailMode.columns,
-          });
-          const roundOuterCorners = shouldRoundPindouColorRailOuterCorners({
-            mobileApp,
-            focusOnly,
-            equalWidthGrid: colorRailMode.equalWidthGrid,
-          });
-          if (!color) {
-            return (
-              <div
-                aria-hidden="true"
-                key={`dummy-${index}`}
-                className={getPindouColorRailDummySlotClassName({
-                  equalWidthGrid: colorRailMode.equalWidthGrid,
-                  roundOuterCorners,
-                  topLeft: colorRailCorners.topLeft,
-                  topRight: colorRailCorners.topRight,
-                  bottomLeft: colorRailCorners.bottomLeft,
-                  bottomRight: colorRailCorners.bottomRight,
-                })}
-              />
-            );
-          }
-          const active = focusedSketchLabel === color.label;
-          return (
-            <button
-              key={color.label}
-              className={clsx(
-                "flex items-center gap-2 rounded-md border px-2 py-2 transition-colors",
-                colorRailMode.horizontalStrip && "shrink-0",
-                colorRailMode.equalWidthGrid && "min-h-11 w-full min-w-0 justify-start rounded-none",
-                roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.topLeft && "rounded-tl-[10px]",
-                roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.topRight && "rounded-tr-[10px]",
-                roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.bottomLeft && "rounded-bl-[10px]",
-                roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.bottomRight && "rounded-br-[10px]",
-                active ? theme.controlButtonActive : theme.pill,
-              )}
-              onClick={() => onFocusedSketchLabelChange(active ? null : color.label)}
-              type="button"
-              title={color.label}
-            >
-              <span
-                className="h-4 w-4 shrink-0 rounded-full border border-black/10"
-                style={{ backgroundColor: color.hex }}
-              />
-              <span className={clsx("min-w-0 truncate text-sm font-semibold", active ? "" : theme.cardTitle)}>
-                {color.label}
-              </span>
-              <span className={clsx("ml-auto shrink-0 text-[11px]", active ? "" : theme.cardMuted)}>{color.count}</span>
-            </button>
-          );
-        })}
-        </div>
+        <PindouBottomColorRail
+          colors={pindouColors}
+          focusedLabel={focusedSketchLabel}
+          onFocusLabelChange={onFocusedSketchLabelChange}
+          colorRailMode={colorRailMode}
+          mobileApp={mobileApp}
+          focusOnly={focusOnly}
+          theme={theme}
+        />
       ) : null}
       {!useLandscapeColorRail && !focusOnly ? (
         colorRailMode.hintPlacement === "below" ? (
@@ -2117,6 +1890,353 @@ export function formatProcessingElapsedNote(elapsedMs: number) {
   }
 
   return formatProcessingElapsed(elapsedMs);
+}
+
+type PindouStageColor = ReturnType<typeof summarizeStageColors>[number];
+
+function PindouColorSwatchButton({
+  color,
+  active,
+  theme,
+  className,
+  onToggle,
+}: {
+  color: PindouStageColor;
+  active: boolean;
+  theme: ReturnType<typeof getThemeClasses>;
+  className: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className={className}
+      onClick={onToggle}
+      title={color.label}
+      type="button"
+    >
+      <span
+        className="h-4 w-4 shrink-0 rounded-full border border-black/10"
+        style={{ backgroundColor: color.hex }}
+      />
+      <span className={clsx("min-w-0 truncate text-sm font-semibold", active ? "" : theme.cardTitle)}>
+        {color.label}
+      </span>
+      <span className={clsx("ml-auto shrink-0 text-[11px]", active ? "" : theme.cardMuted)}>
+        {color.count}
+      </span>
+    </button>
+  );
+}
+
+function PindouLandscapeSwatchRail({
+  colors,
+  focusedLabel,
+  onFocusLabelChange,
+  colorRailHint,
+  theme,
+}: {
+  colors: PindouStageColor[];
+  focusedLabel: string | null;
+  onFocusLabelChange: (label: string | null) => void;
+  colorRailHint: string;
+  theme: ReturnType<typeof getThemeClasses>;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <p className={clsx("px-1 text-xs", theme.cardMuted)}>{colorRailHint}</p>
+      <div className="min-h-0 flex-1 overflow-auto pr-1">
+        <div className={getPindouLandscapeSwatchGridClassName()}>
+          {colors.map((color) => {
+            const active = focusedLabel === color.label;
+            return (
+              <PindouColorSwatchButton
+                key={color.label}
+                active={active}
+                color={color}
+                theme={theme}
+                className={clsx(
+                  "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors",
+                  active ? theme.controlButtonActive : theme.pill,
+                )}
+                onToggle={() => onFocusLabelChange(active ? null : color.label)}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PindouBottomColorRail({
+  colors,
+  focusedLabel,
+  onFocusLabelChange,
+  colorRailMode,
+  mobileApp,
+  focusOnly,
+  theme,
+}: {
+  colors: PindouStageColor[];
+  focusedLabel: string | null;
+  onFocusLabelChange: (label: string | null) => void;
+  colorRailMode: ReturnType<typeof getPindouColorRailMode>;
+  mobileApp: boolean;
+  focusOnly: boolean;
+  theme: ReturnType<typeof getThemeClasses>;
+}) {
+  const renderSlotCount = getPindouColorRailRenderSlotCount({
+    itemCount: colors.length,
+    columns: colorRailMode.columns,
+    equalWidthGrid: colorRailMode.equalWidthGrid,
+  });
+  const roundOuterCorners = shouldRoundPindouColorRailOuterCorners({
+    mobileApp,
+    focusOnly,
+    equalWidthGrid: colorRailMode.equalWidthGrid,
+  });
+
+  return (
+    <div
+      className={clsx(
+        "w-full min-w-0 self-stretch",
+        focusOnly ? "mt-2" : colorRailMode.hintPlacement === "above" ? "mt-1" : "mt-4",
+        colorRailMode.equalWidthGrid
+          ? clsx(
+              "grid grid-cols-4 gap-0",
+              colorRailMode.gridOverflowMode === "page-flow"
+                ? "pb-4"
+                : clsx(colorRailMode.maxHeightClass, "overflow-y-auto overscroll-contain"),
+            )
+          : clsx(
+              "flex gap-2",
+              colorRailMode.gridOverflowMode === "page-flow"
+                ? "flex-wrap pb-4"
+                : colorRailMode.horizontalStrip
+                  ? "flex-nowrap overflow-x-auto overflow-y-hidden pb-1 pr-1"
+                  : clsx(colorRailMode.maxHeightClass, "overflow-auto flex-wrap overscroll-contain"),
+            ),
+      )}
+      style={getMobilePindouColorRailViewportBleedStyle(colorRailMode.fullBleed)}
+    >
+      {Array.from({ length: renderSlotCount }).map((_, index) => {
+        const color = colors[index];
+        const colorRailCorners = getPindouColorRailItemCornerFlags({
+          index,
+          total: renderSlotCount,
+          columns: colorRailMode.columns,
+        });
+        if (!color) {
+          return (
+            <div
+              aria-hidden="true"
+              key={`dummy-${index}`}
+              className={getPindouColorRailDummySlotClassName({
+                equalWidthGrid: colorRailMode.equalWidthGrid,
+                roundOuterCorners,
+                topLeft: colorRailCorners.topLeft,
+                topRight: colorRailCorners.topRight,
+                bottomLeft: colorRailCorners.bottomLeft,
+                bottomRight: colorRailCorners.bottomRight,
+              })}
+            />
+          );
+        }
+        const active = focusedLabel === color.label;
+        return (
+          <PindouColorSwatchButton
+            key={color.label}
+            active={active}
+            color={color}
+            theme={theme}
+            className={clsx(
+              "flex items-center gap-2 rounded-md border px-2 py-2 transition-colors",
+              colorRailMode.horizontalStrip && "shrink-0",
+              colorRailMode.equalWidthGrid && "min-h-11 w-full min-w-0 justify-start rounded-none",
+              roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.topLeft && "rounded-tl-[10px]",
+              roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.topRight && "rounded-tr-[10px]",
+              roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.bottomLeft && "rounded-bl-[10px]",
+              roundOuterCorners && colorRailMode.equalWidthGrid && colorRailCorners.bottomRight && "rounded-br-[10px]",
+              active ? theme.controlButtonActive : theme.pill,
+            )}
+            onToggle={() => onFocusLabelChange(active ? null : color.label)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function PindouIconToggleButton({
+  theme,
+  active = false,
+  title,
+  onToggle,
+  className,
+  children,
+}: {
+  theme: ReturnType<typeof getThemeClasses>;
+  active?: boolean;
+  title: string;
+  onToggle: () => void;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      className={clsx(
+        "flex h-10 w-10 items-center justify-center rounded-md border transition",
+        active ? theme.controlButtonActive : theme.pill,
+        className,
+      )}
+      onClick={onToggle}
+      title={title}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+function PindouChoiceGroupShell({
+  theme,
+  className,
+  children,
+}: {
+  theme: ReturnType<typeof getThemeClasses>;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={clsx("flex h-10 items-center gap-1 rounded-md border px-1 py-0.5", theme.pill, className)}>
+      {children}
+    </div>
+  );
+}
+
+function PindouZoomControl({
+  theme,
+  pindouZoom,
+  onPindouZoomChange,
+  shellClassName,
+}: {
+  theme: ReturnType<typeof getThemeClasses>;
+  pindouZoom: number;
+  onPindouZoomChange: (value: number) => void;
+  shellClassName?: string;
+}) {
+  return (
+    <div className={clsx("flex h-10 items-center rounded-md border p-0.5", theme.pill, shellClassName)}>
+      <button
+        className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
+        onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom - 0.2))}
+        title="-"
+        type="button"
+      >
+        <Minus className="h-4 w-4" />
+      </button>
+      <span className={clsx("w-12 text-center text-xs font-semibold", theme.cardTitle)}>
+        {Math.round(pindouZoom * 100)}%
+      </span>
+      <button
+        className={clsx("flex h-8 w-8 items-center justify-center rounded-md transition", theme.pill)}
+        onClick={() => onPindouZoomChange(clampPindouZoom(pindouZoom + 0.2))}
+        title="+"
+        type="button"
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function PindouClockBadge({
+  theme,
+  currentClock,
+  batteryPercent,
+  className,
+}: {
+  theme: ReturnType<typeof getThemeClasses>;
+  currentClock: string;
+  batteryPercent: number | null;
+  className?: string;
+}) {
+  return (
+    <div className={clsx("flex h-10 items-center gap-2 rounded-md border px-2 py-0.5", theme.pill, className)}>
+      {batteryPercent !== null ? <BatteryStatusIcon className="h-4 w-8" percent={batteryPercent} /> : null}
+      <span className={clsx("whitespace-nowrap text-sm font-semibold tabular-nums", theme.cardTitle)}>
+        {currentClock}
+      </span>
+    </div>
+  );
+}
+
+function PindouTimerControl({
+  theme,
+  timerDisplay,
+  timerColonVisible,
+  pindouTimerRunning,
+  timerPauseLabel,
+  timerStartLabel,
+  timerResetLabel,
+  onPindouTimerToggle,
+  onPindouTimerReset,
+  compact = false,
+  className,
+}: {
+  theme: ReturnType<typeof getThemeClasses>;
+  timerDisplay: string;
+  timerColonVisible: boolean;
+  pindouTimerRunning: boolean;
+  timerPauseLabel: string;
+  timerStartLabel: string;
+  timerResetLabel: string;
+  onPindouTimerToggle: () => void;
+  onPindouTimerReset: () => void;
+  compact?: boolean;
+  className?: string;
+}) {
+  const shellClassName = compact
+    ? "flex h-9 items-center gap-1 rounded-md border px-1 py-0.5"
+    : "flex h-10 items-center gap-1 rounded-md border pl-1 pr-0.5 py-0.5";
+  const textClassName = compact
+    ? clsx("min-w-[52px] px-1.5 text-center text-xs font-semibold leading-none", theme.cardTitle)
+    : clsx("min-w-[56px] px-2 text-center text-xs font-semibold", theme.cardTitle);
+  const iconClassName = compact ? "h-3.5 w-3.5" : "h-4 w-4";
+  const buttonSizeClassName = compact ? "h-7 w-7" : "h-8 w-8";
+
+  return (
+    <div className={clsx(shellClassName, theme.pill, className)}>
+      <button
+        className={clsx("flex min-w-0 flex-1 items-center justify-center", compact ? "h-7" : "")}
+        onClick={onPindouTimerToggle}
+        title={pindouTimerRunning ? timerPauseLabel : timerStartLabel}
+        type="button"
+      >
+        <BlinkingTimerText
+          className={textClassName}
+          value={timerDisplay}
+          colonVisible={timerColonVisible}
+        />
+      </button>
+      <button
+        className={clsx("flex items-center justify-center rounded-md transition", buttonSizeClassName, theme.pill)}
+        onClick={onPindouTimerToggle}
+        title={pindouTimerRunning ? timerPauseLabel : timerStartLabel}
+        type="button"
+      >
+        {pindouTimerRunning ? <Pause className={iconClassName} /> : <Play className={iconClassName} />}
+      </button>
+      <button
+        className={clsx("flex items-center justify-center rounded-md transition", buttonSizeClassName, theme.pill)}
+        onClick={onPindouTimerReset}
+        title={timerResetLabel}
+        type="button"
+      >
+        <RotateCcw className={iconClassName} />
+      </button>
+    </div>
+  );
 }
 
 export function getPindouColorRailMode({

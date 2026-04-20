@@ -81,6 +81,7 @@ import {
   getMobileHeaderChromeLayout,
   getMobileHeaderChromeMetrics,
   getMobileLandingLayout,
+  getMobileWorkspaceHostLayout,
   isMobileLikeEnvironment,
   shouldUseMobileWorkspaceShell,
 } from "./lib/workspace-layout";
@@ -121,6 +122,7 @@ const WorkspacePanels = lazy(async () => {
   const module = await import("./components/workspace-panels");
   return { default: module.WorkspacePanels };
 });
+const mobileWorkspaceHostLayout = getMobileWorkspaceHostLayout();
 
 function getDefaultDisabledResultLabels(
   grayscaleMode: boolean,
@@ -2644,8 +2646,23 @@ export default function App() {
 
   if (file && pindouFocusViewOpen) {
     return (
-      <main className={clsx("min-h-screen transition-colors", theme.page)}>
-        <div className="min-h-screen w-full overflow-hidden p-0">
+      <main
+        className={clsx(
+          useMobileWorkspace
+            ? mobileWorkspaceHostLayout.mainClassName
+            : "min-h-screen",
+          "transition-colors",
+          theme.page,
+        )}
+      >
+        <div
+          className={clsx(
+            "w-full overflow-hidden",
+            useMobileWorkspace
+              ? mobileWorkspaceHostLayout.wrapperClassName
+              : "min-h-screen p-0",
+          )}
+        >
           <Suspense
             fallback={
               <WorkspacePanelsSuspenseFallback
@@ -2808,7 +2825,15 @@ export default function App() {
   }
 
   return (
-    <main className={clsx("min-h-screen transition-colors", theme.page)}>
+    <main
+      className={clsx(
+        useMobileWorkspace && file
+          ? mobileWorkspaceHostLayout.mainClassName
+          : "min-h-screen",
+        "transition-colors",
+        theme.page,
+      )}
+    >
       <div
         className={clsx(
           "mx-auto max-w-[1760px]",
@@ -2981,7 +3006,10 @@ export default function App() {
         </div>
       </div>
 
-      <div style={useMobileWorkspace ? { paddingTop: mobileHeaderOffset } : undefined}>
+      <div
+        className={clsx(useMobileWorkspace && file ? "flex min-h-0 flex-1 flex-col" : undefined)}
+        style={useMobileWorkspace ? { paddingTop: mobileHeaderOffset } : undefined}
+      >
       {topError ? (
         <div className="mx-auto max-w-[1760px] px-4 pt-3 lg:px-6">
           <div className={clsx("rounded-[10px] border px-4 py-3 text-sm", theme.errorBox)}>
@@ -3077,7 +3105,7 @@ export default function App() {
         <div
           className={clsx(
             useMobileWorkspace
-              ? "mx-auto flex min-h-0 max-w-[1760px] flex-col px-2 pb-5 pt-3 lg:px-6 lg:pt-4"
+              ? mobileWorkspaceHostLayout.wrapperClassName
               : "mx-auto grid min-h-0 max-w-[1760px] gap-4 px-4 pb-6 pt-4 lg:grid-cols-[minmax(320px,22vw)_minmax(0,1fr)] lg:gap-6 lg:px-6 lg:pt-4",
             editorPanelMode === "chart"
               ? "lg:items-start lg:overflow-visible"

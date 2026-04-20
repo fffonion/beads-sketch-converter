@@ -85,6 +85,12 @@ export function getMobileWorkspaceProcessingSyncKey({
   return `${preferredEditorModeSeed ?? ""}::${preferredEditorMode}::${editingLocked ? 1 : 0}`;
 }
 
+export function getMobileWorkspaceContentRegionStyle(mobileNavHeight: string) {
+  return {
+    paddingBottom: mobileNavHeight,
+  } as const;
+}
+
 export function WorkspacePanels({
   t,
   file,
@@ -1243,8 +1249,8 @@ function MobileWorkspaceShell(props: WorkspacePanelsProps) {
       style={mobileWorkspaceViewportStyle}
     >
       <div
-        className="relative min-h-0 w-full min-w-0 flex-1"
-        style={{ height: `calc(100% - ${mobileNavHeight})` }}
+        className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col"
+        style={getMobileWorkspaceContentRegionStyle(mobileNavHeight)}
       >
         <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
           {content}
