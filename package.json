@@ -8,7 +8,7 @@
     "build:detecter": "node ./scripts/build-detecter.mjs",
     "build": "bun run build:detecter && tsc -b && vite build",
     "preview": "vite preview",
-    "test": "bun test"
+    "test": "bun run build:detecter && bun test"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.8",

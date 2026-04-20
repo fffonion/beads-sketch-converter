@@ -74,7 +74,7 @@ bun run preview
 运行测试：
 
 ```bash
-bun test
+bun run test
 ```
 
 ## 非根路径部署
