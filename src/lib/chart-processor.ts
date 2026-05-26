@@ -848,21 +848,20 @@ export async function processImageFile(
       logicalProtectedMask = null;
     } else {
       const detectedCrop = getCachedCropBoxRaster(source, wasmDetection.cropBox);
-      const converted = await getCachedConvertedGrid(
+      logical = await getCachedLogicalGrid(
         detectedCrop,
-        `auto:pixel:v4:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${DETECTED_SOURCE_RENDER_STYLE_BIAS}:${positiveEdgeEnhanceStrength > 0 ? 1 : 0}`,
-        () => convertCroppedImageToLogicalGrid(
+        `auto:pixel-regular:v1:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}`,
+        () => sampleRegularGrid(
           detectedCrop,
           wasmDetection.gridWidth,
           wasmDetection.gridHeight,
-          DETECTED_SOURCE_RENDER_STYLE_BIAS,
-          positiveEdgeEnhanceStrength > 0,
+          "chart-edge",
+          1,
         ),
       );
-      logical = converted.logical;
-      logicalProtectedMask = converted.protectedMask;
-      logicalMergeProtectedMask = converted.mergeProtectedMask;
-      sourceEdgeGuide = converted.edgeGuide;
+      logicalProtectedMask = null;
+      logicalMergeProtectedMask = null;
+      sourceEdgeGuide = null;
       stageProfile.mark("build-logical-grid");
     }
     gridWidth = wasmDetection.gridWidth;

@@ -32,6 +32,7 @@ import {
 import {
   __debugGetDetectorCacheStats,
   __debugResetDetectorCaches,
+  __debugExpandPixelDetectionToGridCanvas,
   computeDetailSignalWithWasm,
   detectChartBoardWithWasm,
   enhanceEdgesWithFftWasm,
@@ -145,6 +146,74 @@ function buildSolidRaster(width: number, height: number, color: [number, number,
   }
 
   return { width, height, data };
+}
+
+function buildGridBackedPixelArtRaster() {
+  const cellSize = 8;
+  const gridWidth = 64;
+  const gridHeight = 64;
+  const raster = buildSolidRaster(gridWidth * cellSize, gridHeight * cellSize, [74, 94, 101]);
+  const separator: [number, number, number] = [150, 164, 166];
+  const body: [number, number, number] = [204, 211, 214];
+  const cream: [number, number, number] = [238, 235, 224];
+  const pink: [number, number, number] = [198, 145, 162];
+  const blue: [number, number, number] = [143, 198, 212];
+  const navy: [number, number, number] = [36, 48, 76];
+
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      if (x % cellSize === 0 || y % cellSize === 0) {
+        setRasterPixel(raster, x, y, separator);
+      }
+    }
+  }
+
+  function fillCell(column: number, row: number, color: [number, number, number]) {
+    for (let y = row * cellSize + 1; y < (row + 1) * cellSize; y += 1) {
+      for (let x = column * cellSize + 1; x < (column + 1) * cellSize; x += 1) {
+        setRasterPixel(raster, x, y, color);
+      }
+    }
+  }
+
+  for (let row = 22; row <= 45; row += 1) {
+    for (let column = 16; column <= 48; column += 1) {
+      const dx = (column - 32) / 17;
+      const dy = (row - 33) / 12;
+      if (dx * dx + dy * dy <= 1) {
+        fillCell(column, row, body);
+      }
+    }
+  }
+  for (let row = 20; row <= 47; row += 1) {
+    fillCell(15, row, cream);
+    fillCell(49, row, cream);
+    if (row % 2 === 0) {
+      fillCell(14, row, navy);
+      fillCell(50, row, navy);
+    }
+  }
+  for (let row = 13; row <= 25; row += 1) {
+    fillCell(22, row, cream);
+    fillCell(28, row, cream);
+    fillCell(21, row, navy);
+    fillCell(29, row, navy);
+  }
+  fillCell(24, 36, pink);
+  fillCell(25, 36, pink);
+  fillCell(40, 39, blue);
+  fillCell(41, 39, blue);
+  fillCell(19, 34, navy);
+  fillCell(20, 34, navy);
+  fillCell(45, 10, cream);
+  fillCell(46, 11, cream);
+  fillCell(8, 51, blue);
+
+  return {
+    raster,
+    gridWidth,
+    gridHeight,
+  };
 }
 
 function setRasterPixel(
@@ -1549,6 +1618,55 @@ test("auto detect should not crop bangboo _4 into a stripe", async () => {
   expect(aspect).toBeLessThan(1.25);
   expect(cropWidth).toBeGreaterThan(raster.width * 0.7);
   expect(cropHeight).toBeGreaterThan(raster.height * 0.7);
+});
+
+test("auto detect should keep the full canvas for grid-backed pixel art", async () => {
+  const { raster, gridWidth, gridHeight } = buildGridBackedPixelArtRaster();
+  const result = await debugAutoDetectRaster(raster, "grid-backed-pixel-art.png");
+
+  expect(result.mode).toBe("detected-wasm-pixel");
+  expect(result.cropBox).toEqual([0, 0, raster.width, raster.height]);
+  expect(result.gridWidth).toBe(gridWidth);
+  expect(result.gridHeight).toBe(gridHeight);
+});
+
+test("grid-backed pixel expansion should recover a full grid canvas from a subject crop", () => {
+  const { raster } = buildGridBackedPixelArtRaster();
+  const expanded = __debugExpandPixelDetectionToGridCanvas(raster, {
+    cropBox: [14 * 8, 10 * 8, 51 * 8, 48 * 8],
+    gridWidth: 37,
+    gridHeight: 38,
+    confidence: 0.8,
+  });
+
+  expect(expanded.cropBox).toEqual([0, 0, raster.width, raster.height]);
+  expect(expanded.gridWidth).toBe(64);
+  expect(expanded.gridHeight).toBe(64);
+  expect(expanded.confidence).toBeGreaterThan(0.8);
+});
+
+test("detected grid-backed pixel art should preserve small accent colors without style cleanup", async () => {
+  const { raster } = buildGridBackedPixelArtRaster();
+  const file = new File(["stub"], "grid-backed-pixel-art.png", { type: "image/png" });
+
+  const result = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "auto",
+      renderStyleBias: 100,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  expect(result.detectionMode).toBe("detected-wasm-pixel");
+  expect(result.gridWidth).toBe(64);
+  expect(result.gridHeight).toBe(64);
+  expect(result.cells[36 * 64 + 24]?.hex).not.toBe(result.cells[33 * 64 + 32]?.hex);
+  expect(result.cells[39 * 64 + 40]?.hex).not.toBe(result.cells[33 * 64 + 32]?.hex);
+  expect(result.paletteColorsUsed).toBeGreaterThanOrEqual(5);
 });
 
 test("auto detect should crop exported chart to the framed pixel board", async () => {

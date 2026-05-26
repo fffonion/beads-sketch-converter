@@ -116,10 +116,13 @@ export async function detectAutoRasterWithWasm(
       ? refineFullPageChartDetection(raster, autoCandidates.chart)
       : autoCandidates.chart
     : null;
-  const pixel = autoCandidates?.pixel ?? null;
+  const rawPixel = autoCandidates?.pixel ?? null;
+  const pixel = rawPixel
+    ? expandPixelDetectionToGridCanvas(raster, rawPixel)
+    : null;
 
-  if (chart && pixel) {
-    if (isLikelyTrimmedFullPageChart(raster, chart, pixel)) {
+  if (chart && rawPixel && pixel) {
+    if (isLikelyTrimmedFullPageChart(raster, chart, rawPixel)) {
       return {
         kind: "chart",
         cropBox: chart.cropBox,
@@ -140,7 +143,7 @@ export async function detectAutoRasterWithWasm(
     }
 
     const chartScore = scoreAutoCandidate(raster, "chart", chart);
-    const pixelScore = scoreAutoCandidate(raster, "pixel", pixel);
+    const pixelScore = scoreAutoCandidate(raster, "pixel", rawPixel);
     return chartScore >= pixelScore
       ? {
           kind: "chart",
@@ -235,6 +238,13 @@ export async function enhanceEdgesWithFftWasm(
         }
       }),
   );
+}
+
+export function __debugExpandPixelDetectionToGridCanvas(
+  raster: RasterImageLike,
+  detection: WasmPixelDetection,
+) {
+  return expandPixelDetectionToGridCanvas(raster, detection);
 }
 
 export async function computeDetailSignalWithWasm(
@@ -544,6 +554,144 @@ function scoreAutoCandidate(
     Math.min(cellSize, 48) * 0.03 -
     aspectPenalty * 0.5
   );
+}
+
+function expandPixelDetectionToGridCanvas(
+  raster: RasterImageLike,
+  detection: WasmPixelDetection,
+): WasmPixelDetection {
+  const [left, top, right, bottom] = detection.cropBox;
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  const cropAreaRatio = (cropWidth * cropHeight) / Math.max(1, raster.width * raster.height);
+  if (cropAreaRatio >= 0.92 || cropWidth <= 0 || cropHeight <= 0) {
+    return detection;
+  }
+
+  const cellWidth = cropWidth / Math.max(1, detection.gridWidth);
+  const cellHeight = cropHeight / Math.max(1, detection.gridHeight);
+  const cellAspect = Math.max(
+    cellWidth / Math.max(1e-6, cellHeight),
+    cellHeight / Math.max(1e-6, cellWidth),
+  );
+  if (cellWidth < 3 || cellHeight < 3 || cellAspect > 1.28) {
+    return detection;
+  }
+
+  const fullGridWidth = Math.round(raster.width / cellWidth);
+  const fullGridHeight = Math.round(raster.height / cellHeight);
+  if (
+    fullGridWidth < detection.gridWidth ||
+    fullGridHeight < detection.gridHeight ||
+    fullGridWidth > 102 ||
+    fullGridHeight > 102
+  ) {
+    return detection;
+  }
+
+  const fullCellWidth = raster.width / Math.max(1, fullGridWidth);
+  const fullCellHeight = raster.height / Math.max(1, fullGridHeight);
+  const fullCellAspect = Math.max(
+    fullCellWidth / Math.max(1e-6, fullCellHeight),
+    fullCellHeight / Math.max(1e-6, fullCellWidth),
+  );
+  const cropGridWidthError = Math.abs(cropWidth / fullCellWidth - detection.gridWidth);
+  const cropGridHeightError = Math.abs(cropHeight / fullCellHeight - detection.gridHeight);
+  if (fullCellAspect > 1.28 || cropGridWidthError > 1.35 || cropGridHeightError > 1.35) {
+    return detection;
+  }
+
+  const luma = buildLuma(raster);
+  const verticalStrength = estimateFullCanvasGridBoundaryStrength(
+    luma,
+    raster.width,
+    raster.height,
+    fullGridWidth,
+    true,
+  );
+  const horizontalStrength = estimateFullCanvasGridBoundaryStrength(
+    luma,
+    raster.width,
+    raster.height,
+    fullGridHeight,
+    false,
+  );
+  if (verticalStrength < 1.05 || horizontalStrength < 1.05) {
+    return detection;
+  }
+
+  return {
+    cropBox: [0, 0, raster.width, raster.height],
+    gridWidth: fullGridWidth,
+    gridHeight: fullGridHeight,
+    confidence: Math.min(0.99, detection.confidence + 0.08),
+  };
+}
+
+function estimateFullCanvasGridBoundaryStrength(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  gridSteps: number,
+  verticalLines: boolean,
+) {
+  if (gridSteps < 4) {
+    return 0;
+  }
+
+  const span = verticalLines ? width : height;
+  const lineStep = span / gridSteps;
+  let boundaryTotal = 0;
+  let boundaryCount = 0;
+  let interiorTotal = 0;
+  let interiorCount = 0;
+
+  for (let index = 1; index < gridSteps; index += 1) {
+    const boundary = index * lineStep;
+    const interior = (index - 0.5) * lineStep;
+    boundaryTotal += sampleFullCanvasAxisGradient(luma, width, height, boundary, verticalLines);
+    interiorTotal += sampleFullCanvasAxisGradient(luma, width, height, interior, verticalLines);
+    boundaryCount += 1;
+    interiorCount += 1;
+  }
+
+  return boundaryTotal / Math.max(1, boundaryCount) / Math.max(0.001, interiorTotal / Math.max(1, interiorCount));
+}
+
+function sampleFullCanvasAxisGradient(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  position: number,
+  verticalLines: boolean,
+) {
+  if (verticalLines) {
+    const x = clamp(Math.round(position), 1, width - 2);
+    let total = 0;
+    let count = 0;
+    const stepY = Math.max(1, Math.floor(height / 160));
+    for (let y = 1; y < height - 1; y += stepY) {
+      const row = y * width;
+      const center = luma[row + x] ?? 0;
+      const neighborMean = ((luma[row + x - 1] ?? 0) + (luma[row + x + 1] ?? 0)) * 0.5;
+      total += Math.abs(center - neighborMean);
+      count += 1;
+    }
+    return total / Math.max(1, count);
+  }
+
+  const y = clamp(Math.round(position), 1, height - 2);
+  let total = 0;
+  let count = 0;
+  const row = y * width;
+  const stepX = Math.max(1, Math.floor(width / 160));
+  for (let x = 1; x < width - 1; x += stepX) {
+    const center = luma[row + x] ?? 0;
+    const neighborMean = ((luma[row + x - width] ?? 0) + (luma[row + x + width] ?? 0)) * 0.5;
+    total += Math.abs(center - neighborMean);
+    count += 1;
+  }
+  return total / Math.max(1, count);
 }
 
 function isLikelyPlainPixelArt(
