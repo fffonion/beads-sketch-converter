@@ -26,6 +26,7 @@ import {
   reduceColorsPhotoshopStyle,
   shouldShowChartColorLabels,
   shouldShowChartHeaderDetails,
+  shouldApplyRenderStyleBiasToDetectionMode,
   processImageFile,
 } from "../src/lib/chart-processor";
 import {
@@ -793,6 +794,13 @@ test("converted-image pixel-art end should stay at least as flat as the 75-style
 
   expect(pixelArt.paletteColorsUsed).toBeLessThanOrEqual(baseline.paletteColorsUsed);
   expect(hexToLuma(pixelArt.cells[5 * 6 + 0]?.hex ?? null)).toBeLessThan(100);
+});
+
+test("detected pixel and chart imports should ignore render style bias", () => {
+  expect(shouldApplyRenderStyleBiasToDetectionMode("converted-from-image")).toBe(true);
+  expect(shouldApplyRenderStyleBiasToDetectionMode("detected-wasm-pixel")).toBe(false);
+  expect(shouldApplyRenderStyleBiasToDetectionMode("detected-wasm-chart")).toBe(false);
+  expect(shouldApplyRenderStyleBiasToDetectionMode("embedded-chart-metadata")).toBe(false);
 });
 
 test("converted-image color reduction should lower final palette colors on a photo fixture as tolerance increases", async () => {

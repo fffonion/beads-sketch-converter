@@ -57,6 +57,7 @@ const SNS_MAX_EXPORT_WIDTH = 1280;
 const SNS_MAX_EXPORT_HEIGHT = 1468;
 const MIN_SNS_DISPLAY_QR_SIZE = 192;
 const NEGATIVE_EDGE_ENHANCE_STRENGTH_CURVE_EXPONENT = 2;
+const DETECTED_SOURCE_RENDER_STYLE_BIAS = 100;
 
 type CropBox = [number, number, number, number];
 type Rgb = [number, number, number];
@@ -235,6 +236,10 @@ export interface ProcessResult {
   paletteColorsUsed: number;
   colors: ColorCount[];
   cells: EditableCell[];
+}
+
+export function shouldApplyRenderStyleBiasToDetectionMode(detectionMode: string) {
+  return detectionMode === "converted-from-image";
 }
 
 export interface ChartQrBoardPlacement {
@@ -795,8 +800,6 @@ export async function processImageFile(
     Math.min(100, options.renderStyleBias ?? getDefaultRenderStyleBias(grayscaleMode)),
   );
   const imageStyleProfile = buildImageStyleProfile(renderStyleBias);
-  const legacyPixelArtBias = renderStyleBias / 100;
-  const legacyDitherStrength = 1 - legacyPixelArtBias;
   const paletteDefinition = getPaletteDefinition(options.colorSystemId);
   const matchingPaletteDefinition = getMatchingPaletteDefinition(
     paletteDefinition.id,
@@ -832,13 +835,13 @@ export async function processImageFile(
       const detectedCrop = getCachedCropBoxRaster(source, wasmDetection.cropBox);
       logical = await getCachedLogicalGrid(
         source,
-        `auto:chart:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${renderStyleBias}`,
+        `auto:chart:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${DETECTED_SOURCE_RENDER_STYLE_BIAS}`,
         () => sampleRegularGrid(
           detectedCrop,
           wasmDetection.gridWidth,
           wasmDetection.gridHeight,
           "chart-edge",
-          legacyPixelArtBias,
+          DETECTED_SOURCE_RENDER_STYLE_BIAS / 100,
         ),
       );
       stageProfile.mark("build-logical-grid");
@@ -847,13 +850,13 @@ export async function processImageFile(
       const detectedCrop = getCachedCropBoxRaster(source, wasmDetection.cropBox);
       const converted = await getCachedConvertedGrid(
         detectedCrop,
-        `auto:pixel:v4:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${renderStyleBias}:${positiveEdgeEnhanceStrength > 0 || renderStyleBias > 75 ? 1 : 0}`,
+        `auto:pixel:v4:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${DETECTED_SOURCE_RENDER_STYLE_BIAS}:${positiveEdgeEnhanceStrength > 0 ? 1 : 0}`,
         () => convertCroppedImageToLogicalGrid(
           detectedCrop,
           wasmDetection.gridWidth,
           wasmDetection.gridHeight,
-          renderStyleBias,
-          positiveEdgeEnhanceStrength > 0 || renderStyleBias > 75,
+          DETECTED_SOURCE_RENDER_STYLE_BIAS,
+          positiveEdgeEnhanceStrength > 0,
         ),
       );
       logical = converted.logical;
@@ -922,6 +925,7 @@ export async function processImageFile(
     detectionMode === "converted-from-image" || detectionMode === "detected-wasm-pixel"
       ? effectiveEdgeEnhanceStrength
       : 0;
+  const appliesRenderStyleBias = shouldApplyRenderStyleBiasToDetectionMode(detectionMode);
 
   const originalUniqueColors = countUniqueColors(logical.data);
   let reducedUniqueColors = originalUniqueColors;
@@ -943,7 +947,10 @@ export async function processImageFile(
   stageProfile.mark("pre-sharpen");
 
   let matched = matchPalette(logical, matchingPaletteDefinition, {
-    ditherStrength: usesImagePixelPipeline ? imageStyleProfile.ditherStrength : legacyDitherStrength,
+    ditherStrength:
+      usesImagePixelPipeline && appliesRenderStyleBias
+        ? imageStyleProfile.ditherStrength
+        : 0,
   });
   stageProfile.mark("palette-match");
   if (positiveEdgeEnhanceStrength > 0 && usesImagePixelPipeline) {
@@ -995,8 +1002,10 @@ export async function processImageFile(
   if (usesImagePixelPipeline) {
     const remappedStyleBias = Math.min(100, (renderStyleBias / 75) * 100);
     const styleDrivenTolerance =
-      Math.max(0, (remappedStyleBias - 50) * 0.32) +
-      Math.max(0, renderStyleBias - 75) * 0.32;
+      appliesRenderStyleBias
+        ? Math.max(0, (remappedStyleBias - 50) * 0.32) +
+          Math.max(0, renderStyleBias - 75) * 0.32
+        : 0;
     const postMatchReduceTolerance = Math.max(
       styleDrivenTolerance,
       effectiveReduceColors ? options.reduceTolerance : 0,

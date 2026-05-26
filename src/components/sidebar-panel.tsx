@@ -181,6 +181,7 @@ export function SidebarPanel({
   const edgeColorButtonTitle = fftEdgeEnhanceOverrideOption
     ? `${t.edgeColorOverride}: ${fftEdgeEnhanceOverrideOption.label}`
     : `${t.edgeColorOverride}: ${t.edgeColorAuto}`;
+  const renderStyleBiasDisabled = sourceBadge?.kind === "chart" || sourceBadge?.kind === "pixel-art";
   const sortedEdgeColorPickerOptions = useMemo(
     () => [
       {
@@ -247,6 +248,7 @@ export function SidebarPanel({
             min={0}
             max={100}
             step={1}
+            disabled={renderStyleBiasDisabled}
             onValueChange={onRenderStyleBiasChange}
             isDark={isDark}
           />

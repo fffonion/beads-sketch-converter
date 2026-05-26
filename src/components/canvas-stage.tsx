@@ -36,6 +36,7 @@ export function CanvasStage({
   paintActiveRef,
   focusOnly = false,
   flipHorizontal = false,
+  editGaplessCells = true,
   showPindouLabels = false,
   pindouBeadShape = "square",
   pindouBoardTheme = "gray",
@@ -72,6 +73,7 @@ export function CanvasStage({
   paintActiveRef: MutableRefObject<boolean>;
   focusOnly?: boolean;
   flipHorizontal?: boolean;
+  editGaplessCells?: boolean;
   showPindouLabels?: boolean;
   pindouBeadShape?: PindouBeadShape;
   pindouBoardTheme?: PindouBoardTheme;
@@ -182,7 +184,10 @@ export function CanvasStage({
     };
   }, [inputUrl]);
 
-  const gridGap = 1;
+  const gridGap = getCanvasStageGridGap({
+    stageMode,
+    editGaplessCells,
+  });
   const pindouPaddingCells = stageMode === "pindou" ? PINDOU_STAGE_PADDING_CELLS : 0;
   const displayGridWidth = gridWidth + pindouPaddingCells * 2;
   const displayGridHeight = gridHeight + pindouPaddingCells * 2;
@@ -1382,6 +1387,20 @@ export function formatCanvasStatusBadge(
     coordinateText: `${hoveredX}, ${hoveredY}`,
     sizeText: `${gridWidth} x ${gridHeight}`,
   };
+}
+
+export function getCanvasStageGridGap({
+  stageMode,
+  editGaplessCells,
+}: {
+  stageMode: EditorPanelMode;
+  editGaplessCells: boolean;
+}) {
+  if (stageMode !== "edit") {
+    return 1;
+  }
+
+  return editGaplessCells ? 0 : 1;
 }
 
 export function getCanvasStageZoomMetrics({

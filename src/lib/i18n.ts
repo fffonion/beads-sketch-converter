@@ -145,6 +145,7 @@ export interface Messages {
   pixelEditorHint: string;
   overlayToggle: string;
   overlayOpacity: string;
+  editGaplessCells: string;
   brushSize: string;
   fillThreshold: string;
   zoomLabel?: string;
@@ -317,6 +318,7 @@ export const messages: Record<Locale, Messages> = {
     pixelEditorHint: "支持点击和拖动连续修改。",
     overlayToggle: "原图叠加",
     overlayOpacity: "叠加透明度",
+    editGaplessCells: "隐藏格缝",
     brushSize: "画笔粗细",
     fillThreshold: "填充容差",
     editorStage: "编辑画布",
@@ -495,6 +497,7 @@ export const messages: Record<Locale, Messages> = {
     pixelEditorHint: "Click or drag to edit continuously.",
     overlayToggle: "Original Overlay",
     overlayOpacity: "Overlay Opacity",
+    editGaplessCells: "Hide Cell Gaps",
     brushSize: "Brush Size",
     fillThreshold: "Fill Threshold",
     zoomLabel: "Zoom",

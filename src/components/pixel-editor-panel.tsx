@@ -78,6 +78,8 @@ export function PixelEditorPanel({
   onEditZoomChange,
   editFlipHorizontal,
   onEditFlipHorizontalChange,
+  editGaplessCells,
+  onEditGaplessCellsChange,
   selectedLabel,
   selectedHex,
   colorSystemId,
@@ -187,6 +189,8 @@ export function PixelEditorPanel({
   onEditZoomChange: (value: number) => void;
   editFlipHorizontal: boolean;
   onEditFlipHorizontalChange: (value: boolean) => void;
+  editGaplessCells: boolean;
+  onEditGaplessCellsChange: (value: boolean) => void;
   selectedLabel: string;
   selectedHex: string | null;
   colorSystemId: string;
@@ -493,6 +497,8 @@ export function PixelEditorPanel({
             onEditZoomChange={onEditZoomChange}
             editFlipHorizontal={editFlipHorizontal}
             onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+            editGaplessCells={editGaplessCells}
+            onEditGaplessCellsChange={onEditGaplessCellsChange}
             selectedLabel={selectedLabel}
             selectedHex={selectedHex}
             colorSystemId={colorSystemId}
@@ -631,6 +637,8 @@ export function EditModeWorkspace({
   onEditZoomChange,
   editFlipHorizontal,
   onEditFlipHorizontalChange,
+  editGaplessCells,
+  onEditGaplessCellsChange,
   selectedLabel,
   selectedHex,
   colorSystemId,
@@ -679,6 +687,8 @@ export function EditModeWorkspace({
   onEditZoomChange: (value: number) => void;
   editFlipHorizontal: boolean;
   onEditFlipHorizontalChange: (value: boolean) => void;
+  editGaplessCells: boolean;
+  onEditGaplessCellsChange: (value: boolean) => void;
   selectedLabel: string;
   selectedHex: string | null;
   colorSystemId: string;
@@ -988,6 +998,8 @@ export function EditModeWorkspace({
           editZoom={editZoom}
           onEditZoomChange={onEditZoomChange}
           onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+          editGaplessCells={editGaplessCells}
+          onEditGaplessCellsChange={onEditGaplessCellsChange}
           fillTolerance={fillTolerance}
           onFillToleranceChange={onFillToleranceChange}
           onEditToolChange={onEditToolChange}
@@ -1046,6 +1058,7 @@ export function EditModeWorkspace({
           editZoom={editZoom}
           onEditZoomChange={onEditZoomChange}
           flipHorizontal={editFlipHorizontal}
+          editGaplessCells={editGaplessCells}
           selectedHex={selectedHex}
           onApplyCell={onApplyCell}
           canvasCropSelection={canvasCropSelection}
@@ -2802,6 +2815,8 @@ function ContextToolStrip({
   editZoom,
   onEditZoomChange,
   onEditFlipHorizontalChange,
+  editGaplessCells,
+  onEditGaplessCellsChange,
   fillTolerance,
   onFillToleranceChange,
   onEditToolChange,
@@ -2825,6 +2840,8 @@ function ContextToolStrip({
   editZoom: number;
   onEditZoomChange: (value: number) => void;
   onEditFlipHorizontalChange: (value: boolean) => void;
+  editGaplessCells: boolean;
+  onEditGaplessCellsChange: (value: boolean) => void;
   fillTolerance: number;
   onFillToleranceChange: (value: number) => void;
   onEditToolChange: (tool: EditTool) => void;
@@ -2962,6 +2979,19 @@ function ContextToolStrip({
             setOpen={setPickerOpen}
           />
         ) : null}
+        <button
+          aria-pressed={editGaplessCells}
+          className={clsx(
+            "inline-flex h-10 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-semibold transition",
+            editGaplessCells ? theme.controlButtonActive : theme.pill,
+          )}
+          data-edit-cell-gap-toggle="true"
+          onClick={() => onEditGaplessCellsChange(!editGaplessCells)}
+          title={t.editGaplessCells}
+          type="button"
+        >
+          <span>{t.editGaplessCells}</span>
+        </button>
         {showBrushSize ? (
           <InlineSliderField
             id="brush-size"

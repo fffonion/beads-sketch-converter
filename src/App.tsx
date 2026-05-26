@@ -740,6 +740,7 @@ export default function App() {
   const [canvasCropSelection, setCanvasCropSelection] = useState<CanvasCropRect | null>(null);
   const [editZoom, setEditZoom] = useState(1);
   const [editFlipHorizontal, setEditFlipHorizontal] = useState(false);
+  const [editGaplessCells, setEditGaplessCells] = useState(true);
   const [brushSize, setBrushSize] = useState(1);
   const [fillTolerance, setFillTolerance] = useState(16);
   const [overlayEnabled, setOverlayEnabled] = useState(false);
@@ -2723,6 +2724,8 @@ export default function App() {
             onEditZoomChange={setEditZoom}
             editFlipHorizontal={editFlipHorizontal}
             onEditFlipHorizontalChange={setEditFlipHorizontal}
+            editGaplessCells={editGaplessCells}
+            onEditGaplessCellsChange={setEditGaplessCells}
             overlayEnabled={overlayEnabled}
             onOverlayEnabledChange={setOverlayEnabled}
             fillTolerance={fillTolerance}
@@ -3217,6 +3220,8 @@ export default function App() {
             onEditZoomChange={setEditZoom}
             editFlipHorizontal={editFlipHorizontal}
             onEditFlipHorizontalChange={setEditFlipHorizontal}
+            editGaplessCells={editGaplessCells}
+            onEditGaplessCellsChange={setEditGaplessCells}
             overlayEnabled={overlayEnabled}
             onOverlayEnabledChange={setOverlayEnabled}
             fillTolerance={fillTolerance}

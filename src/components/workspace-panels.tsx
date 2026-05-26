@@ -140,6 +140,8 @@ export function WorkspacePanels({
   onEditZoomChange,
   editFlipHorizontal,
   onEditFlipHorizontalChange,
+  editGaplessCells,
+  onEditGaplessCellsChange,
   overlayEnabled,
   onOverlayEnabledChange,
   fillTolerance,
@@ -280,6 +282,8 @@ export function WorkspacePanels({
   onEditZoomChange: (value: number) => void;
   editFlipHorizontal: boolean;
   onEditFlipHorizontalChange: (value: boolean) => void;
+  editGaplessCells: boolean;
+  onEditGaplessCellsChange: (value: boolean) => void;
   overlayEnabled: boolean;
   onOverlayEnabledChange: (enabled: boolean) => void;
   fillTolerance: number;
@@ -394,6 +398,8 @@ export function WorkspacePanels({
         onEditZoomChange={onEditZoomChange}
         editFlipHorizontal={editFlipHorizontal}
         onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+        editGaplessCells={editGaplessCells}
+        onEditGaplessCellsChange={onEditGaplessCellsChange}
         overlayEnabled={overlayEnabled}
         onOverlayEnabledChange={onOverlayEnabledChange}
         fillTolerance={fillTolerance}
@@ -548,6 +554,8 @@ export function WorkspacePanels({
             onEditZoomChange={onEditZoomChange}
             editFlipHorizontal={editFlipHorizontal}
             onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+            editGaplessCells={editGaplessCells}
+            onEditGaplessCellsChange={onEditGaplessCellsChange}
             selectedLabel={selectedLabel}
             selectedHex={paletteOptions.find((entry) => entry.label === selectedLabel)?.hex ?? null}
             colorSystemId={colorSystemId}
@@ -672,6 +680,8 @@ export function WorkspacePanels({
           onEditZoomChange={onEditZoomChange}
           editFlipHorizontal={editFlipHorizontal}
           onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+          editGaplessCells={editGaplessCells}
+          onEditGaplessCellsChange={onEditGaplessCellsChange}
           selectedLabel={selectedLabel}
           selectedHex={paletteOptions.find((entry) => entry.label === selectedLabel)?.hex ?? null}
           colorSystemId={colorSystemId}
@@ -846,6 +856,8 @@ function MobileWorkspaceShell(props: WorkspacePanelsProps) {
     onEditZoomChange,
     editFlipHorizontal,
     onEditFlipHorizontalChange,
+    editGaplessCells,
+    onEditGaplessCellsChange,
     overlayEnabled,
     onOverlayEnabledChange,
     fillTolerance,
@@ -1126,6 +1138,8 @@ function MobileWorkspaceShell(props: WorkspacePanelsProps) {
           onEditZoomChange={onEditZoomChange}
           editFlipHorizontal={editFlipHorizontal}
           onEditFlipHorizontalChange={onEditFlipHorizontalChange}
+          editGaplessCells={editGaplessCells}
+          onEditGaplessCellsChange={onEditGaplessCellsChange}
           selectedLabel={selectedLabel}
           selectedHex={paletteOptions.find((entry) => entry.label === selectedLabel)?.hex ?? null}
           colorSystemId={colorSystemId}

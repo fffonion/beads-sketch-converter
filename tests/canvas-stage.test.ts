@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   getCanvasAxisLabelMetrics,
+  getCanvasStageGridGap,
   formatCanvasStatusBadge,
   getCanvasStageBitmapRenderScale,
   getCanvasGuideLineMetrics,
@@ -21,6 +22,27 @@ test("canvas status badge should show coordinate and size on separate lines", ()
     coordinateText: "2, 2",
     sizeText: "66 x 68",
   });
+});
+
+test("edit canvas gap should default to gapless while pindou keeps the shared grid spacing", () => {
+  expect(
+    getCanvasStageGridGap({
+      stageMode: "edit",
+      editGaplessCells: true,
+    }),
+  ).toBe(0);
+  expect(
+    getCanvasStageGridGap({
+      stageMode: "edit",
+      editGaplessCells: false,
+    }),
+  ).toBe(1);
+  expect(
+    getCanvasStageGridGap({
+      stageMode: "pindou",
+      editGaplessCells: true,
+    }),
+  ).toBe(1);
 });
 
 test("canvas zoom metrics should keep render dimensions stable while only display dimensions change", () => {
