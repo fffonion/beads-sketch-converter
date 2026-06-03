@@ -45,6 +45,7 @@ const additionalChartImagePath = join(fixtureDir, "chart_eye_blind_5.jpeg");
 const burgerChartImagePath = join(fixtureDir, "burger_chart.jpg");
 const xiaodouniChartImagePath = join(fixtureDir, "xiaodouni_wrong_right_4.jpeg");
 const sanduonieChartImagePath = join(fixtureDir, "sanduonie_puppet_chart.jpeg");
+const grayWhiteBoardImagePath = join(fixtureDir, "gray_white_board_50x51.jpg");
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 const PNG_IHDR_CHUNK = "IHDR";
 const PNG_ITXT_CHUNK = "iTXt";
@@ -1729,6 +1730,38 @@ test("rust chart detector should detect separator-board burger chart", async () 
   const cropHeight = (result?.cropBox[3] ?? 0) - (result?.cropBox[1] ?? 0);
   expect(cropWidth).toBeGreaterThan(raster.width * 0.95);
   expect(cropHeight).toBeGreaterThan(raster.height * 0.8);
+});
+
+test("auto chart import should make gray-white checkerboard background transparent", async () => {
+  const raster = loadRasterWithPowerShell(grayWhiteBoardImagePath);
+  const file = new File(["stub"], "gray-white-board-50x51.jpg", { type: "image/jpeg" });
+
+  const result = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "auto",
+      renderStyleBias: 100,
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+    }),
+  );
+
+  expect(result.detectionMode).toBe("detected-wasm-chart");
+  expect(result.gridWidth).toBeGreaterThanOrEqual(50);
+  expect(result.gridHeight).toBeGreaterThanOrEqual(51);
+  const trailingCells = result.cells.slice(result.gridWidth * 51);
+  expect(trailingCells.filter((cell) => cell.label !== null).length).toBeLessThanOrEqual(12);
+  expect("editorCells" in result).toBe(false);
+  expect(result.cells[2 * result.gridWidth + 50]?.label).toBeNull();
+  const h2Count = result.colors.find((color) => color.label === "H2")?.count ?? 0;
+  const c16Count = result.colors.find((color) => color.label === "C16")?.count ?? 0;
+  expect(h2Count).toBeLessThan(760);
+  expect(c16Count).toBeGreaterThan(200);
+  expect(c16Count).toBeLessThan(330);
+  expect(result.cells[18 * result.gridWidth + 3]?.label).not.toBeNull();
+  expect(result.cells[20 * result.gridWidth + 25]?.label).not.toBeNull();
 });
 
 test("rust detector guide refinement should fix sanduonie chart crop and grid", async () => {

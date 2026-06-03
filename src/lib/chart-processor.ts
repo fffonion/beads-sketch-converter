@@ -48,8 +48,6 @@ const BOARD_FRAME_COLOR = "#111111";
 const CANVAS_BACKGROUND = "#F7F4EE";
 const OMITTED_BACKGROUND_HEX = "#FFFFFF";
 const MAX_DETECTION_EDGE = 768;
-const CHART_EDGE_SAMPLE_PROGRESS = [0.15, 0.2, 0.3, 0.35];
-const CHART_EDGE_SAMPLE_INSET = 0.18;
 const MIN_VISIBLE_PIXEL_ALPHA = 8;
 const MIN_MATCHABLE_CELL_ALPHA = 32;
 const GRAYSCALE_CURVE_BLEND = 0.55;
@@ -823,6 +821,7 @@ export async function processImageFile(
   let detectionMode: string;
   let preferredEditorMode: "edit" | "pindou" = "edit";
   let detectedCropRect: NormalizedCropRect | null = null;
+  let chartOpenCheckerboardMask: Uint8Array | null = null;
 
   if (options.gridMode === "auto") {
     const wasmDetection = await getCachedAutoDetection(source);
@@ -843,6 +842,11 @@ export async function processImageFile(
           "chart-edge",
           DETECTED_SOURCE_RENDER_STYLE_BIAS / 100,
         ),
+      );
+      chartOpenCheckerboardMask = buildOpenCheckerboardBackgroundMask(
+        detectedCrop,
+        wasmDetection.gridWidth,
+        wasmDetection.gridHeight,
       );
       stageProfile.mark("build-logical-grid");
       logicalProtectedMask = null;
@@ -1025,11 +1029,18 @@ export async function processImageFile(
     }
   }
   stageProfile.mark("post-palette-reduce");
-  const normalizedCells = collapseOpenBackgroundAreas(
-    matched.cells,
-    gridWidth,
-    gridHeight,
-  );
+  const chartMaskedCells =
+    detectionMode === "detected-wasm-chart" && chartOpenCheckerboardMask
+      ? applyOpenBackgroundMaskToCells(matched.cells, chartOpenCheckerboardMask)
+      : matched.cells;
+  const normalizedCells =
+    detectionMode === "detected-wasm-chart"
+      ? chartMaskedCells.map((cell) => normalizeEditableCell(cell))
+      : collapseOpenBackgroundAreas(
+          matched.cells,
+          gridWidth,
+          gridHeight,
+        );
   stageProfile.mark("normalize-cells");
   const colors = summarizeCells(normalizedCells, paletteDefinition);
   const totalBeads = colors.reduce((sum, color) => sum + color.count, 0);
@@ -2104,91 +2115,123 @@ function representativePixelFromChartPatch(
   bottom: number,
 ): RepresentativePixel {
   const fallback = representativePixelFromPatch(image, left, top, right, bottom);
-  const width = Math.max(1, right - left);
-  const height = Math.max(1, bottom - top);
-  const xInset = Math.max(0, Math.min(width - 1, Math.round((width - 1) * CHART_EDGE_SAMPLE_INSET)));
-  const yInset = Math.max(0, Math.min(height - 1, Math.round((height - 1) * CHART_EDGE_SAMPLE_INSET)));
-  const samples: Rgb[] = [];
+  if (!isLightNeutralPatchColor(fallback.rgb)) {
+    return fallback;
+  }
 
-  function samplePoint(centerX: number, centerY: number) {
-    const startX = Math.max(left, centerX - 1);
-    const endX = Math.min(right - 1, centerX + 1);
-    const startY = Math.max(top, centerY - 1);
-    const endY = Math.min(bottom - 1, centerY + 1);
-    const sums: [number, number, number] = [0, 0, 0];
-    let count = 0;
-    for (let y = startY; y <= endY; y += 1) {
-      for (let x = startX; x <= endX; x += 1) {
-        const pixelIndex = (y * image.width + x) * 4;
-        const alpha = image.data[pixelIndex + 3];
-        if (alpha < MIN_VISIBLE_PIXEL_ALPHA) {
-          continue;
-        }
-        sums[0] += image.data[pixelIndex];
-        sums[1] += image.data[pixelIndex + 1];
-        sums[2] += image.data[pixelIndex + 2];
-        count += 1;
+  const foreground = representativeForegroundPixelFromChartPatch(
+    image,
+    left,
+    top,
+    right,
+    bottom,
+  );
+  return foreground ? { rgb: foreground, alpha: fallback.alpha } : fallback;
+}
+
+function representativeForegroundPixelFromChartPatch(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): Rgb | null {
+  const patchWidth = Math.max(1, right - left);
+  const patchHeight = Math.max(1, bottom - top);
+  const totalPixels = patchWidth * patchHeight;
+  const bucketCodes = new Int32Array(totalPixels);
+  bucketCodes.fill(-1);
+  const buckets = new Map<number, { count: number; sum: [number, number, number]; support: number }>();
+  let visiblePixels = 0;
+
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const pixelIndex = (y * image.width + x) * 4;
+      const alpha = image.data[pixelIndex + 3];
+      if (alpha < MIN_VISIBLE_PIXEL_ALPHA) {
+        continue;
+      }
+      const red = image.data[pixelIndex];
+      const green = image.data[pixelIndex + 1];
+      const blue = image.data[pixelIndex + 2];
+      const code = ((red >> 3) << 10) | ((green >> 3) << 5) | (blue >> 3);
+      const localIndex = (y - top) * patchWidth + (x - left);
+      bucketCodes[localIndex] = code;
+      const current = buckets.get(code) ?? { count: 0, sum: [0, 0, 0], support: 0 };
+      current.count += 1;
+      current.sum[0] += red;
+      current.sum[1] += green;
+      current.sum[2] += blue;
+      buckets.set(code, current);
+      visiblePixels += 1;
+    }
+  }
+
+  if (!visiblePixels) {
+    return null;
+  }
+
+  for (let y = 0; y < patchHeight; y += 1) {
+    for (let x = 0; x < patchWidth; x += 1) {
+      const code = bucketCodes[y * patchWidth + x]!;
+      if (code < 0) {
+        continue;
+      }
+      const bucket = buckets.get(code);
+      if (!bucket) {
+        continue;
+      }
+      if (x + 1 < patchWidth && bucketCodes[y * patchWidth + x + 1] === code) {
+        bucket.support += 2;
+      }
+      if (y + 1 < patchHeight && bucketCodes[(y + 1) * patchWidth + x] === code) {
+        bucket.support += 2;
       }
     }
-    if (!count) {
-      return;
-    }
-    samples.push([
-      clampToByte(sums[0] / count),
-      clampToByte(sums[1] / count),
-      clampToByte(sums[2] / count),
-    ]);
   }
 
-  for (const progress of CHART_EDGE_SAMPLE_PROGRESS) {
-    const primaryX = left + Math.round((width - 1) * progress);
-    const mirroredX = left + Math.round((width - 1) * (1 - progress));
-    const primaryY = top + Math.round((height - 1) * progress);
-    const mirroredY = top + Math.round((height - 1) * (1 - progress));
-
-    samplePoint(primaryX, top + yInset);
-    samplePoint(mirroredX, top + yInset);
-    samplePoint(primaryX, bottom - 1 - yInset);
-    samplePoint(mirroredX, bottom - 1 - yInset);
-    samplePoint(left + xInset, primaryY);
-    samplePoint(left + xInset, mirroredY);
-    samplePoint(right - 1 - xInset, primaryY);
-    samplePoint(right - 1 - xInset, mirroredY);
-  }
-
-  if (!samples.length) {
-    return fallback;
-  }
-
-  const buckets = new Map<number, { count: number; sum: [number, number, number] }>();
-  for (const sample of samples) {
-    const code = ((sample[0] >> 3) << 10) | ((sample[1] >> 3) << 5) | (sample[2] >> 3);
-    const current = buckets.get(code) ?? { count: 0, sum: [0, 0, 0] };
-    current.count += 1;
-    current.sum[0] += sample[0];
-    current.sum[1] += sample[1];
-    current.sum[2] += sample[2];
-    buckets.set(code, current);
-  }
-
-  let best: { count: number; sum: [number, number, number] } | null = null;
+  let best: { count: number; sum: [number, number, number]; support: number } | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
   for (const bucket of buckets.values()) {
-    if (!best || bucket.count > best.count) {
+    const rgb: Rgb = [
+      clampToByte(bucket.sum[0] / bucket.count),
+      clampToByte(bucket.sum[1] / bucket.count),
+      clampToByte(bucket.sum[2] / bucket.count),
+    ];
+    const coverage = bucket.count / visiblePixels;
+    if (
+      !isChartForegroundPatchColor(rgb) ||
+      coverage < 0.055 ||
+      bucket.support < bucket.count * 1.5
+    ) {
+      continue;
+    }
+    const score = bucket.count * 4 + bucket.support;
+    if (!best || score > bestScore) {
       best = bucket;
+      bestScore = score;
     }
   }
-  if (!best) {
-    return fallback;
-  }
 
-  return {
-    rgb: [
-      clampToByte(best.sum[0] / best.count),
-      clampToByte(best.sum[1] / best.count),
-      clampToByte(best.sum[2] / best.count),
-    ],
-    alpha: fallback.alpha,
-  };
+  return best
+    ? [
+        clampToByte(best.sum[0] / best.count),
+        clampToByte(best.sum[1] / best.count),
+        clampToByte(best.sum[2] / best.count),
+      ]
+    : null;
+}
+
+function isLightNeutralPatchColor(rgb: Rgb) {
+  const luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const chroma = Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+  return luma >= 205 && chroma <= 36;
+}
+
+function isChartForegroundPatchColor(rgb: Rgb) {
+  const luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const chroma = Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+  return chroma >= 38 || luma < 165;
 }
 
 function weightedAveragePixelFromPatch(
@@ -2317,6 +2360,272 @@ function sampleRegularGrid(
   }
 
   return { width: gridWidth, height: gridHeight, data };
+}
+
+function buildOpenCheckerboardBackgroundMask(
+  sourceCrop: RasterImage,
+  gridWidth: number,
+  gridHeight: number,
+): Uint8Array | null {
+  if (
+    gridWidth < 20 ||
+    gridHeight < 20 ||
+    sourceCrop.width <= 0 ||
+    sourceCrop.height <= 0
+  ) {
+    return null;
+  }
+
+  const xEdges = buildEdges(sourceCrop.width, gridWidth);
+  const yEdges = buildEdges(sourceCrop.height, gridHeight);
+  const candidates = new Uint8Array(gridWidth * gridHeight);
+  const lumas = new Float32Array(gridWidth * gridHeight);
+
+  for (let row = 0; row < gridHeight; row += 1) {
+    const top = yEdges[row];
+    const bottom = Math.max(yEdges[row + 1], top + 1);
+    for (let column = 0; column < gridWidth; column += 1) {
+      const left = xEdges[column];
+      const right = Math.max(xEdges[column + 1], left + 1);
+      const profile = sampleCheckerboardBackgroundCell(sourceCrop, left, top, right, bottom);
+      const index = row * gridWidth + column;
+      lumas[index] = profile.luma;
+      candidates[index] = Number(
+        profile.lightNeutralRatio >= 0.35 &&
+          profile.coloredRatio <= 0.16 &&
+          profile.darkRatio <= 0.42,
+      );
+    }
+  }
+
+  const checkerboardMask = traceConnectedCheckerboardBackground(
+    candidates,
+    lumas,
+    gridWidth,
+    gridHeight,
+  );
+
+  for (const value of checkerboardMask) {
+    if (value) {
+      return checkerboardMask;
+    }
+  }
+
+  return null;
+}
+
+function applyOpenBackgroundMaskToCells(
+  cells: EditableCell[],
+  openMask: Uint8Array,
+): EditableCell[] {
+  return cells.map((cell, index) =>
+    openMask[index]
+      ? { label: null, hex: null, source: null }
+      : normalizeEditableCell(cell),
+  );
+}
+
+function sampleCheckerboardBackgroundCell(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+) {
+  const insetX = Math.max(1, Math.round((right - left) * 0.12));
+  const insetY = Math.max(1, Math.round((bottom - top) * 0.12));
+  const sampleLeft = Math.min(right - 1, left + insetX);
+  const sampleTop = Math.min(bottom - 1, top + insetY);
+  const sampleRight = Math.max(sampleLeft + 1, right - insetX);
+  const sampleBottom = Math.max(sampleTop + 1, bottom - insetY);
+  let coloredHits = 0;
+  let darkHits = 0;
+  let lightNeutralHits = 0;
+  let lumaSum = 0;
+  let total = 0;
+
+  for (let y = sampleTop; y < sampleBottom; y += 1) {
+    for (let x = sampleLeft; x < sampleRight; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      if ((image.data[offset + 3] ?? 255) < MIN_VISIBLE_PIXEL_ALPHA) {
+        continue;
+      }
+      const red = image.data[offset] ?? 255;
+      const green = image.data[offset + 1] ?? 255;
+      const blue = image.data[offset + 2] ?? 255;
+      const luma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+      if (luma < 242 && chroma > 18) {
+        coloredHits += 1;
+      }
+      if (luma < 132) {
+        darkHits += 1;
+      }
+      if (luma >= 168 && chroma <= 30) {
+        lightNeutralHits += 1;
+      }
+      lumaSum += luma;
+      total += 1;
+    }
+  }
+
+  const safeTotal = Math.max(1, total);
+  return {
+    coloredRatio: coloredHits / safeTotal,
+    darkRatio: darkHits / safeTotal,
+    lightNeutralRatio: lightNeutralHits / safeTotal,
+    luma: lumaSum / safeTotal,
+  };
+}
+
+function traceConnectedCheckerboardBackground(
+  candidates: Uint8Array,
+  lumas: Float32Array,
+  gridWidth: number,
+  gridHeight: number,
+): Uint8Array {
+  const model = buildCheckerboardLumaModel(candidates, lumas, gridWidth, gridHeight);
+  const mask = new Uint8Array(candidates.length);
+  if (!model) {
+    return mask;
+  }
+  const checkerboardModel = model;
+
+  const queue: number[] = [];
+  function enqueue(row: number, column: number) {
+    if (row < 0 || column < 0 || row >= gridHeight || column >= gridWidth) {
+      return;
+    }
+    const index = row * gridWidth + column;
+    if (
+      mask[index] ||
+      !isCheckerboardBackgroundCell(candidates, lumas, index, row, column, gridWidth, checkerboardModel)
+    ) {
+      return;
+    }
+    mask[index] = 1;
+    queue.push(index);
+  }
+
+  for (let column = 0; column < gridWidth; column += 1) {
+    enqueue(0, column);
+    enqueue(gridHeight - 1, column);
+  }
+  for (let row = 1; row < gridHeight - 1; row += 1) {
+    enqueue(row, 0);
+    enqueue(row, gridWidth - 1);
+  }
+
+  while (queue.length > 0) {
+    const index = queue.pop()!;
+    const row = Math.floor(index / gridWidth);
+    const column = index % gridWidth;
+    enqueue(row - 1, column);
+    enqueue(row + 1, column);
+    enqueue(row, column - 1);
+    enqueue(row, column + 1);
+  }
+
+  return mask;
+}
+
+function buildCheckerboardLumaModel(
+  candidates: Uint8Array,
+  lumas: Float32Array,
+  gridWidth: number,
+  gridHeight: number,
+) {
+  const values: number[] = [];
+  const edgeBand = Math.max(2, Math.min(6, Math.round(Math.min(gridWidth, gridHeight) * 0.08)));
+
+  function collect(row: number, column: number) {
+    const index = row * gridWidth + column;
+    if (!candidates[index]) {
+      return;
+    }
+    values.push(lumas[index] ?? 255);
+  }
+
+  for (let row = 0; row < gridHeight; row += 1) {
+    for (let column = 0; column < gridWidth; column += 1) {
+      if (
+        row < edgeBand ||
+        column < edgeBand ||
+        row >= gridHeight - edgeBand ||
+        column >= gridWidth - edgeBand
+      ) {
+        collect(row, column);
+      }
+    }
+  }
+
+  if (values.length < 16) {
+    return null;
+  }
+  values.sort((left, right) => left - right);
+  const low = values[Math.floor(values.length * 0.05)] ?? 168;
+  const high = values[Math.floor(values.length * 0.95)] ?? 255;
+  return {
+    minLuma: Math.max(155, low - 22),
+    maxLuma: Math.min(255, high + 22),
+  };
+}
+
+function isCheckerboardBackgroundCell(
+  candidates: Uint8Array,
+  lumas: Float32Array,
+  index: number,
+  row: number,
+  column: number,
+  gridWidth: number,
+  model: { minLuma: number; maxLuma: number },
+) {
+  if (!candidates[index]) {
+    return false;
+  }
+  if (hasForegroundNeighbor(candidates, lumas, row, column, gridWidth, model)) {
+    return false;
+  }
+  const luma = lumas[index] ?? 255;
+  return luma >= model.minLuma && luma <= model.maxLuma;
+}
+
+function hasForegroundNeighbor(
+  candidates: Uint8Array,
+  lumas: Float32Array,
+  row: number,
+  column: number,
+  gridWidth: number,
+  model: { minLuma: number; maxLuma: number },
+) {
+  const gridHeight = Math.floor(candidates.length / Math.max(1, gridWidth));
+  const neighbors = [
+    [row - 1, column],
+    [row + 1, column],
+    [row, column - 1],
+    [row, column + 1],
+  ] as const;
+
+  for (const [neighborRow, neighborColumn] of neighbors) {
+    if (
+      neighborRow < 0 ||
+      neighborColumn < 0 ||
+      neighborRow >= gridHeight ||
+      neighborColumn >= gridWidth
+    ) {
+      continue;
+    }
+    const neighborIndex = neighborRow * gridWidth + neighborColumn;
+    if (candidates[neighborIndex]) {
+      continue;
+    }
+    const luma = lumas[neighborIndex] ?? 255;
+    if (luma < Math.min(205, model.minLuma + 28)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function sampleFixedSquareGrid(
