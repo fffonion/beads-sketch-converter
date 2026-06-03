@@ -122,6 +122,16 @@ export async function detectAutoRasterWithWasm(
     : null;
 
   if (chart && rawPixel && pixel) {
+    if (isLikelyFullCanvasGridPixelArt(raster, chart, rawPixel)) {
+      return {
+        kind: "pixel",
+        cropBox: pixel.cropBox,
+        gridWidth: pixel.gridWidth,
+        gridHeight: pixel.gridHeight,
+        confidence: pixel.confidence,
+      };
+    }
+
     if (isLikelyTrimmedFullPageChart(raster, chart, rawPixel)) {
       return {
         kind: "chart",
@@ -139,6 +149,17 @@ export async function detectAutoRasterWithWasm(
         gridWidth: pixel.gridWidth,
         gridHeight: pixel.gridHeight,
         confidence: pixel.confidence,
+      };
+    }
+
+    if (isLikelyPromotedPixelArtCandidate(raster, chart, rawPixel)) {
+      const visualPixel = buildVisualContentPixelDetection(raster, rawPixel) ?? pixel;
+      return {
+        kind: "pixel",
+        cropBox: visualPixel.cropBox,
+        gridWidth: visualPixel.gridWidth,
+        gridHeight: visualPixel.gridHeight,
+        confidence: visualPixel.confidence,
       };
     }
 
@@ -530,6 +551,7 @@ function scoreAutoCandidate(
     ((left + raster.width - right) / Math.max(1, raster.width) +
       (top + raster.height - bottom) / Math.max(1, raster.height)) *
     0.5;
+  const centeredMarginScore = measureCenteredMarginScore(raster, detection.cropBox);
   const coordinateBandBonus =
     Math.max(0, 0.12 - Math.max(outside.top, outside.left, outside.right)) * 6.5;
 
@@ -538,6 +560,8 @@ function scoreAutoCandidate(
       detection.confidence * 5.5 +
       outsideContentRatio * 1.8 +
       marginRatio * 1.2 +
+      centeredMarginScore * 0.8 -
+      (1 - centeredMarginScore) * 0.9 +
       coordinateBandBonus +
       cropAreaRatio * 0.25 +
       Math.min(cellSize, 48) * 0.02 -
@@ -554,6 +578,265 @@ function scoreAutoCandidate(
     Math.min(cellSize, 48) * 0.03 -
     aspectPenalty * 0.5
   );
+}
+
+function isLikelyPromotedPixelArtCandidate(
+  raster: RasterImageLike,
+  chart: WasmChartDetection,
+  pixel: WasmPixelDetection,
+) {
+  const sameCropOverlap = measureBoxOverlapRatio(chart.cropBox, pixel.cropBox);
+  if (sameCropOverlap < 0.97) {
+    return false;
+  }
+
+  if (
+    Math.abs(chart.gridWidth - pixel.gridWidth) > 1 ||
+    Math.abs(chart.gridHeight - pixel.gridHeight) > 1
+  ) {
+    return false;
+  }
+
+  if (chart.confidence > pixel.confidence + 0.06) {
+    return false;
+  }
+
+  return (
+    !hasCenteredMarginAxis(raster, chart.cropBox) ||
+    countBoundaryFallbackSides(raster, chart.cropBox) >= 2
+  );
+}
+
+function isLikelyFullCanvasGridPixelArt(
+  raster: RasterImageLike,
+  chart: WasmChartDetection,
+  pixel: WasmPixelDetection,
+) {
+  if (countBoundaryFallbackSides(raster, pixel.cropBox) < 4) {
+    return false;
+  }
+
+  if (pixel.confidence < chart.confidence + 0.04) {
+    return false;
+  }
+
+  const chartArea =
+    (chart.cropBox[2] - chart.cropBox[0]) * (chart.cropBox[3] - chart.cropBox[1]);
+  const pixelArea =
+    (pixel.cropBox[2] - pixel.cropBox[0]) * (pixel.cropBox[3] - pixel.cropBox[1]);
+  return (
+    pixelArea >= chartArea * 1.08 &&
+    pixel.gridWidth >= chart.gridWidth &&
+    pixel.gridHeight >= chart.gridHeight
+  );
+}
+
+function buildVisualContentPixelDetection(
+  raster: RasterImageLike,
+  detection: WasmPixelDetection,
+): WasmPixelDetection | null {
+  const contentBox = findLargestBackgroundDifferentComponent(raster);
+  if (!contentBox) {
+    return null;
+  }
+
+  const [left, top, right, bottom] = contentBox;
+  const width = right - left;
+  const height = bottom - top;
+  const cropWidth = detection.cropBox[2] - detection.cropBox[0];
+  const cropHeight = detection.cropBox[3] - detection.cropBox[1];
+  const cellWidth = cropWidth / Math.max(1, detection.gridWidth);
+  const cellHeight = cropHeight / Math.max(1, detection.gridHeight);
+  const gridWidth = Math.round(width / Math.max(1, cellWidth));
+  const gridHeight = Math.round(height / Math.max(1, cellHeight));
+  if (gridWidth < 4 || gridHeight < 4 || gridWidth > 102 || gridHeight > 102) {
+    return null;
+  }
+
+  return {
+    cropBox: contentBox,
+    gridWidth,
+    gridHeight,
+    confidence: Math.min(0.99, detection.confidence + 0.02),
+  };
+}
+
+function findLargestBackgroundDifferentComponent(
+  raster: RasterImageLike,
+): [number, number, number, number] | null {
+  if (raster.width < 8 || raster.height < 8) {
+    return null;
+  }
+
+  const background = estimateCornerBackgroundColor(raster);
+  const threshold = 16;
+  const pixelCount = raster.width * raster.height;
+  const mask = new Uint8Array(pixelCount);
+  for (let index = 0; index < pixelCount; index += 1) {
+    const dataIndex = index * 4;
+    const alpha = raster.data[dataIndex + 3] ?? 255;
+    if (alpha <= 16) {
+      continue;
+    }
+
+    const delta = Math.max(
+      Math.abs((raster.data[dataIndex] ?? 0) - background[0]),
+      Math.abs((raster.data[dataIndex + 1] ?? 0) - background[1]),
+      Math.abs((raster.data[dataIndex + 2] ?? 0) - background[2]),
+    );
+    if (delta > threshold) {
+      mask[index] = 1;
+    }
+  }
+
+  const seen = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let best: { left: number; top: number; right: number; bottom: number; count: number } | null =
+    null;
+
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      const start = y * raster.width + x;
+      if (mask[start] === 0 || seen[start] !== 0) {
+        continue;
+      }
+
+      let head = 0;
+      let tail = 0;
+      let count = 0;
+      let left = x;
+      let top = y;
+      let right = x + 1;
+      let bottom = y + 1;
+      seen[start] = 1;
+      queue[tail] = start;
+      tail += 1;
+
+      while (head < tail) {
+        const current = queue[head] ?? 0;
+        head += 1;
+        count += 1;
+        const currentX = current % raster.width;
+        const currentY = Math.floor(current / raster.width);
+        left = Math.min(left, currentX);
+        top = Math.min(top, currentY);
+        right = Math.max(right, currentX + 1);
+        bottom = Math.max(bottom, currentY + 1);
+
+        const neighbors = [
+          currentX > 0 ? current - 1 : -1,
+          currentX + 1 < raster.width ? current + 1 : -1,
+          currentY > 0 ? current - raster.width : -1,
+          currentY + 1 < raster.height ? current + raster.width : -1,
+        ];
+        for (const neighbor of neighbors) {
+          if (neighbor < 0 || mask[neighbor] === 0 || seen[neighbor] !== 0) {
+            continue;
+          }
+          seen[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+
+      if (!best || count > best.count) {
+        best = { left, top, right, bottom, count };
+      }
+    }
+  }
+
+  if (!best || best.count < pixelCount / 200) {
+    return null;
+  }
+
+  return [best.left, best.top, best.right, best.bottom];
+}
+
+function estimateCornerBackgroundColor(raster: RasterImageLike): [number, number, number] {
+  const samples: Array<[number, number, number]> = [];
+  const patchSize = Math.max(2, Math.min(8, Math.floor(Math.min(raster.width, raster.height) / 64)));
+  const corners = [
+    [0, 0],
+    [raster.width - patchSize, 0],
+    [0, raster.height - patchSize],
+    [raster.width - patchSize, raster.height - patchSize],
+  ];
+
+  for (const [startX, startY] of corners) {
+    for (let y = startY; y < startY + patchSize; y += 1) {
+      for (let x = startX; x < startX + patchSize; x += 1) {
+        const index = (y * raster.width + x) * 4;
+        if ((raster.data[index + 3] ?? 255) <= 16) {
+          continue;
+        }
+        samples.push([
+          raster.data[index] ?? 0,
+          raster.data[index + 1] ?? 0,
+          raster.data[index + 2] ?? 0,
+        ]);
+      }
+    }
+  }
+
+  if (samples.length === 0) {
+    return [255, 255, 255];
+  }
+
+  return [0, 1, 2].map((channel) => {
+    const values = samples.map((sample) => sample[channel] ?? 0).sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)] ?? 255;
+  }) as [number, number, number];
+}
+
+function hasCenteredMarginAxis(
+  raster: RasterImageLike,
+  cropBox: [number, number, number, number],
+) {
+  return measureCenteredMarginScore(raster, cropBox) >= 0.55;
+}
+
+function measureCenteredMarginScore(
+  raster: RasterImageLike,
+  cropBox: [number, number, number, number],
+) {
+  const [left, top, right, bottom] = cropBox;
+  const horizontal = marginSimilarity(left, raster.width - right);
+  const vertical = marginSimilarity(top, raster.height - bottom);
+  return Math.max(horizontal, vertical);
+}
+
+function marginSimilarity(first: number, second: number) {
+  const total = Math.max(1, first + second);
+  return 1 - Math.abs(first - second) / total;
+}
+
+function countBoundaryFallbackSides(
+  raster: RasterImageLike,
+  cropBox: [number, number, number, number],
+) {
+  const [left, top, right, bottom] = cropBox;
+  return [
+    left <= 1,
+    top <= 1,
+    raster.width - right <= 1,
+    raster.height - bottom <= 1,
+  ].filter(Boolean).length;
+}
+
+function measureBoxOverlapRatio(
+  first: [number, number, number, number],
+  second: [number, number, number, number],
+) {
+  const overlapLeft = Math.max(first[0], second[0]);
+  const overlapTop = Math.max(first[1], second[1]);
+  const overlapRight = Math.min(first[2], second[2]);
+  const overlapBottom = Math.min(first[3], second[3]);
+  const overlapWidth = Math.max(0, overlapRight - overlapLeft);
+  const overlapHeight = Math.max(0, overlapBottom - overlapTop);
+  const overlapArea = overlapWidth * overlapHeight;
+  const firstArea = Math.max(1, (first[2] - first[0]) * (first[3] - first[1]));
+  const secondArea = Math.max(1, (second[2] - second[0]) * (second[3] - second[1]));
+  return overlapArea / Math.min(firstArea, secondArea);
 }
 
 function expandPixelDetectionToGridCanvas(

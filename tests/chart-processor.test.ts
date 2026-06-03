@@ -46,6 +46,7 @@ const burgerChartImagePath = join(fixtureDir, "burger_chart.jpg");
 const xiaodouniChartImagePath = join(fixtureDir, "xiaodouni_wrong_right_4.jpeg");
 const sanduonieChartImagePath = join(fixtureDir, "sanduonie_puppet_chart.jpeg");
 const grayWhiteBoardImagePath = join(fixtureDir, "gray_white_board_50x51.jpg");
+const longLinePixelArtImagePath = join(fixtureDir, "pixel_art_long_lines_not_chart.jpg");
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 const PNG_IHDR_CHUNK = "IHDR";
 const PNG_ITXT_CHUNK = "iTXt";
@@ -1629,6 +1630,24 @@ test("auto detect should keep the full canvas for grid-backed pixel art", async 
   expect(result.cropBox).toEqual([0, 0, raster.width, raster.height]);
   expect(result.gridWidth).toBe(gridWidth);
   expect(result.gridHeight).toBe(gridHeight);
+});
+
+test("auto detect should keep long-line pixel art in pixel mode", async () => {
+  const raster = loadRasterWithPowerShell(longLinePixelArtImagePath);
+  const result = await debugAutoDetectRaster(raster, basename(longLinePixelArtImagePath));
+
+  expect(result.mode).toBe("detected-wasm-pixel");
+  expect(result.cropBox).not.toBeNull();
+
+  const [left, top, right, bottom] = result.cropBox!;
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  expect(left).toBeLessThan(raster.width * 0.25);
+  expect(top).toBeLessThan(raster.height * 0.25);
+  expect(right).toBeLessThan(raster.width * 0.9);
+  expect(bottom).toBeLessThan(raster.height * 0.9);
+  expect(cropWidth).toBeGreaterThan(raster.width * 0.55);
+  expect(cropHeight).toBeGreaterThan(raster.height * 0.55);
 });
 
 test("grid-backed pixel expansion should recover a full grid canvas from a subject crop", () => {
