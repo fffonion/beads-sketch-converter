@@ -83,15 +83,24 @@ fn detect_chart_with_luma(
         }
     }
 
-    choose_best_detection(
-        candidates.into_iter().map(|detection| {
+    let mut refined_candidates = candidates
+        .into_iter()
+        .map(|detection| {
             let detection = refine_inner_framed_chart(rgba, luma, width, height, detection)
                 .unwrap_or(detection);
             let detection = refine_guide_detection(rgba, width, height, detection);
             trim_chart_outer_bands(rgba, width, height, detection)
-        }),
-        |detection| score_chart_detection(width, height, detection),
-    )
+        })
+        .collect::<Vec<_>>();
+    if refined_candidates.is_empty()
+        && let Some(detection) = detect_semantic_grid_frame_inner(rgba, luma, width, height)
+    {
+        refined_candidates.push(detection);
+    }
+
+    choose_best_detection(refined_candidates, |detection| {
+        score_chart_detection(width, height, detection)
+    })
 }
 
 fn push_contextual_chart_candidate(
@@ -225,6 +234,718 @@ fn detect_framed_chart_inner(
         grid_height,
         0.96,
     ))
+}
+
+fn detect_semantic_grid_frame_inner(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+) -> Option<Detection> {
+    if let Some(detection) = detect_coordinate_band_chart_inner(rgba, luma, width, height) {
+        return Some(detection);
+    }
+
+    let mut column_projection = build_column_edge_projection(luma, width, height);
+    let mut row_projection = build_row_edge_projection(luma, width, height);
+    smooth_projection(&mut column_projection, 4);
+    smooth_projection(&mut row_projection, 4);
+
+    let x_candidates = collect_axis_grid_candidates(&column_projection, width);
+    let y_candidates = collect_axis_grid_candidates(&row_projection, height);
+    let mut candidates = Vec::<SemanticFrameCandidate>::new();
+
+    for x_axis in &x_candidates {
+        for y_axis in &y_candidates {
+            if x_axis.cells < 20 || y_axis.cells < 20 {
+                continue;
+            }
+
+            let crop_width = x_axis.end.saturating_sub(x_axis.start);
+            let crop_height = y_axis.end.saturating_sub(y_axis.start);
+            if crop_width < width / 3 || crop_height < height / 3 {
+                continue;
+            }
+
+            let area_ratio = (crop_width * crop_height) as f32 / (width * height).max(1) as f32;
+            if !(0.24..=0.985).contains(&area_ratio) {
+                continue;
+            }
+
+            if !matches_grid_aspect(crop_width, crop_height, x_axis.cells, y_axis.cells, 1.16) {
+                continue;
+            }
+
+            let detection = make_detection(
+                x_axis.start,
+                y_axis.start,
+                x_axis.end,
+                y_axis.end,
+                x_axis.cells,
+                y_axis.cells,
+                0.9,
+            );
+            if detection.cell_width() < 23.0 || detection.cell_height() < 23.0 {
+                continue;
+            }
+
+            let rect = RectBox {
+                left: detection.left,
+                top: detection.top,
+                right: detection.right,
+                bottom: detection.bottom,
+            };
+            let vertical_strength = estimate_axis_boundary_strength_in_rect(
+                luma,
+                width,
+                rect,
+                detection.left,
+                detection.cell_width(),
+                detection.grid_width,
+                true,
+            );
+            let horizontal_strength = estimate_axis_boundary_strength_in_rect(
+                luma,
+                width,
+                rect,
+                detection.top,
+                detection.cell_height(),
+                detection.grid_height,
+                false,
+            );
+            let distributed_vertical_strength = estimate_distributed_axis_grid_strength(
+                luma,
+                width,
+                rect,
+                detection.left,
+                detection.cell_width(),
+                detection.grid_width,
+                true,
+            );
+            let distributed_horizontal_strength = estimate_distributed_axis_grid_strength(
+                luma,
+                width,
+                rect,
+                detection.top,
+                detection.cell_height(),
+                detection.grid_height,
+                false,
+            );
+            let grid_strength = vertical_strength
+                .min(horizontal_strength)
+                .min(distributed_vertical_strength)
+                .min(distributed_horizontal_strength);
+            if grid_strength < 1.02 {
+                continue;
+            }
+
+            let center_score = centered_box_score(width, height, detection);
+            let cell_ratio = if x_axis.cell_size > y_axis.cell_size {
+                x_axis.cell_size / y_axis.cell_size.max(0.0001)
+            } else {
+                y_axis.cell_size / x_axis.cell_size.max(0.0001)
+            };
+            if cell_ratio > 1.18 {
+                continue;
+            }
+
+            let side_score = (x_axis.side_ratio + y_axis.side_ratio) * 0.5;
+            let border_score = semantic_border_consistency_score(rgba, width, height, detection);
+            let expected_span_ratio = 0.66;
+            let span_ratio_score = 1.0
+                - ((area_ratio.sqrt() - expected_span_ratio).abs() / expected_span_ratio).min(1.0);
+            let balanced_cell_score = 1.0
+                - ((x_axis.cells as f32 / y_axis.cells.max(1) as f32)
+                    - (crop_width as f32 / crop_height.max(1) as f32))
+                    .abs()
+                    .min(1.0);
+            let frame_score = x_axis.score
+                + y_axis.score
+                + area_ratio.min(0.72) * 1.4
+                + span_ratio_score * 1.8
+                + center_score * 1.6
+                + grid_strength.min(2.4) * 1.8
+                + border_score * 4.2
+                + side_score.min(2.2) * 0.8
+                + ((x_axis.boundary_ratio + y_axis.boundary_ratio) * 0.5).min(2.4) * 1.2
+                + balanced_cell_score * 2.0
+                - (cell_ratio - 1.0) * 8.0;
+            candidates.push(SemanticFrameCandidate {
+                detection: Detection {
+                    confidence: (0.72 + (frame_score / 30.0)).clamp(0.72, 0.9),
+                    ..detection
+                },
+                score: frame_score,
+            });
+        }
+    }
+
+    candidates
+        .into_iter()
+        .max_by(|left, right| left.score.total_cmp(&right.score))
+        .map(|candidate| {
+            let trimmed =
+                optimize_chart_band_trim(rgba, luma, width, height, candidate.detection, false);
+            optimize_chart_band_trim(rgba, luma, width, height, trimmed, true)
+        })
+}
+
+fn detect_coordinate_band_chart_inner(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+) -> Option<Detection> {
+    let x_signal = build_light_separator_coverage_signal(rgba, width, height, true);
+    let y_signal = build_light_separator_coverage_signal(rgba, width, height, false);
+    let x_bands = collect_coordinate_bands(&x_signal, width);
+    let y_bands = collect_coordinate_bands(&y_signal, height);
+    if x_bands.len() < 2 || y_bands.len() < 2 {
+        return None;
+    }
+
+    let mut candidates = Vec::<SemanticFrameCandidate>::new();
+    for left_band in x_bands
+        .iter()
+        .filter(|band| band.start <= width / 5 && band.end <= width / 3)
+    {
+        for right_band in x_bands
+            .iter()
+            .filter(|band| band.end >= width * 4 / 5 && band.start >= width * 2 / 3)
+        {
+            let left = left_band.end;
+            let right = right_band.start;
+            if right <= left + width / 2 {
+                continue;
+            }
+
+            for top_band in y_bands
+                .iter()
+                .filter(|band| band.start <= height / 5 && band.end <= height / 3)
+            {
+                for bottom_band in y_bands
+                    .iter()
+                    .filter(|band| band.end >= height * 2 / 3 && band.start >= height / 2)
+                {
+                    let top = top_band.end;
+                    let bottom = bottom_band.start;
+                    if bottom <= top + height / 2 {
+                        continue;
+                    }
+
+                    let crop_width = right - left;
+                    let crop_height = bottom - top;
+                    let area_ratio =
+                        (crop_width * crop_height) as f32 / (width * height).max(1) as f32;
+                    if !(0.32..=0.92).contains(&area_ratio) {
+                        continue;
+                    }
+
+                    let Some((grid_width, grid_height)) = estimate_coordinate_band_grid_size(
+                        rgba, luma, width, height, left, top, right, bottom,
+                    ) else {
+                        continue;
+                    };
+                    if !grid_size_in_range(grid_width, grid_height, 10, 102) {
+                        continue;
+                    }
+                    if !matches_grid_aspect(crop_width, crop_height, grid_width, grid_height, 1.14)
+                    {
+                        continue;
+                    }
+
+                    let detection =
+                        make_detection(left, top, right, bottom, grid_width, grid_height, 0.86);
+                    if detection.cell_width() < 6.0 || detection.cell_height() < 6.0 {
+                        continue;
+                    }
+
+                    let rect = RectBox {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    };
+                    let vertical_strength = estimate_axis_boundary_strength_in_rect(
+                        luma,
+                        width,
+                        rect,
+                        left,
+                        detection.cell_width(),
+                        grid_width,
+                        true,
+                    );
+                    let horizontal_strength = estimate_axis_boundary_strength_in_rect(
+                        luma,
+                        width,
+                        rect,
+                        top,
+                        detection.cell_height(),
+                        grid_height,
+                        false,
+                    );
+                    let grid_strength = vertical_strength.min(horizontal_strength);
+                    if grid_strength < 1.05 {
+                        continue;
+                    }
+
+                    let center_score = centered_box_score(width, height, detection);
+                    let band_score =
+                        left_band.score + right_band.score + top_band.score + bottom_band.score;
+                    let cell_ratio = (detection.cell_width() / detection.cell_height().max(0.0001))
+                        .max(detection.cell_height() / detection.cell_width().max(0.0001));
+                    let score = band_score
+                        + area_ratio * 2.0
+                        + center_score * 1.5
+                        + grid_strength.min(2.4) * 2.2
+                        - (cell_ratio - 1.0) * 8.0;
+                    candidates.push(SemanticFrameCandidate { detection, score });
+                }
+            }
+        }
+    }
+
+    candidates
+        .into_iter()
+        .max_by(|left, right| left.score.total_cmp(&right.score))
+        .map(|candidate| candidate.detection)
+}
+
+fn estimate_coordinate_band_grid_size(
+    rgba: &[u8],
+    luma: &[f32],
+    width: usize,
+    height: usize,
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+) -> Option<(usize, usize)> {
+    let crop_width = right.saturating_sub(left);
+    let crop_height = bottom.saturating_sub(top);
+    let x_signal = build_light_separator_crop_signal(rgba, width, left, right, top, bottom, true);
+    let y_signal = build_light_separator_crop_signal(rgba, width, left, right, top, bottom, false);
+    let x_period = estimate_period_from_fft(&x_signal)
+        .or_else(|| estimate_edge_period_for_crop(luma, width, left, right, top, bottom, true))
+        .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, true))?;
+    let y_period = estimate_period_from_fft(&y_signal)
+        .or_else(|| estimate_edge_period_for_crop(luma, width, left, right, top, bottom, false))
+        .or_else(|| dominant_period_for_crop(luma, width, left, right, top, bottom, false))?;
+    let (mut grid_width, mut grid_height) =
+        rounded_grid_size(crop_width, crop_height, x_period, y_period);
+
+    let rough = make_detection(left, top, right, bottom, grid_width, grid_height, 0.82);
+    if let Some((guide_period, _, _)) = detect_strong_guide_family(rgba, width, height, rough, true)
+    {
+        let guide_cell = guide_period as f32 / 5.0;
+        grid_width = (crop_width as f32 / guide_cell.max(1.0)).round() as usize;
+    }
+    if let Some((guide_period, _, _)) =
+        detect_strong_guide_family(rgba, width, height, rough, false)
+    {
+        let guide_cell = guide_period as f32 / 5.0;
+        grid_height = (crop_height as f32 / guide_cell.max(1.0)).round() as usize;
+    }
+
+    Some((grid_width, grid_height))
+}
+
+fn collect_coordinate_bands(signal: &[f32], axis_length: usize) -> Vec<AxisBand> {
+    if signal.len() < 24 {
+        return Vec::new();
+    }
+
+    let mean = signal.iter().copied().sum::<f32>() / signal.len().max(1) as f32;
+    let variance = signal
+        .iter()
+        .map(|value| {
+            let delta = *value - mean;
+            delta * delta
+        })
+        .sum::<f32>()
+        / signal.len().max(1) as f32;
+    let threshold = 0.52_f32.max(mean + variance.sqrt() * 0.85);
+    let min_width = (axis_length / 80).clamp(8, 28);
+    let max_width = (axis_length / 10).clamp(32, 120);
+    let mut bands = Vec::<AxisBand>::new();
+
+    let mut index = 0_usize;
+    while index < signal.len() {
+        if signal[index] < threshold {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        let mut total = 0.0_f32;
+        while index < signal.len() && signal[index] >= threshold {
+            total += signal[index];
+            index += 1;
+        }
+        let end = index;
+        let width = end.saturating_sub(start);
+        if width < min_width || width > max_width {
+            continue;
+        }
+
+        let coverage = total / width.max(1) as f32;
+        let edge_bias = 1.0
+            - ((start.min(axis_length.saturating_sub(end)) as f32
+                / (axis_length.max(1) as f32 * 0.22))
+                .min(1.0));
+        bands.push(AxisBand {
+            start,
+            end,
+            score: coverage * 2.0
+                + (width as f32 / min_width.max(1) as f32).min(2.0) * 0.5
+                + edge_bias,
+        });
+    }
+
+    bands.sort_by(|left, right| right.score.total_cmp(&left.score));
+    bands.truncate(12);
+    bands
+}
+
+fn collect_axis_grid_candidates(projection: &[f32], axis_length: usize) -> Vec<AxisGridCandidate> {
+    if projection.len() < 24 || axis_length < 24 {
+        return Vec::new();
+    }
+
+    let mean = projection.iter().sum::<f32>() / projection.len().max(1) as f32;
+    if mean <= 1e-3 {
+        return Vec::new();
+    }
+
+    let min_cell_size = 4_usize;
+    let max_cell_size = (axis_length / 10).clamp(8, 220);
+    let mut candidates = Vec::<AxisGridCandidate>::new();
+
+    for cell_size in min_cell_size..=max_cell_size {
+        let min_cells = 10_usize;
+        let max_cells = (axis_length / cell_size).min(102);
+        if max_cells < min_cells {
+            continue;
+        }
+
+        for origin in 0..cell_size {
+            for cells in min_cells..=max_cells {
+                let end = origin + cells * cell_size;
+                if end >= axis_length {
+                    break;
+                }
+
+                let span = end.saturating_sub(origin);
+                let span_ratio = span as f32 / axis_length.max(1) as f32;
+                if !(0.45..=0.985).contains(&span_ratio) {
+                    continue;
+                }
+
+                let left_margin = origin as f32 / axis_length.max(1) as f32;
+                let right_margin =
+                    axis_length.saturating_sub(end) as f32 / axis_length.max(1) as f32;
+                if left_margin > 0.24 || right_margin > 0.24 {
+                    continue;
+                }
+
+                let mut boundary_total = 0.0_f32;
+                for index in 0..=cells {
+                    boundary_total += sample_projection_at(projection, origin + index * cell_size);
+                }
+                let boundary_mean = boundary_total / (cells + 1) as f32;
+
+                let mut interior_total = 0.0_f32;
+                for index in 0..cells {
+                    interior_total += sample_projection_at_f32(
+                        projection,
+                        origin as f32 + (index as f32 + 0.5) * cell_size as f32,
+                    );
+                }
+                let interior_mean = interior_total / cells.max(1) as f32;
+                let boundary_ratio = boundary_mean / interior_mean.max(mean * 0.08).max(1e-3);
+                if boundary_ratio < 1.03 {
+                    continue;
+                }
+
+                let side_mean = (sample_projection_at(projection, origin)
+                    + sample_projection_at(projection, end))
+                    * 0.5;
+                let side_ratio = side_mean / mean.max(1e-3);
+                let center_score = 1.0 - (left_margin - right_margin).abs().min(0.28) / 0.28;
+                let boundary_signal = (boundary_mean / mean.max(1e-3)).min(3.2);
+                let cell_count_score = cells as f32 / 102.0;
+                let score = boundary_ratio.min(3.0) * 3.4
+                    + boundary_signal * 1.2
+                    + side_ratio.min(2.8) * 0.9
+                    + span_ratio * 1.6
+                    + center_score * 1.4
+                    + cell_count_score * 3.0;
+
+                push_axis_grid_candidate(
+                    &mut candidates,
+                    AxisGridCandidate {
+                        start: origin,
+                        end,
+                        cells,
+                        cell_size: cell_size as f32,
+                        score,
+                        boundary_ratio,
+                        side_ratio,
+                    },
+                );
+            }
+        }
+    }
+
+    candidates
+}
+
+fn push_axis_grid_candidate(candidates: &mut Vec<AxisGridCandidate>, candidate: AxisGridCandidate) {
+    for existing in candidates.iter_mut() {
+        if existing.start.abs_diff(candidate.start) <= 3
+            && existing.end.abs_diff(candidate.end) <= 3
+            && existing.cells.abs_diff(candidate.cells) <= 1
+        {
+            if candidate.score > existing.score {
+                *existing = candidate;
+            }
+            return;
+        }
+    }
+
+    candidates.push(candidate);
+    candidates.sort_by(|left, right| right.score.total_cmp(&left.score));
+    candidates.truncate(420);
+}
+
+fn sample_projection_at(projection: &[f32], position: usize) -> f32 {
+    projection[position.min(projection.len().saturating_sub(1))]
+}
+
+fn sample_projection_at_f32(projection: &[f32], position: f32) -> f32 {
+    if projection.is_empty() {
+        return 0.0;
+    }
+    let rounded = position.round().max(0.0) as usize;
+    sample_projection_at(projection, rounded)
+}
+
+fn centered_box_score(width: usize, height: usize, detection: Detection) -> f32 {
+    let left_margin = detection.left as f32 / width.max(1) as f32;
+    let right_margin = width.saturating_sub(detection.right) as f32 / width.max(1) as f32;
+    let top_margin = detection.top as f32 / height.max(1) as f32;
+    let bottom_margin = height.saturating_sub(detection.bottom) as f32 / height.max(1) as f32;
+    let horizontal = 1.0 - (left_margin - right_margin).abs().min(0.28) / 0.28;
+    let vertical = 1.0 - (top_margin - bottom_margin).abs().min(0.28) / 0.28;
+    (horizontal + vertical) * 0.5
+}
+
+fn estimate_distributed_axis_grid_strength(
+    luma: &[f32],
+    width: usize,
+    rect: RectBox,
+    origin: usize,
+    cell_size: f32,
+    steps: usize,
+    vertical_lines: bool,
+) -> f32 {
+    let band_count = 12_usize;
+    let mut strengths = Vec::<f32>::with_capacity(band_count);
+
+    for band in 0..band_count {
+        let subrect = if vertical_lines {
+            let top = rect.top + rect.bottom.saturating_sub(rect.top) * band / band_count;
+            let bottom = rect.top + rect.bottom.saturating_sub(rect.top) * (band + 1) / band_count;
+            RectBox {
+                left: rect.left,
+                top,
+                right: rect.right,
+                bottom,
+            }
+        } else {
+            let left = rect.left + rect.right.saturating_sub(rect.left) * band / band_count;
+            let right = rect.left + rect.right.saturating_sub(rect.left) * (band + 1) / band_count;
+            RectBox {
+                left,
+                top: rect.top,
+                right,
+                bottom: rect.bottom,
+            }
+        };
+
+        if subrect.right <= subrect.left + 2 || subrect.bottom <= subrect.top + 2 {
+            continue;
+        }
+
+        strengths.push(estimate_axis_boundary_strength_in_rect(
+            luma,
+            width,
+            subrect,
+            origin,
+            cell_size,
+            steps,
+            vertical_lines,
+        ));
+    }
+
+    if strengths.is_empty() {
+        return 0.0;
+    }
+
+    strengths.sort_by(|left, right| left.total_cmp(right));
+    strengths[strengths.len().saturating_sub(1).min(2)]
+}
+
+fn semantic_border_consistency_score(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    detection: Detection,
+) -> f32 {
+    if detection.right <= detection.left + 8 || detection.bottom <= detection.top + 8 {
+        return 0.0;
+    }
+
+    let top = sample_semantic_horizontal_border(
+        rgba,
+        width,
+        height,
+        detection.left,
+        detection.right,
+        detection.top,
+    );
+    let bottom = sample_semantic_horizontal_border(
+        rgba,
+        width,
+        height,
+        detection.left,
+        detection.right,
+        detection.bottom.saturating_sub(1),
+    );
+    let left = sample_semantic_vertical_border(
+        rgba,
+        width,
+        height,
+        detection.left,
+        detection.top,
+        detection.bottom,
+    );
+    let right = sample_semantic_vertical_border(
+        rgba,
+        width,
+        height,
+        detection.right.saturating_sub(1),
+        detection.top,
+        detection.bottom,
+    );
+
+    let borders = [top, bottom, left, right];
+    let max_variance = borders
+        .iter()
+        .map(|border| border.variance)
+        .fold(0.0_f32, f32::max);
+    let mut mean_distance = 0.0_f32;
+    let mut count = 0.0_f32;
+    for outer in 0..borders.len() {
+        for inner in outer + 1..borders.len() {
+            mean_distance += color_distance(borders[outer].mean, borders[inner].mean);
+            count += 1.0;
+        }
+    }
+    mean_distance /= count.max(1.0);
+
+    let variance_score = 1.0 - (max_variance / 120.0).min(1.0);
+    let distance_score = 1.0 - (mean_distance / 150.0).min(1.0);
+    (variance_score * 0.45 + distance_score * 0.55).max(0.0)
+}
+
+fn sample_semantic_horizontal_border(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    left: usize,
+    right: usize,
+    y: usize,
+) -> SampledColor {
+    let trim = ((right.saturating_sub(left)) as f32 * 0.12).round() as usize;
+    sample_semantic_strip(
+        rgba,
+        width,
+        height,
+        left.saturating_add(trim),
+        right.saturating_sub(trim),
+        y.saturating_sub(1),
+        (y + 2).min(height),
+    )
+}
+
+fn sample_semantic_vertical_border(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    top: usize,
+    bottom: usize,
+) -> SampledColor {
+    let trim = ((bottom.saturating_sub(top)) as f32 * 0.12).round() as usize;
+    sample_semantic_strip(
+        rgba,
+        width,
+        height,
+        x.saturating_sub(1),
+        (x + 2).min(width),
+        top.saturating_add(trim),
+        bottom.saturating_sub(trim),
+    )
+}
+
+fn sample_semantic_strip(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    left: usize,
+    right: usize,
+    top: usize,
+    bottom: usize,
+) -> SampledColor {
+    let safe_left = left.min(width.saturating_sub(1));
+    let safe_right = right.min(width).max(safe_left + 1);
+    let safe_top = top.min(height.saturating_sub(1));
+    let safe_bottom = bottom.min(height).max(safe_top + 1);
+    let mut sum = [0.0_f32; 3];
+    let mut values = Vec::<[f32; 3]>::new();
+
+    for y in safe_top..safe_bottom {
+        for x in safe_left..safe_right {
+            let index = (y * width + x) * 4;
+            let color = [
+                rgba[index] as f32,
+                rgba[index + 1] as f32,
+                rgba[index + 2] as f32,
+            ];
+            sum[0] += color[0];
+            sum[1] += color[1];
+            sum[2] += color[2];
+            values.push(color);
+        }
+    }
+
+    let count = values.len().max(1) as f32;
+    let mean = [sum[0] / count, sum[1] / count, sum[2] / count];
+    let variance = values
+        .iter()
+        .map(|value| color_distance(*value, mean))
+        .sum::<f32>()
+        / count;
+
+    SampledColor { mean, variance }
+}
+
+fn color_distance(left: [f32; 3], right: [f32; 3]) -> f32 {
+    let dr = left[0] - right[0];
+    let dg = left[1] - right[1];
+    let db = left[2] - right[2];
+    (dr * dr + dg * dg + db * db).sqrt()
 }
 
 fn refine_inner_framed_chart(
@@ -948,6 +1669,36 @@ fn is_reasonable_detection_shape(width: usize, height: usize, detection: Detecti
 struct BandMetrics {
     colored_ratio: f32,
     separator_ratio: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SampledColor {
+    mean: [f32; 3],
+    variance: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AxisGridCandidate {
+    start: usize,
+    end: usize,
+    cells: usize,
+    cell_size: f32,
+    score: f32,
+    boundary_ratio: f32,
+    side_ratio: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AxisBand {
+    start: usize,
+    end: usize,
+    score: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SemanticFrameCandidate {
+    detection: Detection,
+    score: f32,
 }
 
 fn score_chart_detection(width: usize, height: usize, detection: Detection) -> f32 {

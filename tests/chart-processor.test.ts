@@ -36,6 +36,7 @@ import {
   computeDetailSignalWithWasm,
   detectChartBoardWithWasm,
   enhanceEdgesWithFftWasm,
+  type WasmChartDetection,
 } from "../src/lib/detecter";
 
 const fixtureDir = join(import.meta.dir, "fixtures");
@@ -45,6 +46,7 @@ const additionalChartImagePath = join(fixtureDir, "chart_eye_blind_5.jpeg");
 const burgerChartImagePath = join(fixtureDir, "burger_chart.jpg");
 const xiaodouniChartImagePath = join(fixtureDir, "xiaodouni_wrong_right_4.jpeg");
 const sanduonieChartImagePath = join(fixtureDir, "sanduonie_puppet_chart.jpeg");
+const maineCatChartImagePath = join(fixtureDir, "maine_cat_chart.jpg");
 const grayWhiteBoardImagePath = join(fixtureDir, "gray_white_board_50x51.jpg");
 const longLinePixelArtImagePath = join(fixtureDir, "pixel_art_long_lines_not_chart.jpg");
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -135,6 +137,169 @@ try {
     height: decoded.height,
     data: rgba,
   };
+}
+
+function measureBackProjectedChartEdgeAlignment(
+  raster: { width: number; height: number; data: Uint8ClampedArray },
+  detection: WasmChartDetection,
+) {
+  const [left, top, right, bottom] = detection.cropBox;
+  const gridWidth = detection.gridWidth;
+  const gridHeight = detection.gridHeight;
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  const cellWidth = cropWidth / Math.max(1, gridWidth);
+  const cellHeight = cropHeight / Math.max(1, gridHeight);
+  const luma = new Float32Array(raster.width * raster.height);
+
+  for (let index = 0; index < luma.length; index += 1) {
+    const offset = index * 4;
+    luma[index] =
+      (raster.data[offset] ?? 0) * 0.299 +
+      (raster.data[offset + 1] ?? 0) * 0.587 +
+      (raster.data[offset + 2] ?? 0) * 0.114;
+  }
+
+  const cells = new Float32Array(gridWidth * gridHeight);
+  for (let row = 0; row < gridHeight; row += 1) {
+    const sampleTop = clampTestNumber(Math.round(top + (row + 0.3) * cellHeight), top, bottom - 1);
+    const sampleBottom = clampTestNumber(
+      Math.round(top + (row + 0.7) * cellHeight),
+      sampleTop + 1,
+      bottom,
+    );
+    for (let column = 0; column < gridWidth; column += 1) {
+      const sampleLeft = clampTestNumber(
+        Math.round(left + (column + 0.3) * cellWidth),
+        left,
+        right - 1,
+      );
+      const sampleRight = clampTestNumber(
+        Math.round(left + (column + 0.7) * cellWidth),
+        sampleLeft + 1,
+        right,
+      );
+      let total = 0;
+      let count = 0;
+      for (let y = sampleTop; y < sampleBottom; y += 1) {
+        for (let x = sampleLeft; x < sampleRight; x += 1) {
+          total += luma[y * raster.width + x] ?? 0;
+          count += 1;
+        }
+      }
+      cells[row * gridWidth + column] = total / Math.max(1, count);
+    }
+  }
+
+  const verticalBoundary = [];
+  const verticalInterior = [];
+  const verticalWeights = [];
+  for (let column = 1; column < gridWidth; column += 1) {
+    let weight = 1;
+    for (let row = 0; row < gridHeight; row += 1) {
+      weight += Math.abs(
+        (cells[row * gridWidth + column] ?? 0) - (cells[row * gridWidth + column - 1] ?? 0),
+      );
+    }
+    verticalWeights.push(weight / Math.max(1, gridHeight));
+    verticalBoundary.push(
+      sampleTestAxisGradient(luma, raster.width, left, top, right, bottom, left + column * cellWidth, true),
+    );
+    verticalInterior.push(
+      sampleTestAxisGradient(
+        luma,
+        raster.width,
+        left,
+        top,
+        right,
+        bottom,
+        left + (column + 0.5) * cellWidth,
+        true,
+      ),
+    );
+  }
+
+  const horizontalBoundary = [];
+  const horizontalInterior = [];
+  const horizontalWeights = [];
+  for (let row = 1; row < gridHeight; row += 1) {
+    let weight = 1;
+    for (let column = 0; column < gridWidth; column += 1) {
+      weight += Math.abs(
+        (cells[row * gridWidth + column] ?? 0) -
+          (cells[(row - 1) * gridWidth + column] ?? 0),
+      );
+    }
+    horizontalWeights.push(weight / Math.max(1, gridWidth));
+    horizontalBoundary.push(
+      sampleTestAxisGradient(luma, raster.width, left, top, right, bottom, top + row * cellHeight, false),
+    );
+    horizontalInterior.push(
+      sampleTestAxisGradient(
+        luma,
+        raster.width,
+        left,
+        top,
+        right,
+        bottom,
+        top + (row + 0.5) * cellHeight,
+        false,
+      ),
+    );
+  }
+
+  return {
+    verticalRatio:
+      weightedAverage(verticalBoundary, verticalWeights) /
+      Math.max(0.001, weightedAverage(verticalInterior, verticalWeights)),
+    horizontalRatio:
+      weightedAverage(horizontalBoundary, horizontalWeights) /
+      Math.max(0.001, weightedAverage(horizontalInterior, horizontalWeights)),
+  };
+}
+
+function sampleTestAxisGradient(
+  luma: Float32Array,
+  width: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+  position: number,
+  vertical: boolean,
+) {
+  let total = 0;
+  let count = 0;
+  if (vertical) {
+    const x = clampTestNumber(Math.round(position), left + 1, right - 2);
+    for (let y = top + 1; y < bottom - 1; y += 1) {
+      total += Math.abs((luma[y * width + x + 1] ?? 0) - (luma[y * width + x - 1] ?? 0));
+      count += 1;
+    }
+    return total / Math.max(1, count);
+  }
+
+  const y = clampTestNumber(Math.round(position), top + 1, bottom - 2);
+  for (let x = left + 1; x < right - 1; x += 1) {
+    total += Math.abs((luma[(y + 1) * width + x] ?? 0) - (luma[(y - 1) * width + x] ?? 0));
+    count += 1;
+  }
+  return total / Math.max(1, count);
+}
+
+function weightedAverage(values: number[], weights: number[]) {
+  let total = 0;
+  let totalWeight = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const weight = weights[index] ?? 1;
+    total += (values[index] ?? 0) * weight;
+    totalWeight += weight;
+  }
+  return total / Math.max(0.001, totalWeight);
+}
+
+function clampTestNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function buildSolidRaster(width: number, height: number, color: [number, number, number]) {
@@ -1749,6 +1914,31 @@ test("rust chart detector should detect separator-board burger chart", async () 
   const cropHeight = (result?.cropBox[3] ?? 0) - (result?.cropBox[1] ?? 0);
   expect(cropWidth).toBeGreaterThan(raster.width * 0.95);
   expect(cropHeight).toBeGreaterThan(raster.height * 0.8);
+});
+
+test("rust chart detector should choose the full semantic chart frame when annotations surround the board", async () => {
+  const raster = loadRasterWithPowerShell(maineCatChartImagePath);
+  const result = await detectChartBoardWithWasm(raster);
+
+  expect(result).not.toBeNull();
+  expect(result?.gridWidth).toBe(42);
+  expect(result?.gridHeight).toBe(49);
+
+  const [left, top, right, bottom] = result!.cropBox;
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  expect(left).toBeLessThan(raster.width * 0.08);
+  expect(right).toBeGreaterThan(raster.width * 0.92);
+  expect(top).toBeGreaterThan(raster.height * 0.06);
+  expect(top).toBeLessThan(raster.height * 0.12);
+  expect(bottom).toBeGreaterThan(raster.height * 0.78);
+  expect(bottom).toBeLessThan(raster.height * 0.9);
+  expect(cropWidth / cropHeight).toBeGreaterThan(0.82);
+  expect(cropWidth / cropHeight).toBeLessThan(0.9);
+
+  const edgeAlignment = measureBackProjectedChartEdgeAlignment(raster, result!);
+  expect(edgeAlignment.verticalRatio).toBeGreaterThan(1.7);
+  expect(edgeAlignment.horizontalRatio).toBeGreaterThan(1.6);
 });
 
 test("auto chart import should make gray-white checkerboard background transparent", async () => {
