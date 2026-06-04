@@ -47,6 +47,7 @@ const burgerChartImagePath = join(fixtureDir, "burger_chart.jpg");
 const xiaodouniChartImagePath = join(fixtureDir, "xiaodouni_wrong_right_4.jpeg");
 const sanduonieChartImagePath = join(fixtureDir, "sanduonie_puppet_chart.jpeg");
 const maineCatChartImagePath = join(fixtureDir, "maine_cat_chart.jpg");
+const cinnamorollCakeChartImagePath = join(fixtureDir, "cinnamoroll_cake_chart.jpg");
 const grayWhiteBoardImagePath = join(fixtureDir, "gray_white_board_50x51.jpg");
 const longLinePixelArtImagePath = join(fixtureDir, "pixel_art_long_lines_not_chart.jpg");
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -1941,6 +1942,25 @@ test("rust chart detector should choose the full semantic chart frame when annot
   expect(edgeAlignment.horizontalRatio).toBeGreaterThan(1.6);
 });
 
+test("rust chart detector should include the cinnamoroll chart coordinate frame", async () => {
+  const raster = loadRasterWithPowerShell(cinnamorollCakeChartImagePath);
+  const result = await detectChartBoardWithWasm(raster);
+
+  expect(result).not.toBeNull();
+  expect(result?.gridWidth).toBe(56);
+  expect(result?.gridHeight).toBe(55);
+
+  const [left, top, right, bottom] = result!.cropBox;
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  expect(left).toBeLessThan(raster.width * 0.04);
+  expect(right).toBeGreaterThan(raster.width * 0.96);
+  expect(top).toBeLessThan(raster.height * 0.05);
+  expect(bottom).toBeGreaterThan(raster.height * 0.92);
+  expect(cropWidth).toBeGreaterThan(raster.width * 0.94);
+  expect(cropHeight).toBeGreaterThan(raster.height * 0.86);
+});
+
 test("auto chart import should sample maine cat chart fill colors without text speckles", async () => {
   const raster = loadRasterWithPowerShell(maineCatChartImagePath);
   const file = new File(["stub"], "maine-cat-chart.jpg", { type: "image/jpeg" });
@@ -1973,6 +1993,40 @@ test("auto chart import should sample maine cat chart fill colors without text s
     ["H1", "H2", "H18", "H19"].includes(cell.label ?? ""),
   );
   expect(explicitLightEdgeCells.length).toBeLessThanOrEqual(6);
+});
+
+test("auto detect should prefer the cinnamoroll chart over a coarse full-canvas pixel candidate", async () => {
+  const raster = loadRasterWithPowerShell(cinnamorollCakeChartImagePath);
+  const result = await debugAutoDetectRaster(raster, basename(cinnamorollCakeChartImagePath));
+
+  expect(result.mode).toBe("detected-wasm-chart");
+  expect(result.gridWidth).toBe(56);
+  expect(result.gridHeight).toBe(55);
+  expect(result.cropBox).not.toBeNull();
+});
+
+test("auto chart import should process the cinnamoroll coordinate frame", async () => {
+  const raster = loadRasterWithPowerShell(cinnamorollCakeChartImagePath);
+  const file = new File(["stub"], basename(cinnamorollCakeChartImagePath), {
+    type: "image/jpeg",
+  });
+
+  const result = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "auto",
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+      renderStyleBias: 100,
+    }),
+  );
+
+  expect(result.detectionMode).toBe("detected-wasm-chart");
+  expect(result.preferredEditorMode).toBe("pindou");
+  expect(result.gridWidth).toBe(56);
+  expect(result.gridHeight).toBe(55);
 });
 
 test("auto chart import should make gray-white checkerboard background transparent", async () => {

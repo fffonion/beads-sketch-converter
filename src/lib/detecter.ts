@@ -96,9 +96,7 @@ export async function detectChartBoardWithWasm(
     return null;
   }
 
-  return shouldRefineFullPageChartDetection(raster, detection)
-    ? refineFullPageChartDetection(raster, detection)
-    : detection;
+  return refineFullPageChartDetection(raster, detection);
 }
 
 export async function detectPixelArtWithWasm(
@@ -112,9 +110,7 @@ export async function detectAutoRasterWithWasm(
 ): Promise<WasmAutoDetection | null> {
   const autoCandidates = await detectAutoCandidatesWithWasm(raster);
   const chart = autoCandidates?.chart
-    ? shouldRefineFullPageChartDetection(raster, autoCandidates.chart)
-      ? refineFullPageChartDetection(raster, autoCandidates.chart)
-      : autoCandidates.chart
+    ? refineFullPageChartDetection(raster, autoCandidates.chart)
     : null;
   const rawPixel = autoCandidates?.pixel ?? null;
   const pixel = rawPixel
@@ -133,6 +129,16 @@ export async function detectAutoRasterWithWasm(
     }
 
     if (isLikelyTrimmedFullPageChart(raster, chart, rawPixel)) {
+      return {
+        kind: "chart",
+        cropBox: chart.cropBox,
+        gridWidth: chart.gridWidth,
+        gridHeight: chart.gridHeight,
+        confidence: chart.confidence,
+      };
+    }
+
+    if (isLikelyCoarseFullCanvasPixelFallback(raster, chart, rawPixel)) {
       return {
         kind: "chart",
         cropBox: chart.cropBox,
@@ -1002,6 +1008,35 @@ function isLikelyPlainPixelArt(
   );
 }
 
+function isLikelyCoarseFullCanvasPixelFallback(
+  raster: RasterImageLike,
+  chart: WasmChartDetection,
+  pixel: WasmPixelDetection,
+) {
+  if (countBoundaryFallbackSides(raster, pixel.cropBox) < 3) {
+    return false;
+  }
+
+  const chartWidth = chart.cropBox[2] - chart.cropBox[0];
+  const chartHeight = chart.cropBox[3] - chart.cropBox[1];
+  const pixelWidth = pixel.cropBox[2] - pixel.cropBox[0];
+  const pixelHeight = pixel.cropBox[3] - pixel.cropBox[1];
+  const chartArea = chartWidth * chartHeight;
+  const pixelArea = pixelWidth * pixelHeight;
+  const chartAreaRatio = chartArea / Math.max(1, raster.width * raster.height);
+  const chartCells = chart.gridWidth * chart.gridHeight;
+  const pixelCells = pixel.gridWidth * pixel.gridHeight;
+
+  return (
+    chart.confidence >= pixel.confidence + 0.08 &&
+    chart.gridWidth >= 24 &&
+    chart.gridHeight >= 24 &&
+    chartAreaRatio >= 0.45 &&
+    pixelArea >= chartArea * 1.08 &&
+    chartCells >= pixelCells * 4
+  );
+}
+
 function isLikelyTrimmedFullPageChart(
   raster: RasterImageLike,
   chart: WasmChartDetection,
@@ -1043,7 +1078,110 @@ function refineFullPageChartDetection(
   raster: RasterImageLike,
   detection: WasmChartDetection,
 ): WasmChartDetection {
-  return trimTrailingFullPageChartBand(raster, detection) ?? detection;
+  return (
+    expandChartCoordinateEmptyFrame(raster, detection) ??
+    (shouldRefineFullPageChartDetection(raster, detection)
+      ? trimTrailingFullPageChartBand(raster, detection)
+      : null) ??
+    detection
+  );
+}
+
+function expandChartCoordinateEmptyFrame(
+  raster: RasterImageLike,
+  detection: WasmChartDetection,
+): WasmChartDetection | null {
+  if (
+    detection.confidence < 0.78 ||
+    detection.gridWidth < 30 ||
+    detection.gridHeight < 20
+  ) {
+    return null;
+  }
+
+  const [left, top, right, bottom] = detection.cropBox;
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  if (cropWidth < raster.width * 0.9 || cropHeight < raster.height * 0.65) {
+    return null;
+  }
+
+  const cellWidth = Math.max(1, Math.round(cropWidth / Math.max(1, detection.gridWidth)));
+  const cellHeight = Math.max(1, Math.round(cropHeight / Math.max(1, detection.gridHeight)));
+  if (left > cellWidth * 2 || raster.width - right > cellWidth * 2) {
+    return null;
+  }
+
+  const rightBand = sampleBandMetrics(raster, {
+    left: right,
+    top,
+    right: Math.min(raster.width, right + cellWidth),
+    bottom,
+  });
+  if (rightBand.separatorRatio < 0.32 || rightBand.coloredRatio > 0.12) {
+    return null;
+  }
+
+  const bottomBands = countTrailingChartEmptyBands(raster, detection);
+  if (bottomBands < 3) {
+    return null;
+  }
+
+  const nextGridWidth = detection.gridWidth + 1;
+  const nextGridHeight = detection.gridHeight + bottomBands;
+  if (nextGridWidth > 102 || nextGridHeight > 102) {
+    return null;
+  }
+
+  const projectedCell = cropWidth / Math.max(1, nextGridWidth);
+  const nextBottom = top + Math.round(projectedCell * nextGridHeight);
+  const maxEmptyBottom = Math.min(raster.height, bottom + cellHeight * bottomBands);
+  if (
+    nextBottom <= bottom ||
+    nextBottom > maxEmptyBottom ||
+    raster.height - nextBottom < cellHeight
+  ) {
+    return null;
+  }
+
+  return {
+    cropBox: [left, top, right, nextBottom],
+    gridWidth: nextGridWidth,
+    gridHeight: nextGridHeight,
+    confidence: Math.max(detection.confidence, 0.95),
+  };
+}
+
+function countTrailingChartEmptyBands(
+  raster: RasterImageLike,
+  detection: WasmChartDetection,
+) {
+  let current: WasmChartDetection = { ...detection };
+  let count = 0;
+  for (let index = 0; index < 6; index += 1) {
+    const [left, top, right, bottom] = current.cropBox;
+    const bandHeight = Math.max(
+      1,
+      Math.round((bottom - top) / Math.max(1, current.gridHeight)),
+    );
+    const metrics = sampleBandMetrics(raster, {
+      left,
+      top: bottom,
+      right,
+      bottom: Math.min(raster.height, bottom + bandHeight),
+    });
+    if (metrics.separatorRatio < 0.05 || metrics.coloredRatio > 0.18) {
+      break;
+    }
+
+    current = {
+      ...current,
+      cropBox: [left, top, right, Math.min(raster.height, bottom + bandHeight)],
+      gridHeight: current.gridHeight + 1,
+    };
+    count += 1;
+  }
+  return count;
 }
 
 function shouldRefineFullPageChartDetection(
