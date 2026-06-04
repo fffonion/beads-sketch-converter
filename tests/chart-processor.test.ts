@@ -1941,6 +1941,40 @@ test("rust chart detector should choose the full semantic chart frame when annot
   expect(edgeAlignment.horizontalRatio).toBeGreaterThan(1.6);
 });
 
+test("auto chart import should sample maine cat chart fill colors without text speckles", async () => {
+  const raster = loadRasterWithPowerShell(maineCatChartImagePath);
+  const file = new File(["stub"], "maine-cat-chart.jpg", { type: "image/jpeg" });
+  const result = await withMockedRasterImage(raster, async () =>
+    processImageFile(file, {
+      gridMode: "auto",
+      reduceColors: false,
+      reduceTolerance: 18,
+      preSharpen: false,
+      preSharpenStrength: 20,
+      fftEdgeEnhanceStrength: 0,
+      renderStyleBias: 100,
+    }),
+  );
+
+  const countByLabel = new Map(result.colors.map((color) => [color.label, color.count]));
+  expect(result.detectionMode).toBe("detected-wasm-chart");
+  expect(result.gridWidth).toBe(42);
+  expect(result.gridHeight).toBe(49);
+  expect(countByLabel.get("G15") ?? 0).toBeGreaterThan(180);
+  expect(countByLabel.get("H19") ?? 0).toBeLessThan(70);
+  expect(countByLabel.get("H2") ?? 0).toBeLessThan(5);
+
+  const edgeCells = result.cells.filter((_, index) => {
+    const row = Math.floor(index / result.gridWidth);
+    const column = index % result.gridWidth;
+    return row === 0 || column === 0 || row === result.gridHeight - 1 || column === result.gridWidth - 1;
+  });
+  const explicitLightEdgeCells = edgeCells.filter((cell) =>
+    ["H1", "H2", "H18", "H19"].includes(cell.label ?? ""),
+  );
+  expect(explicitLightEdgeCells.length).toBeLessThanOrEqual(6);
+});
+
 test("auto chart import should make gray-white checkerboard background transparent", async () => {
   const raster = loadRasterWithPowerShell(grayWhiteBoardImagePath);
   const file = new File(["stub"], "gray-white-board-50x51.jpg", { type: "image/jpeg" });

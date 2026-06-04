@@ -60,7 +60,7 @@ const DETECTED_SOURCE_RENDER_STYLE_BIAS = 100;
 type CropBox = [number, number, number, number];
 type Rgb = [number, number, number];
 type Oklab = [number, number, number];
-type SamplingStrategy = "patch" | "chart-edge";
+type SamplingStrategy = "patch" | "chart-edge" | "chart-fill";
 
 export interface RasterImage {
   width: number;
@@ -822,6 +822,7 @@ export async function processImageFile(
   let preferredEditorMode: "edit" | "pindou" = "edit";
   let detectedCropRect: NormalizedCropRect | null = null;
   let chartOpenCheckerboardMask: Uint8Array | null = null;
+  let detectedChartSamplingStrategy: SamplingStrategy | null = null;
 
   if (options.gridMode === "auto") {
     const wasmDetection = await getCachedAutoDetection(source);
@@ -832,14 +833,22 @@ export async function processImageFile(
 
     if (wasmDetection.kind === "chart") {
       const detectedCrop = getCachedCropBoxRaster(source, wasmDetection.cropBox);
+      const chartSamplingStrategy = shouldUseChartFillSampling(
+        detectedCrop,
+        wasmDetection.gridWidth,
+        wasmDetection.gridHeight,
+      )
+        ? "chart-fill"
+        : "chart-edge";
+      detectedChartSamplingStrategy = chartSamplingStrategy;
       logical = await getCachedLogicalGrid(
         source,
-        `auto:chart:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${DETECTED_SOURCE_RENDER_STYLE_BIAS}`,
+        `auto:chart:${chartSamplingStrategy}:${wasmDetection.cropBox.join(",")}:${wasmDetection.gridWidth}:${wasmDetection.gridHeight}:${DETECTED_SOURCE_RENDER_STYLE_BIAS}`,
         () => sampleRegularGrid(
           detectedCrop,
           wasmDetection.gridWidth,
           wasmDetection.gridHeight,
-          "chart-edge",
+          chartSamplingStrategy,
           DETECTED_SOURCE_RENDER_STYLE_BIAS / 100,
         ),
       );
@@ -1035,7 +1044,13 @@ export async function processImageFile(
       : matched.cells;
   const normalizedCells =
     detectionMode === "detected-wasm-chart"
-      ? chartMaskedCells.map((cell) => normalizeEditableCell(cell))
+      ? detectedChartSamplingStrategy === "chart-fill"
+        ? collapseChartOpenBackgroundAreas(
+            chartMaskedCells,
+            gridWidth,
+            gridHeight,
+          )
+        : chartMaskedCells.map((cell) => normalizeEditableCell(cell))
       : collapseOpenBackgroundAreas(
           matched.cells,
           gridWidth,
@@ -2129,6 +2144,128 @@ function representativePixelFromChartPatch(
   return foreground ? { rgb: foreground, alpha: fallback.alpha } : fallback;
 }
 
+function representativePixelFromChartFillPatch(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): RepresentativePixel {
+  const patchWidth = Math.max(1, right - left);
+  const patchHeight = Math.max(1, bottom - top);
+  const insetX = Math.max(2, Math.round(patchWidth * 0.16));
+  const insetY = Math.max(2, Math.round(patchHeight * 0.16));
+  const sampleLeft = Math.min(right - 1, left + insetX);
+  const sampleTop = Math.min(bottom - 1, top + insetY);
+  const sampleRight = Math.max(sampleLeft + 1, right - insetX);
+  const sampleBottom = Math.max(sampleTop + 1, bottom - insetY);
+  const sampleWidth = Math.max(1, sampleRight - sampleLeft);
+  const sampleHeight = Math.max(1, sampleBottom - sampleTop);
+  const totalPixels = sampleWidth * sampleHeight;
+  const bucketCodes = new Int32Array(totalPixels);
+  bucketCodes.fill(-1);
+  const buckets = new Map<number, { count: number; sum: [number, number, number]; support: number }>();
+  let alphaSum = 0;
+  let visiblePixels = 0;
+
+  for (let y = sampleTop; y < sampleBottom; y += 1) {
+    for (let x = sampleLeft; x < sampleRight; x += 1) {
+      const pixelIndex = (y * image.width + x) * 4;
+      const alpha = image.data[pixelIndex + 3];
+      alphaSum += alpha;
+      if (alpha < MIN_VISIBLE_PIXEL_ALPHA) {
+        continue;
+      }
+      const red = image.data[pixelIndex];
+      const green = image.data[pixelIndex + 1];
+      const blue = image.data[pixelIndex + 2];
+      const code = ((red >> 4) << 8) | ((green >> 4) << 4) | (blue >> 4);
+      const localIndex = (y - sampleTop) * sampleWidth + (x - sampleLeft);
+      bucketCodes[localIndex] = code;
+      const current = buckets.get(code) ?? { count: 0, sum: [0, 0, 0], support: 0 };
+      current.count += 1;
+      current.sum[0] += red;
+      current.sum[1] += green;
+      current.sum[2] += blue;
+      buckets.set(code, current);
+      visiblePixels += 1;
+    }
+  }
+
+  const averageAlpha = clampToByte(alphaSum / totalPixels);
+  if (!buckets.size || !visiblePixels) {
+    return { rgb: [255, 255, 255], alpha: averageAlpha };
+  }
+
+  for (let y = 0; y < sampleHeight; y += 1) {
+    for (let x = 0; x < sampleWidth; x += 1) {
+      const code = bucketCodes[y * sampleWidth + x]!;
+      if (code < 0) {
+        continue;
+      }
+      const bucket = buckets.get(code);
+      if (!bucket) {
+        continue;
+      }
+      if (x + 1 < sampleWidth && bucketCodes[y * sampleWidth + x + 1] === code) {
+        bucket.support += 2;
+      }
+      if (y + 1 < sampleHeight && bucketCodes[(y + 1) * sampleWidth + x] === code) {
+        bucket.support += 2;
+      }
+      if (x + 1 < sampleWidth && y + 1 < sampleHeight && bucketCodes[(y + 1) * sampleWidth + x + 1] === code) {
+        bucket.support += 1;
+      }
+      if (x > 0 && y + 1 < sampleHeight && bucketCodes[(y + 1) * sampleWidth + x - 1] === code) {
+        bucket.support += 1;
+      }
+    }
+  }
+
+  const ranked = [...buckets.values()]
+    .map((bucket) => ({
+      bucket,
+      rgb: [
+        clampToByte(bucket.sum[0] / bucket.count),
+        clampToByte(bucket.sum[1] / bucket.count),
+        clampToByte(bucket.sum[2] / bucket.count),
+      ] as Rgb,
+      coverage: bucket.count / visiblePixels,
+      score: bucket.count * 3 + bucket.support,
+    }))
+    .sort((leftBucket, rightBucket) => rightBucket.score - leftBucket.score);
+
+  const best = ranked[0];
+  if (!best) {
+    return { rgb: [255, 255, 255], alpha: averageAlpha };
+  }
+
+  if (isNearWhiteChartFillColor(best.rgb)) {
+    const foregroundFill = ranked.find((candidate) => {
+      if (isLikelyPrintedChartTextColor(candidate.rgb)) {
+        return false;
+      }
+      return candidate.coverage >= 0.22 && candidate.score >= best.score * 0.28;
+    });
+    if (foregroundFill) {
+      return { rgb: foregroundFill.rgb, alpha: averageAlpha };
+    }
+  }
+
+  if (!isLikelyPrintedChartTextColor(best.rgb) || best.coverage >= 0.46) {
+    return { rgb: best.rgb, alpha: averageAlpha };
+  }
+
+  const fill = ranked.find((candidate) => {
+    if (isLikelyPrintedChartTextColor(candidate.rgb)) {
+      return false;
+    }
+    return candidate.coverage >= 0.08 || candidate.score >= best.score * 0.32;
+  });
+
+  return { rgb: fill?.rgb ?? best.rgb, alpha: averageAlpha };
+}
+
 function representativeForegroundPixelFromChartPatch(
   image: RasterImage,
   left: number,
@@ -2234,6 +2371,18 @@ function isChartForegroundPatchColor(rgb: Rgb) {
   return chroma >= 38 || luma < 165;
 }
 
+function isLikelyPrintedChartTextColor(rgb: Rgb) {
+  const luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const chroma = Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+  return luma < 96 || (luma < 150 && chroma < 32);
+}
+
+function isNearWhiteChartFillColor(rgb: Rgb) {
+  const luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const chroma = Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+  return luma >= 242 && chroma <= 24;
+}
+
 function weightedAveragePixelFromPatch(
   image: RasterImage,
   left: number,
@@ -2305,6 +2454,84 @@ function blendRepresentativePixels(
   };
 }
 
+function shouldUseChartFillSampling(
+  image: RasterImage,
+  gridWidth: number,
+  gridHeight: number,
+) {
+  if (gridWidth < 12 || gridHeight < 12 || image.width <= 0 || image.height <= 0) {
+    return false;
+  }
+
+  const xEdges = buildEdges(image.width, gridWidth);
+  const yEdges = buildEdges(image.height, gridHeight);
+  let labelLikeCells = 0;
+  let sampledCells = 0;
+
+  for (let row = 0; row < gridHeight; row += 1) {
+    const top = yEdges[row];
+    const bottom = Math.max(yEdges[row + 1], top + 1);
+    for (let column = 0; column < gridWidth; column += 1) {
+      const left = xEdges[column];
+      const right = Math.max(xEdges[column + 1], left + 1);
+      const profile = sampleChartCellTextProfile(image, left, top, right, bottom);
+      sampledCells += 1;
+      if (
+        profile.darkRatio >= 0.025 &&
+        profile.darkRatio <= 0.38 &&
+        profile.nonDarkRatio >= 0.42
+      ) {
+        labelLikeCells += 1;
+      }
+    }
+  }
+
+  return labelLikeCells >= Math.max(48, Math.round(sampledCells * 0.43));
+}
+
+function sampleChartCellTextProfile(
+  image: RasterImage,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+) {
+  const insetX = Math.max(1, Math.round((right - left) * 0.12));
+  const insetY = Math.max(1, Math.round((bottom - top) * 0.12));
+  const sampleLeft = Math.min(right - 1, left + insetX);
+  const sampleTop = Math.min(bottom - 1, top + insetY);
+  const sampleRight = Math.max(sampleLeft + 1, right - insetX);
+  const sampleBottom = Math.max(sampleTop + 1, bottom - insetY);
+  let darkHits = 0;
+  let nonDarkHits = 0;
+  let total = 0;
+
+  for (let y = sampleTop; y < sampleBottom; y += 1) {
+    for (let x = sampleLeft; x < sampleRight; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      if ((image.data[offset + 3] ?? 255) < MIN_VISIBLE_PIXEL_ALPHA) {
+        continue;
+      }
+      const red = image.data[offset] ?? 255;
+      const green = image.data[offset + 1] ?? 255;
+      const blue = image.data[offset + 2] ?? 255;
+      const luma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      if (luma < 132) {
+        darkHits += 1;
+      } else {
+        nonDarkHits += 1;
+      }
+      total += 1;
+    }
+  }
+
+  const safeTotal = Math.max(1, total);
+  return {
+    darkRatio: darkHits / safeTotal,
+    nonDarkRatio: nonDarkHits / safeTotal,
+  };
+}
+
 function sampleRegularGrid(
   image: RasterImage,
   gridWidth: number,
@@ -2325,9 +2552,11 @@ function sampleRegularGrid(
       const right = Math.max(xEdges[column + 1], left + 1);
       const realisticRepresentative = weightedAveragePixelFromPatch(image, left, top, right, bottom);
       const pixelArtRepresentative =
-        strategy === "chart-edge"
-          ? representativePixelFromChartPatch(image, left, top, right, bottom)
-          : representativePixelFromPatch(image, left, top, right, bottom);
+        strategy === "chart-fill"
+          ? representativePixelFromChartFillPatch(image, left, top, right, bottom)
+          : strategy === "chart-edge"
+            ? representativePixelFromChartPatch(image, left, top, right, bottom)
+            : representativePixelFromPatch(image, left, top, right, bottom);
       const representative = blendRepresentativePixels(
         realisticRepresentative,
         pixelArtRepresentative,
@@ -5921,6 +6150,84 @@ export function collapseOpenBackgroundAreas(
   }
 
   return nextCells;
+}
+
+function collapseChartOpenBackgroundAreas(
+  cells: EditableCell[],
+  gridWidth: number,
+  gridHeight: number,
+) {
+  const normalizedCells = cells.map((cell) => normalizeEditableCell(cell));
+  if (gridWidth <= 0 || gridHeight <= 0 || normalizedCells.length !== gridWidth * gridHeight) {
+    return normalizedCells;
+  }
+
+  const visited = new Uint8Array(normalizedCells.length);
+  const nextCells = normalizedCells.map((cell) => ({ ...cell }));
+
+  for (let index = 0; index < normalizedCells.length; index += 1) {
+    if (visited[index] || !isChartOpenBackgroundCandidate(normalizedCells[index])) {
+      continue;
+    }
+
+    const queue = [index];
+    const component: number[] = [];
+    let touchesEdge = false;
+    visited[index] = 1;
+
+    while (queue.length > 0) {
+      const currentIndex = queue.pop()!;
+      component.push(currentIndex);
+      const x = currentIndex % gridWidth;
+      const y = Math.floor(currentIndex / gridWidth);
+      touchesEdge ||= x === 0 || y === 0 || x === gridWidth - 1 || y === gridHeight - 1;
+
+      const neighbors = [
+        currentIndex - 1,
+        currentIndex + 1,
+        currentIndex - gridWidth,
+        currentIndex + gridWidth,
+      ];
+
+      for (const neighborIndex of neighbors) {
+        if (
+          neighborIndex < 0 ||
+          neighborIndex >= normalizedCells.length ||
+          visited[neighborIndex]
+        ) {
+          continue;
+        }
+
+        const neighborX = neighborIndex % gridWidth;
+        const neighborY = Math.floor(neighborIndex / gridWidth);
+        if (Math.abs(neighborX - x) + Math.abs(neighborY - y) !== 1) {
+          continue;
+        }
+
+        if (!isChartOpenBackgroundCandidate(normalizedCells[neighborIndex])) {
+          continue;
+        }
+
+        visited[neighborIndex] = 1;
+        queue.push(neighborIndex);
+      }
+    }
+
+    if (!touchesEdge) {
+      continue;
+    }
+
+    for (const componentIndex of component) {
+      nextCells[componentIndex] = { label: null, hex: null };
+    }
+  }
+
+  return nextCells;
+}
+
+function isChartOpenBackgroundCandidate(cell: EditableCell) {
+  const normalized = normalizeEditableCell(cell);
+  return !normalized.label || !normalized.hex || isBackgroundCandidateCell(normalized);
 }
 
 function isBackgroundCandidateCell(cell: EditableCell) {
